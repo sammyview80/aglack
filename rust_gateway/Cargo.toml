@@ -1,0 +1,52 @@
+[package]
+name = "rust_gateway"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# See AGENTS.md in this directory for project structure and how to extend
+# it. Dependencies intentionally left minimal. Current scope: prove the
+# routing wire end-to-end (gateway forwards a request to a backend and
+# returns its response) before any Docker orchestration, auth, or billing
+# code is added. See ../backend/wrapper/docs/rust-gateway-architecture.md
+# for the longer-term plan; do not add those dependencies until the
+# corresponding feature is actually built.
+[lib]
+name = "rust_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust_gateway"
+path = "src/bin/rust_gateway.rs"
+
+[[bin]]
+name = "test_backend"
+path = "src/bin/test_backend.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "process"] }
+axum = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Loads .env files into the process environment at startup. Used only to
+# populate std::env — every actual config READ still goes through
+# std::env::var in src/config.rs, so there is exactly one place config
+# values are parsed, whether they came from a real shell export, Docker
+# -e/--env-file, CI secrets, or a local .env file.
+dotenvy = "0.15"
+# SQLite: idempotency records for workspace creation (see
+# docs/create-workspace-plan.md). Async, matches the axum/tokio stack
+# already in use. "sqlite" enables the driver; "runtime-tokio" matches our
+# async runtime; "migrate" lets migrations run from embedded SQL files;
+# "macros" is required for the sqlx::query!/sqlx::migrate! macros used in
+# src/db/mod.rs and src/workspaces/store.rs.
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
+uuid = { version = "1", features = ["v4"] }
+# ContainerLauncher (src/workspaces/container.rs) is a trait with async
+# methods; async fn in traits needs this until the language feature is
+# fully stable for our MSRV.
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

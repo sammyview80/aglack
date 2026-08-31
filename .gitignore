@@ -1,0 +1,108 @@
+# Nested git clone with its own history — must never be tracked by an outer
+# repo. Path-anchored so it only matches this exact location, not any future
+# unrelated "upstream/" directory elsewhere in the tree.
+/backend/upstream/
+
+# ---------------------------------------------------------------------------
+# Secrets / credentials — keep *.example files tracked
+# ---------------------------------------------------------------------------
+.env
+.env.*
+.env.local
+.env.*.local
+.env.shared
+!.env.example
+!.env.*.example
+!.env.shared.example
+
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+credentials.json
+service-account*.json
+secrets/
+.netrc
+
+# ---------------------------------------------------------------------------
+# Python / backend (wrapper)
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+
+# ---------------------------------------------------------------------------
+# Rust / rust_gateway
+# ---------------------------------------------------------------------------
+target/
+**/*.rs.bk
+*.pdb
+# Cargo.lock is tracked (binary crate).
+
+# SQLite dev database for rust_gateway (Stage 1 datastore — see
+# .env.shared.example). Never commit actual tenant/auth/billing data.
+rust_gateway/data/
+*.sqlite
+*.sqlite3
+*.db
+
+# ---------------------------------------------------------------------------
+# Node / frontend
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+build/
+.next/
+.vite/
+.turbo/
+.parcel-cache/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ---------------------------------------------------------------------------
+# Logs (run.sh interleaves all services here)
+# ---------------------------------------------------------------------------
+logs/
+*.log
+
+# ---------------------------------------------------------------------------
+# OS / editors
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+*.bak
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln

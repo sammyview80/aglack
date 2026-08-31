@@ -1,0 +1,67 @@
+/* Brand palette. Change the four hex values — onboarding + Discord follow. */
+:root {
+  --brand-plum: #450c3f;
+  --brand-plum-deep: #2a0726;
+  --brand-plum-mid: #5c1854;
+  --brand-sage: #b9d175;
+  --brand-pale: #d9efbd;
+  --brand-cream: #f5fbda;
+  --brand-black: #0c0c0c;
+  --brand-black-2: #161616;
+  --brand-black-3: #1f1f1f;
+  --brand-muted: #7a4a73;
+  --brand-line: #d2e4a8;
+
+  --brand-bg: var(--brand-cream);
+  --brand-fg: var(--brand-plum);
+  --brand-muted-fg: var(--brand-muted);
+  --brand-primary: var(--brand-sage);
+  --brand-primary-hover: color-mix(in srgb, var(--brand-sage) 72%, white);
+  --brand-on-primary: var(--brand-plum);
+  --brand-surface: var(--brand-cream);
+  --brand-preview: var(--brand-plum);
+  --brand-hover: var(--brand-pale);
+  --brand-accent: var(--brand-sage);
+  --brand-accent-bg: color-mix(in srgb, var(--brand-sage) 35%, transparent);
+  --brand-accent-text: var(--brand-plum);
+  --brand-border: var(--brand-line);
+
+  /* Slack workspace (Discord route). Onboarding still uses cream/plum. */
+  --slack-bg: #ffffff;
+  --slack-hover: #f8f8f8;
+  --slack-selected: #e8e8e8;
+  --slack-border: rgba(29, 28, 29, 0.13);
+  --slack-border-strong: rgba(29, 28, 29, 0.3);
+  --slack-text: #1d1c1d;
+  --slack-muted: #616061;
+  --slack-faint: #868686;
+  --slack-blue: #1264a3;
+  --slack-rail-selected: rgba(255, 255, 255, 0.16);
+}
+
+html[data-theme="dark"] {
+  --brand-bg: #1a1d21;
+  --brand-fg: #e8e8e8;
+  --brand-muted-fg: #9a9b9e;
+  --brand-primary: #1d9bd1;
+  --brand-primary-hover: #2eb0e8;
+  --brand-on-primary: #ffffff;
+  --brand-surface: #222529;
+  --brand-preview: #1a1d21;
+  --brand-hover: #2c2d30;
+  --brand-accent: #1d9bd1;
+  --brand-accent-bg: color-mix(in srgb, #1d9bd1 22%, transparent);
+  --brand-accent-text: #e8e8e8;
+  --brand-border: rgba(232, 232, 232, 0.13);
+
+  --slack-bg: #1a1d21;
+  --slack-hover: #222529;
+  --slack-selected: #2c2d30;
+  --slack-border: rgba(232, 232, 232, 0.13);
+  --slack-border-strong: rgba(232, 232, 232, 0.28);
+  --slack-text: #d1d2d3;
+  --slack-muted: #9a9b9e;
+  --slack-faint: #6f7072;
+  --slack-blue: #1d9bd1;
+  --slack-rail-selected: rgba(255, 255, 255, 0.16);
+}

@@ -1,0 +1,40 @@
+MIT License
+
+Copyright (c) 2026 Hermes WebUI Wrapper contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+---
+
+## Acknowledgement
+
+This project is a standalone, independent wrapper around the pinned
+upstream Hermes Web UI project (see `../UPSTREAM.md` in the umbrella
+checkout this was developed alongside). The upstream project's own code is
+never vendored, copied, or redistributed by this wrapper — it is imported
+in-process from its own separate, unmodified checkout at run time.
+
+The transport adapter in `hermes_webui_wrapper/transport/handler.py` is
+adapted directly from `api_adapter.py` in the parent checkout (MIT
+License, Copyright (c) the Hermes WebUI project and contributors). That
+upstream file's copyright and license terms are acknowledged here in full;
+this wrapper's copy is a derivative adaptation of that MIT-licensed source
+(bridging the same stdlib `BaseHTTPRequestHandler`-shaped surface onto
+this wrapper's own ASGI runtime), not merely an independent work "in the
+spirit of" it.
