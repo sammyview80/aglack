@@ -6,6 +6,7 @@
  */
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { CreatePage } from './routes/CreatePage'
+import { CreatingPage } from './routes/CreatingPage'
 import { useState } from 'react'
 
 function App() {
@@ -15,6 +16,7 @@ function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/create" replace />} />
       <Route path="/create" element={<CreatePage error={error} setError={setError} />} />
+      <Route path="/creating" element={<CreatingPage />} />
       <Route path="*" element={<Navigate to="/create" replace />} />
     </Routes>
   )

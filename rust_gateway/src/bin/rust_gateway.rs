@@ -59,7 +59,7 @@ async fn main() {
         launcher: Arc::new(DockerCliLauncher::new(workspaces_config.workspace_image_tag)),
     });
 
-    let app = build_router(proxy_state, workspaces_state);
+    let app = build_router(proxy_state, workspaces_state, &config.frontend_origin);
 
     let listen_addr = config.listen_addr();
     let listener = tokio::net::TcpListener::bind(&listen_addr)

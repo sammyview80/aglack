@@ -47,6 +47,13 @@ uuid = { version = "1", features = ["v4"] }
 # methods; async fn in traits needs this until the language feature is
 # fully stable for our MSRV.
 async-trait = "0.1"
+# CORS layer for the browser-facing frontend (see app.rs) — allowed origin
+# is env-configured (FRONTEND_ORIGIN, config.rs), never hardcoded, per
+# AGENTS.md rule #2.
+tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 
 [dev-dependencies]
 tempfile = "3"
+# "util" enables ServiceExt::oneshot, used to exercise build_router's
+# response headers (CORS) directly in a test without binding a real port.
+tower = { version = "0.5", features = ["util"] }

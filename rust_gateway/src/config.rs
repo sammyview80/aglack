@@ -53,6 +53,12 @@ pub struct GatewayConfig {
     pub port: u16,
     pub backend_host: String,
     pub backend_port: u16,
+    /// Origin allowed to make browser (CORS) requests to this gateway —
+    /// the frontend dev server or deployed frontend origin, e.g.
+    /// `http://127.0.0.1:5173`. Required, like every other address in this
+    /// file: no hardcoded fallback (AGENTS.md rule #2). See app.rs for
+    /// where this is applied.
+    pub frontend_origin: String,
 }
 
 impl GatewayConfig {
@@ -68,12 +74,14 @@ impl GatewayConfig {
             &required_env("GATEWAY_BACKEND_PORT")?,
             "GATEWAY_BACKEND_PORT",
         )?;
+        let frontend_origin = required_env("FRONTEND_ORIGIN")?;
 
         Ok(Self {
             host,
             port,
             backend_host,
             backend_port,
+            frontend_origin,
         })
     }
 
