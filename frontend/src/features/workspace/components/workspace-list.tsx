@@ -60,9 +60,10 @@ function avatarColor(id: string): string {
   return `hsl(${Math.abs(hash) % 360}, 48%, 46%)`
 }
 
-function statusLabel(status: WorkspaceStatus, healthy: boolean): string {
+function statusLabel(status: WorkspaceStatus, healthy: boolean | null): string {
   if (status === 'creating') return 'Creating'
   if (status === 'failed') return 'Failed'
+  if (healthy === null) return 'Ready'
   return healthy ? 'Ready' : 'Unhealthy'
 }
 
@@ -252,7 +253,7 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
     const visible = items.filter((item) => {
       if (item.healthy) healthy += 1
       const matchesFilter =
-        filter === 'all' || (filter === 'healthy' ? item.healthy : item.status === filter)
+        filter === 'all' || (filter === 'healthy' ? Boolean(item.healthy) : item.status === filter)
       const matchesSearch =
         !query ||
         item.name.toLowerCase().includes(query) ||

@@ -25,6 +25,7 @@ import { ThemeSwitch } from '@/features/theme/theme-switch'
 import { Hint, TooltipProvider } from '@/components/ui/tooltip'
 import { BrandLogo } from '@/components/brand-mark'
 import { cn } from '@/lib/utils'
+import { listWorkspaces } from '@/features/workspace/api'
 import '@/styles/threads-app.css'
 
 export type ThreadsWorkspaceIcon = {
@@ -96,14 +97,7 @@ const PLACEHOLDER_AUDIENCE: AvatarTone[] = [
 
 const THREAD_SECTIONS = new Set(['Inbox', 'Thread', 'design-www', 'Setup'])
 
-const STATIC_GUILDS = [
-  { id: 'core', name: 'Core', mark: 'C', ping: false },
-  { id: 'vs', name: 'VS', mark: 'VS', ping: false },
-  { id: 'alpha', name: 'alpha', mark: 'a', ping: false },
-  { id: 'product', name: 'product', mark: 'p', ping: true },
-  { id: 'ops', name: 'ops', mark: 'o', ping: false },
-  { id: 'aglack', name: 'Aglack', mark: 'A', ping: true },
-] as const
+type GuildEntry = { id: string; name: string; mark: string }
 
 function paneCopy(section: string): string {
   if (section === 'Drafts') return 'No drafts yet. Compose a thread to get started.'
@@ -227,7 +221,11 @@ export function ThreadsShell({
     <TooltipProvider delay={200}>
     <main className="threads-app" data-workspace={workspaceId || workspaceName}>
       <div className="app-window">
-        <WorkspaceRail workspaceId={workspaceId} onOpenSettings={() => openSection('Settings')} />
+        <WorkspaceRail
+          workspaceId={workspaceId}
+          workspaceName={workspaceName}
+          onOpenSettings={() => openSection('Settings')}
+        />
         <aside className="sidebar">
           <div className="workspace-row">
             <button type="button" className="workspace-home" onClick={() => navigate('/')}>
@@ -500,13 +498,53 @@ export function ThreadsShell({
 
 function WorkspaceRail({
   workspaceId,
+  workspaceName,
   onOpenSettings,
 }: {
   workspaceId?: string
+  workspaceName: string
   onOpenSettings: () => void
 }) {
   const navigate = useNavigate()
-  const selectedId = STATIC_GUILDS.find((g) => g.id === workspaceId)?.id
+  const [guilds, setGuilds] = useState<GuildEntry[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    listWorkspaces({ health: 'skip' })
+      .then((result) => {
+        if (cancelled) return
+        setGuilds(
+          result.workspaces.map((row) => ({
+            id: row.workspaceId,
+            name: row.name,
+            mark: row.name.trim().charAt(0).toUpperCase() || 'W',
+          })),
+        )
+      })
+      .catch(() => {
+        /* fallback entry below covers the rail when the fetch fails */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const currentEntry: GuildEntry | null = workspaceId
+    ? {
+        id: workspaceId,
+        name: workspaceName,
+        mark: workspaceName.trim().charAt(0).toUpperCase() || 'W',
+      }
+    : null
+
+  const displayGuilds =
+    currentEntry && !guilds.some((g) => g.id === currentEntry.id)
+      ? [currentEntry, ...guilds]
+      : guilds.length > 0
+        ? guilds
+        : currentEntry
+          ? [currentEntry]
+          : []
 
   return (
     <nav className="guild-rail" aria-label="Workspaces">
@@ -517,18 +555,18 @@ function WorkspaceRail({
       </Hint>
       <div className="guild-split" />
       <div className="guild-list">
-        {STATIC_GUILDS.map((guild) => (
+        {displayGuilds.map((guild) => (
           <Hint key={guild.id} label={guild.name} side="right">
             <button
               type="button"
-              className={cn('guild-btn', guild.id === selectedId && 'selected')}
+              className={cn('guild-btn', guild.id === workspaceId && 'selected')}
               onClick={() =>
                 navigate(`/workspaces/${guild.id}/chat`, { state: { name: guild.name } })
               }
               aria-label={guild.name}
-              aria-current={guild.id === selectedId ? 'page' : undefined}
+              aria-current={guild.id === workspaceId ? 'page' : undefined}
             >
-              <span className={cn('guild-pill', guild.ping && 'ping')} />
+              <span className="guild-pill" />
               {guild.mark}
             </button>
           </Hint>

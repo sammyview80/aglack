@@ -29,8 +29,12 @@ export type WorkspaceListItem = {
    * `true` only if the wrapper answered its health check on this exact
    * list call — a `ready` row can still be `healthy: false` if its
    * container crashed or hung after it was marked ready.
+   *
+   * `null` means the caller asked to skip the live health check
+   * (`health=skip` query param) — no live status was gathered for this
+   * row, so callers should not render it as healthy or unhealthy.
    */
-  healthy: boolean
+  healthy: boolean | null
   hostPort: number | null
   desktopPort: number | null
   createdAt: string

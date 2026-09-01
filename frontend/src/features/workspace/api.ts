@@ -56,7 +56,7 @@ type WorkspaceListItemApiData = {
   workspace_id: string
   name: string
   status: WorkspaceStatus
-  healthy: boolean
+  healthy: boolean | null
   host_port: number | null
   desktop_port: number | null
   created_at: string
@@ -71,6 +71,12 @@ type ListWorkspacesApiData = {
 export type ListWorkspacesQuery = {
   limit?: number
   offset?: number
+  /**
+   * Pass `'skip'` to have the gateway omit the live per-workspace health
+   * check (faster listing). When skipped, `healthy` comes back `null`
+   * instead of `boolean` on every row.
+   */
+  health?: 'skip'
 }
 
 function mapListItem(row: WorkspaceListItemApiData): WorkspaceListItem {
@@ -97,6 +103,7 @@ export async function listWorkspaces(
   const params = new URLSearchParams()
   if (query.limit !== undefined) params.set('limit', String(query.limit))
   if (query.offset !== undefined) params.set('offset', String(query.offset))
+  if (query.health === 'skip') params.set('health', 'skip')
   const suffix = params.size > 0 ? `?${params}` : ''
   const data = await apiFetch<ListWorkspacesApiData>(gatewayUrl(), `/workspaces${suffix}`)
   return {
