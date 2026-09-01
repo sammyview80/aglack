@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Check } from 'lucide-react'
 import { toast } from 'sonner'
 import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { FormField } from '@/components/form-field'
@@ -25,6 +26,7 @@ import {
   type SetupNeedsConfirm,
 } from '@/features/onboarding/types'
 import { handleError } from '@/lib/handle-error'
+import { APP_NAME } from '@/lib/brand'
 import { cn } from '@/lib/utils'
 import { GATEWAY_WORKSPACE_ERRORS, isInvalidWorkspace } from '@/lib/workspace-errors'
 
@@ -41,12 +43,14 @@ type OnboardingWizardProps = {
   workspaceId: string
   onFinished: () => void
   onInvalidWorkspace: () => void
+  onBack: () => void
 }
 
 export function OnboardingWizard({
   workspaceId,
   onFinished,
   onInvalidWorkspace,
+  onBack,
 }: OnboardingWizardProps) {
   const [status, setStatus] = useState<OnboardingStatus | null>(null)
   const [loadError, setLoadError] = useState('')
@@ -136,6 +140,7 @@ export function OnboardingWizard({
         description={loadError}
         actionLabel="Retry"
         onAction={() => window.location.reload()}
+        onBack={onBack}
       />
     )
   }
@@ -145,6 +150,7 @@ export function OnboardingWizard({
       <PageFallback
         title="Loading onboarding"
         description="Fetching provider catalog through the gateway."
+        onBack={onBack}
       />
     )
   }
@@ -152,13 +158,7 @@ export function OnboardingWizard({
   if (status.completed) {
     return (
       <Shell>
-        <PageFallback
-          embedded
-          title="Onboarding already complete"
-          description="Chat model provider is configured for this workspace."
-          actionLabel="Done"
-          onAction={onFinished}
-        />
+        <CompleteCard status={status} onDone={onFinished} onBack={onBack} />
       </Shell>
     )
   }
@@ -297,7 +297,7 @@ export function OnboardingWizard({
         }}
       >
         <div className="space-y-1">
-          <h2>Set up Hermes</h2>
+          <h2>Set up {APP_NAME}</h2>
           <div className="divider" />
           <p className="post-copy">Chat/text models only. Pick a provider, then save.</p>
         </div>
@@ -464,6 +464,10 @@ export function OnboardingWizard({
           </>
         ) : null}
 
+        <Button type="button" variant="ghost" disabled={busy} onClick={onBack}>
+          Back
+        </Button>
+
         {status.setup.unsupportedNote ? (
           <p className="text-xs text-muted-foreground">{status.setup.unsupportedNote}</p>
         ) : null}
@@ -474,4 +478,58 @@ export function OnboardingWizard({
 
 function Shell({ children }: { children: ReactNode }) {
   return <SlackOnboardingLayout>{children}</SlackOnboardingLayout>
+}
+
+function CompleteCard({
+  status,
+  onDone,
+  onBack,
+}: {
+  status: OnboardingStatus
+  onDone: () => void
+  onBack: () => void
+}) {
+  const current = status.setup.current
+  const provider = (status.setup.providers ?? []).find((p) => p.id === current?.provider)
+  const rows = [
+    current?.provider
+      ? { label: 'Provider', value: provider?.label || current.provider }
+      : null,
+    current?.model ? { label: 'Model', value: current.model } : null,
+    current?.baseUrl ? { label: 'Endpoint', value: current.baseUrl } : null,
+    status.setup.currentIsOauth ? { label: 'Sign-in', value: 'Connected with OAuth' } : null,
+  ].filter((row): row is { label: string; value: string } => Boolean(row))
+
+  return (
+    <>
+      <span className="mb-4 grid size-10 place-items-center rounded-full bg-primary/10 text-primary">
+        <Check size={18} strokeWidth={2.5} aria-hidden="true" />
+      </span>
+      <h2>Ready to chat</h2>
+      <div className="divider" />
+      <p className="post-copy">
+        This workspace already has a model. You can start chatting now, or change the provider later from
+        setup.
+      </p>
+      {rows.length > 0 ? (
+        <dl className="mt-5 w-full overflow-hidden rounded-xl border border-border">
+          {rows.map((row) => (
+            <div
+              key={row.label}
+              className="flex items-baseline justify-between gap-4 border-b border-border px-4 py-3 last:border-b-0"
+            >
+              <dt className="shrink-0 text-xs tracking-wide text-muted-foreground">{row.label}</dt>
+              <dd className="truncate text-right text-sm font-medium">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      <Button type="button" size="lg" className="mt-6 w-full" onClick={onDone}>
+        Continue
+      </Button>
+      <Button type="button" variant="ghost" className="mt-2 w-full" onClick={onBack}>
+        Back
+      </Button>
+    </>
+  )
 }

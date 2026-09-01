@@ -62,9 +62,14 @@ export function CreatingStatus({
             </Button>
           </>
         ) : (
-          <Button type="button" size="lg" onClick={onRetry} disabled={busy}>
-            {busy ? 'Working…' : result.status === 'failed' ? 'Retry' : 'Try again'}
-          </Button>
+          <>
+            <Button type="button" size="lg" onClick={onRetry} disabled={busy}>
+              {busy ? 'Working…' : result.status === 'failed' ? 'Retry' : 'Try again'}
+            </Button>
+            <Button type="button" variant="ghost" onClick={onBack}>
+              Back
+            </Button>
+          </>
         )}
       </div>
     </SlackOnboardingLayout>

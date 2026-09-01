@@ -14,11 +14,12 @@
  *   other gateway call already does (see `lib/api.ts`) rather than
  *   inventing its own error handling.
  *
- * Today only "simple" has a `run` (calls the backend's seeder API for the
- * "simple" mode — see `backend/seeder/modes/simple/`). Adding "creator" or
- * "company" later means: (1) add the matching `backend/seeder/modes/<mode>/`
- * content, (2) add `run: (workspaceId) => applySeeder(workspaceId, '<mode>')`
- * here. No other frontend file changes.
+ * "simple" and "company" have a `run` (calls the backend's seeder API for
+ * that mode — see `backend/seeder/modes/simple/` and
+ * `backend/seeder/modes/company/`). Adding "creator" later means: (1) add
+ * the matching `backend/seeder/modes/creator/` content, (2) add
+ * `run: (workspaceId) => applySeeder(workspaceId, 'creator')` here. No
+ * other frontend file changes.
  */
 import { applySeeder } from '@/features/agent-seeder/api'
 
@@ -40,6 +41,11 @@ async function runSimple(workspaceId: string): Promise<ModeRunResult> {
   return { agentsSeeded: result.applied.length }
 }
 
+async function runCompany(workspaceId: string): Promise<ModeRunResult> {
+  const result = await applySeeder(workspaceId, 'company')
+  return { agentsSeeded: result.applied.length }
+}
+
 export const MODES: ModeOption[] = [
   {
     id: 'simple',
@@ -56,8 +62,8 @@ export const MODES: ModeOption[] = [
   {
     id: 'company',
     label: 'Company',
-    description: 'A full org chart of departments and agents for running a business.',
-    // No `run` yet — backend/seeder/modes/company/ has no agents declared.
+    description: 'A full org chart of departments and agents for running a business: CEO, CFO, PM, Builder, Persona, and Librarian.',
+    run: runCompany,
   },
 ]
 

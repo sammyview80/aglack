@@ -10,15 +10,20 @@ import {
   Laptop,
   MessageCircle,
   Pencil,
+  Plus,
+  Compass,
   Search,
   Send,
   Settings2,
+  ArrowLeft,
   SmilePlus,
   X,
   Zap,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { ThemeSwitch } from '@/features/theme/theme-switch'
+import { Hint, TooltipProvider } from '@/components/ui/tooltip'
+import { BrandLogo } from '@/components/brand-mark'
 import { cn } from '@/lib/utils'
 import '@/styles/threads-app.css'
 
@@ -90,6 +95,15 @@ const PLACEHOLDER_AUDIENCE: AvatarTone[] = [
 ]
 
 const THREAD_SECTIONS = new Set(['Inbox', 'Thread', 'design-www', 'Setup'])
+
+const STATIC_GUILDS = [
+  { id: 'core', name: 'Core', mark: 'C', ping: false },
+  { id: 'vs', name: 'VS', mark: 'VS', ping: false },
+  { id: 'alpha', name: 'alpha', mark: 'a', ping: false },
+  { id: 'product', name: 'product', mark: 'p', ping: true },
+  { id: 'ops', name: 'ops', mark: 'o', ping: false },
+  { id: 'aglack', name: 'Aglack', mark: 'A', ping: true },
+] as const
 
 function paneCopy(section: string): string {
   if (section === 'Drafts') return 'No drafts yet. Compose a thread to get started.'
@@ -210,8 +224,10 @@ export function ThreadsShell({
   }
 
   return (
+    <TooltipProvider delay={200}>
     <main className="threads-app" data-workspace={workspaceId || workspaceName}>
       <div className="app-window">
+        <WorkspaceRail workspaceId={workspaceId} onOpenSettings={() => openSection('Settings')} />
         <aside className="sidebar">
           <div className="workspace-row">
             <button type="button" className="workspace-home" onClick={() => navigate('/')}>
@@ -332,6 +348,9 @@ export function ThreadsShell({
 
         <section className="content-area">
           <header className="content-header">
+            <button type="button" className="threads-back" onClick={() => navigate('/')} aria-label="Back to workspaces">
+              <ArrowLeft size={16} strokeWidth={2.4} /> Back
+            </button>
             <h1>{heading}</h1>
             <div className="header-actions">
               <button type="button" className="icon-button" aria-label="Comments" onClick={openCompose}>
@@ -475,5 +494,63 @@ export function ThreadsShell({
         </div>
       ) : null}
     </main>
+    </TooltipProvider>
+  )
+}
+
+function WorkspaceRail({
+  workspaceId,
+  onOpenSettings,
+}: {
+  workspaceId?: string
+  onOpenSettings: () => void
+}) {
+  const navigate = useNavigate()
+  const selectedId = STATIC_GUILDS.find((g) => g.id === workspaceId)?.id
+
+  return (
+    <nav className="guild-rail" aria-label="Workspaces">
+      <Hint label="Dashboard" side="right">
+        <button type="button" className="guild-home" onClick={() => navigate('/')} aria-label="Dashboard">
+          <BrandLogo size="size-full" className="rounded-2xl ring-0" />
+        </button>
+      </Hint>
+      <div className="guild-split" />
+      <div className="guild-list">
+        {STATIC_GUILDS.map((guild) => (
+          <Hint key={guild.id} label={guild.name} side="right">
+            <button
+              type="button"
+              className={cn('guild-btn', guild.id === selectedId && 'selected')}
+              onClick={() =>
+                navigate(`/workspaces/${guild.id}/chat`, { state: { name: guild.name } })
+              }
+              aria-label={guild.name}
+              aria-current={guild.id === selectedId ? 'page' : undefined}
+            >
+              <span className={cn('guild-pill', guild.ping && 'ping')} />
+              {guild.mark}
+            </button>
+          </Hint>
+        ))}
+      </div>
+      <Hint label="Add workspace" side="right">
+        <button type="button" className="guild-btn guild-action" onClick={() => navigate('/create')} aria-label="Add workspace">
+          <Plus size={22} strokeWidth={2.4} />
+        </button>
+      </Hint>
+      <Hint label="Dashboard" side="right">
+        <button type="button" className="guild-btn guild-action" onClick={() => navigate('/')} aria-label="Dashboard">
+          <Compass size={20} strokeWidth={2.2} />
+        </button>
+      </Hint>
+      <div className="guild-end">
+        <Hint label="Settings" side="right">
+          <button type="button" className="guild-btn guild-action" onClick={onOpenSettings} aria-label="Settings">
+            <Settings2 size={20} strokeWidth={2.2} />
+          </button>
+        </Hint>
+      </div>
+    </nav>
   )
 }

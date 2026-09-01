@@ -1,3 +1,5 @@
+import { APP_NAME } from '@/lib/brand'
+
 type WorkspacePreviewProps = {
   name: string
   status?: string
@@ -5,7 +7,7 @@ type WorkspacePreviewProps = {
 }
 
 export function WorkspacePreview({ name, status, hint }: WorkspacePreviewProps) {
-  const previewName = name.trim() || 'Hermes'
+  const previewName = name.trim() || APP_NAME
   const initial = previewName.charAt(0).toUpperCase()
 
   return (
@@ -26,7 +28,7 @@ export function WorkspacePreview({ name, status, hint }: WorkspacePreviewProps) 
         </div>
       </div>
       <p className="mt-3 text-sm text-muted-foreground">
-        {hint || 'Open a name for Hermes Web. Chat is in the ⋯ menu for this workspace.'}
+        {hint || `Open a name for ${APP_NAME} Web. Chat is in the ⋯ menu for this workspace.`}
       </p>
     </div>
   )

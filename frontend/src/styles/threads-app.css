@@ -71,6 +71,8 @@ html[data-theme="dark"] .threads-app,.dark .threads-app{
 .threads-app [data-slot="button"]:not(.compose-button):not(.post-button):not(.modal-send){border-radius:8px}
 .threads-app select{color:var(--th-text);background:var(--th-card);border-color:var(--th-line)}
 .threads-app .th-step{margin:0 0 8px;color:var(--th-muted);font-size:12px;letter-spacing:.4px}
+.threads-app .threads-back{display:flex;align-items:center;gap:6px;margin-right:12px;padding:6px 10px;border-radius:8px;background:transparent;color:var(--th-text);font-size:13px;font-weight:560}
+.threads-app .threads-back:hover{background:var(--th-icon-hover)}
 .threads-app .workspace-row strong{font-size:16px}
 .threads-app .nav-item,.threads-app .channel-item,.threads-app .person-item{font-size:14px}
 .threads-app .count-badge,.threads-app .section-label,.threads-app .person-badge,.threads-app .footer-button,.threads-app .audience-title,.threads-app .audience-title button{font-size:12px}
@@ -86,4 +88,87 @@ html[data-theme="dark"] .threads-app,.dark .threads-app{
 @media (max-width: 760px){
   .threads-app .thread-main h2{font-size:18px}
   .threads-app .post-copy{font-size:14px}
+}
+
+.threads-app .app-window{grid-template-columns:72px 317px minmax(560px,1fr) 327px}
+.threads-app .guild-rail{
+  width:72px;
+  min-width:72px;
+  background:#1e1f22;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  padding:12px 0 12px;
+  overflow:auto;
+}
+.threads-app .guild-home,
+.threads-app .guild-btn{
+  position:relative;
+  width:48px;
+  height:48px;
+  margin:0;
+  border-radius:16px;
+  background:#313338;
+  color:#dbdee1;
+  font-size:15px;
+  font-weight:700;
+  letter-spacing:-.3px;
+  display:grid;
+  place-items:center;
+  transition:border-radius .15s ease,background .15s ease,color .15s ease;
+}
+.threads-app .guild-home{
+  background:#fff;
+  color:#fff;
+  border-radius:16px;
+  padding:0;
+  overflow:hidden;
+}
+.threads-app .guild-home img{
+  width:88%;
+  height:88%;
+  object-fit:contain;
+}
+.threads-app .guild-btn:hover,
+.threads-app .guild-btn.selected{
+  border-radius:16px;
+  background:#5865f2;
+  color:#fff;
+}
+.threads-app .guild-action:hover{
+  background:#23a559;
+  color:#fff;
+}
+.threads-app .guild-split{
+  width:32px;
+  height:2px;
+  margin:8px 0;
+  border-radius:1px;
+  background:#35363c;
+}
+.threads-app .guild-list{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.threads-app .guild-action{margin-top:8px}
+.threads-app .guild-end{margin-top:auto;padding-top:8px}
+.threads-app .guild-pill{
+  position:absolute;
+  left:-12px;
+  width:4px;
+  height:0;
+  border-radius:0 4px 4px 0;
+  background:#f2f3f5;
+  transition:height .15s ease;
+}
+.threads-app .guild-pill.ping{height:8px}
+.threads-app .guild-btn.selected .guild-pill{height:40px}
+.threads-app .guild-btn:hover .guild-pill:not(.ping){height:20px}
+@media (max-width: 1120px){
+  .threads-app .app-window{grid-template-columns:72px 250px minmax(500px,1fr)}
+}
+@media (max-width: 760px){
+  .threads-app .app-window{grid-template-columns:72px 1fr}
+  .threads-app .guild-rail{display:flex}
 }

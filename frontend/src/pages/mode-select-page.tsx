@@ -17,6 +17,7 @@ export function ModeSelectPage() {
       workspaceId={workspaceId}
       onFinished={() => navigate('/')}
       onInvalidWorkspace={onInvalidWorkspace}
+      onBack={() => navigate('/')}
     />
   )
 }

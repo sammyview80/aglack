@@ -70,7 +70,7 @@ export async function apiFetch<T>(
   if (!body || typeof body.ok !== 'boolean') {
     throw new ApiError({
       code: 'invalid_response',
-      message: `unexpected response shape from ${path} (HTTP ${res.status})`,
+      message: unexpectedResponseMessage(res.status),
     })
   }
 
@@ -79,6 +79,22 @@ export async function apiFetch<T>(
   }
 
   return body.data
+}
+
+function unexpectedResponseMessage(status: number): string {
+  if (status === 502 || status === 503 || status === 504) {
+    return `The workspace is not answering yet (HTTP ${status}). It may still be starting — wait a few seconds and retry.`
+  }
+  if (status === 500) {
+    return 'The workspace hit an internal error (HTTP 500). Retry in a moment. If it keeps failing, check the container logs.'
+  }
+  if (status === 404) {
+    return 'Nothing answered at that URL (HTTP 404). The workspace may have been deleted.'
+  }
+  if (status === 401 || status === 403) {
+    return `Access was denied (HTTP ${status}).`
+  }
+  return `Couldn't read the server response (HTTP ${status}). Check that the gateway and workspace container are running, then retry.`
 }
 
 /**

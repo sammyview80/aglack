@@ -16,9 +16,15 @@ type ModeSelectProps = {
   workspaceId: string
   onFinished: () => void
   onInvalidWorkspace: () => void
+  onBack: () => void
 }
 
-export function ModeSelect({ workspaceId, onFinished, onInvalidWorkspace }: ModeSelectProps) {
+export function ModeSelect({
+  workspaceId,
+  onFinished,
+  onInvalidWorkspace,
+  onBack,
+}: ModeSelectProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [running, setRunning] = useState<ModeId | null>(null)
@@ -98,6 +104,9 @@ export function ModeSelect({ workspaceId, onFinished, onInvalidWorkspace }: Mode
 
         <Button type="button" variant="ghost" disabled={busy} onClick={onFinished}>
           Skip for now
+        </Button>
+        <Button type="button" variant="ghost" disabled={busy} onClick={onBack}>
+          Back
         </Button>
       </div>
     </SlackOnboardingLayout>

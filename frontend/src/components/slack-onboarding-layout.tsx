@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { BrandMark } from '@/components/brand-mark'
 import { ThemeSwitch } from '@/features/theme/theme-switch'
 import { cn } from '@/lib/utils'
 
@@ -18,18 +18,7 @@ type SlackOnboardingLayoutProps = {
 function BrandHeader() {
   return (
     <header className="flex items-center justify-between px-6 py-4">
-      <Link
-        to="/"
-        className="flex items-center gap-2 text-sm font-semibold text-foreground no-underline"
-      >
-        <span
-          className="grid size-8 place-items-center rounded-lg bg-foreground text-xs font-bold text-background"
-          aria-hidden="true"
-        >
-          H
-        </span>
-        Hermes
-      </Link>
+      <BrandMark />
       <ThemeSwitch />
     </header>
   )

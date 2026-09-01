@@ -17,6 +17,7 @@ export function OnboardingPage() {
       workspaceId={workspaceId}
       onFinished={() => navigate(`/mode/${workspaceId}`)}
       onInvalidWorkspace={onInvalidWorkspace}
+      onBack={() => navigate('/')}
     />
   )
 }

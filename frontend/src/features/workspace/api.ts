@@ -173,7 +173,18 @@ export function hermesWebuiUrl(workspaceId: string): string {
   return `${gatewayUrl()}/workspaces/${encodeURIComponent(workspaceId)}/hermes-webui/`
 }
 
-/** Webtop desktop UI for this workspace, via the gateway proxy (new tab). */
-export function desktopUrl(workspaceId: string): string {
-  return `${gatewayUrl()}/workspaces/${encodeURIComponent(workspaceId)}/desktop/`
+/**
+ * Webtop desktop UI for this workspace, via the gateway proxy (new tab).
+ *
+ * `hideControlBar` appends an empty `show_control_bar` query param, which
+ * hides KasmVNC's own floating control-bar sidebar (noVNC_control_bar_anchor).
+ * KasmVNC's ui.js only hides it when the param is absent or empty-valued —
+ * `show_control_bar=false` is truthy as a JS string and does NOT hide it.
+ * Pass this only for desktop-viewport users; mobile should keep the bar,
+ * so the false branch sets `show_control_bar=true` explicitly rather than
+ * omitting the param (omitting it also hides the bar).
+ */
+export function desktopUrl(workspaceId: string, hideControlBar = false): string {
+  const base = `${gatewayUrl()}/workspaces/${encodeURIComponent(workspaceId)}/desktop/`
+  return hideControlBar ? `${base}?show_control_bar=` : `${base}?show_control_bar=true`
 }

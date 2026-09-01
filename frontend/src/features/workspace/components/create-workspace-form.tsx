@@ -5,6 +5,7 @@ import { FormField } from '@/components/form-field'
 import { StatusAlert } from '@/components/status-alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { APP_NAME } from '@/lib/brand'
 import type { CreateWorkspaceInput } from '@/features/workspace/types'
 
 type CreateWorkspaceFormProps = {
@@ -37,7 +38,7 @@ export function CreateWorkspaceForm({
   }
 
   return (
-    <SlackOnboardingLayout step={1} title="Create" workspaceName={workspaceName || 'Hermes'}>
+    <SlackOnboardingLayout step={1} title="Create" workspaceName={workspaceName || APP_NAME}>
       <form className="flex w-full flex-col gap-5" onSubmit={submit}>
         <h2>Create a workspace</h2>
         <div className="divider" />
@@ -67,9 +68,9 @@ export function CreateWorkspaceForm({
           htmlFor="ws-name"
           hint="Short and memorable. This is what you’ll see in the sidebar."
         >
-          <div className="flex overflow-hidden rounded-xl border border-input focus-within:border-foreground">
-            <span className="flex items-center bg-muted px-2.5 text-sm text-muted-foreground">
-              hermes /
+          <div className="flex min-w-0 flex-nowrap overflow-hidden rounded-xl border border-input focus-within:border-foreground">
+            <span className="inline-flex shrink-0 items-center whitespace-nowrap bg-muted px-2.5 text-sm leading-none text-muted-foreground">
+              aglack&nbsp;/
             </span>
             <Input
               id="ws-name"
@@ -79,7 +80,7 @@ export function CreateWorkspaceForm({
               autoComplete="off"
               placeholder="my-workspace"
               required
-              className="rounded-none border-0 focus-visible:ring-0"
+              className="min-w-0 w-0 flex-1 rounded-none border-0 focus-visible:ring-0"
             />
           </div>
         </FormField>
