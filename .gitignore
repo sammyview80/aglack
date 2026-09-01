@@ -3,6 +3,10 @@
 # unrelated "upstream/" directory elsewhere in the tree.
 /backend/upstream/
 
+# Unrelated scratch/template project, not part of this repo's own history —
+# path-anchored so it only excludes this exact top-level directory.
+/ai-website-cloner-template/
+
 # ---------------------------------------------------------------------------
 # Secrets / credentials — keep *.example files tracked
 # ---------------------------------------------------------------------------
