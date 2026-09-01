@@ -56,6 +56,40 @@ def resolve_seeder_root() -> Path:
     return (_wrapper_project_root().parent / "seeder").resolve()
 
 
+def resolve_agent_workspaces_root() -> Path:
+    """The parent directory every seeded agent gets its own
+    `<root>/<agent-slug>/` workspace under (e.g. `/workspace/pm`,
+    `/workspace/writer`, sibling of the default profile's own
+    `/workspace/default`) — see `features/agent_seeder/service.py`'s
+    `_ensure_agent_workspace`, the one caller.
+
+    Derived from `HERMES_WEBUI_DEFAULT_WORKSPACE`'s own parent directory
+    — that env var is what the real workspace container's boot script
+    sets to `/workspace/default` (see
+    `rust_gateway/src/workspaces/container/boot_script.rs`, built from
+    the gateway's own required `WORKSPACE_DEFAULT_PATH`) — rather than a
+    second, independently-hardcoded `/workspace` default here, so this
+    always agrees with wherever the container's default workspace
+    actually lives.
+
+    Fails closed (raises `RuntimeError`) when that env var is unset —
+    matches this project's existing convention for required
+    container-provided config (see `Settings.from_env()`'s
+    `HERMES_FRONTEND_ORIGIN` check for the same pattern) rather than
+    silently guessing a path outside a real container.
+    """
+    default_workspace = os.environ.get("HERMES_WEBUI_DEFAULT_WORKSPACE", "").strip()
+    if not default_workspace:
+        raise RuntimeError(
+            "HERMES_WEBUI_DEFAULT_WORKSPACE is not set — this is set automatically "
+            "by the workspace container's boot script (see "
+            "rust_gateway/src/workspaces/container/boot_script.rs); set it yourself "
+            "for local/standalone wrapper dev if you need per-agent workspace "
+            "directories to be created outside a real container."
+        )
+    return Path(default_workspace).resolve().parent
+
+
 @dataclass(frozen=True)
 class Settings:
     upstream_root: Path

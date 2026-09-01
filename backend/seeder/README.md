@@ -124,11 +124,20 @@ working directory (its *workspace*), the same way it scans `CLAUDE.md` or
 `.cursorrules`. So `agent.md` becomes `<workspace>/AGENTS.md`, not
 `<profile_home>/AGENTS.md`.
 
-A freshly created profile has no workspace configured by default — until
-you set `workspace` or `default_workspace` in that profile's
-`config.yaml`, applying `agent.md` is a no-op reported as
-`agent_md_updated: false` with an `agent_md_skipped_reason`, not an error
-and not a guess at a directory.
+`create_profile_api` alone never sets a workspace for a freshly created
+profile — so applying the seeder ALSO creates a real, dedicated
+`<agent-workspaces-root>/<agent-slug>/` directory for each newly seeded
+agent (e.g. `/workspace/pm`, a sibling of the default profile's own
+`/workspace/default`) and writes it into that profile's `config.yaml` as
+`workspace`, before applying `agent.md`. This never overwrites an
+already-configured workspace — an existing profile's hand-set `workspace`/
+`default_workspace` always wins. `<agent-workspaces-root>` is derived from
+`HERMES_WEBUI_DEFAULT_WORKSPACE`'s own parent directory (the env var the
+real workspace container's boot script sets), so it's never a
+second, independently-hardcoded path. Outside a real container (that env
+var unset), workspace auto-creation is a soft no-op — `agent.md` then
+falls back to being skipped as `agent_md_updated: false` with an
+`agent_md_skipped_reason`, not an error.
 
 If a future advance of the pinned upstream commit adds a real per-profile
 `AGENTS.md` concept, `../wrapper/.../features/agent_config/service.py`'s
@@ -152,6 +161,10 @@ Applying twice never destroys a profile or its hand edits to files this
 tree doesn't own:
 
 - **Profile creation** — skipped if the profile already exists.
+- **Per-agent workspace directory + `config.yaml`'s `workspace` key** —
+  created/written only once, the first time a profile has no
+  `workspace`/`default_workspace` set at all. Never overwrites an
+  already-configured workspace on a later apply.
 - **`soul.md` / `agent.md`** — always overwritten from the seed source on
   every apply. Edit the file here, not the running profile's copy, if you
   want a change to survive the next apply.

@@ -166,6 +166,11 @@ src/hermes_webui_wrapper/
         │                       (mode-scoped — see that module's own docstring for why
         │                       per-agent content is mode-scoped but global tools/skills
         │                       are not), then applies it via create_profile_api +
+        │                       _ensure_agent_workspace (creates a real
+        │                       <agent-workspaces-root>/<slug>/ dir + writes it into
+        │                       config.yaml as `workspace`, only if none is set yet —
+        │                       config.resolve_agent_workspaces_root() derives the root
+        │                       from HERMES_WEBUI_DEFAULT_WORKSPACE's own parent) +
         │                       features.agent_config + seeder_kit.copy_skill_dirs +
         │                       seeder_kit.discover_tools_in_dirs +
         │                       seeder_kit.build_mcp_server_entry (one mcp_servers

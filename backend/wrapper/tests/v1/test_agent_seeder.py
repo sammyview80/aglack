@@ -190,9 +190,38 @@ def test_apply_skips_agent_md_when_no_agent_md_file(
     assert "agent_md_skipped_reason" not in entry
 
 
-def test_apply_skips_agent_md_when_workspace_not_configured_but_reports_reason(
+def test_apply_auto_creates_agent_workspace_and_writes_agent_md(
     client: TestClient, synthetic_seeder_tree: Path, agent_name: str
 ) -> None:
+    """The gap this whole feature exists to close: a newly seeded agent
+    gets a real `<agent_workspaces_root>/<slug>/` directory automatically
+    (conftest.py sets HERMES_WEBUI_DEFAULT_WORKSPACE for test isolation),
+    so agent.md actually applies on the FIRST apply — no manual workspace
+    config needed, unlike before this behavior existed."""
+    (_agent_dir(synthetic_seeder_tree, "simple", agent_name) / "agent.md").write_text(
+        "# instructions\n", encoding="utf-8"
+    )
+
+    response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+    entry = response.json()["data"]["applied"][0]
+
+    assert entry["agent_md_updated"] is True
+    assert entry["workspace_created"].endswith(f"/{agent_name}")
+
+    workspace_dir = Path(entry["workspace_created"])
+    assert workspace_dir.is_dir()
+    assert (workspace_dir / "AGENTS.md").read_text(encoding="utf-8") == "# instructions\n"
+
+
+def test_apply_skips_agent_md_when_workspace_root_env_unset(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-closed path: outside a real container (or any env that hasn't
+    set HERMES_WEBUI_DEFAULT_WORKSPACE), _ensure_agent_workspace can't
+    resolve a root to create the agent's directory under, so agent.md is
+    skipped with a reason — same as if a workspace were never configured
+    at all."""
+    monkeypatch.delenv("HERMES_WEBUI_DEFAULT_WORKSPACE", raising=False)
     (_agent_dir(synthetic_seeder_tree, "simple", agent_name) / "agent.md").write_text(
         "# instructions\n", encoding="utf-8"
     )
@@ -202,6 +231,34 @@ def test_apply_skips_agent_md_when_workspace_not_configured_but_reports_reason(
 
     assert entry["agent_md_updated"] is False
     assert "workspace" in entry["agent_md_skipped_reason"].lower()
+    assert "workspace_created" not in entry
+
+
+def test_apply_does_not_overwrite_an_already_configured_workspace(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str, tmp_path: Path
+) -> None:
+    """An existing profile's hand-configured workspace must never be
+    silently replaced by the auto-created one — same "never clobber
+    what's already set" rule every other seeder step follows."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    client.post(f"/api/wrapper/v1/agent-seeder/simple/apply/{agent_name}")
+
+    hand_configured = tmp_path / "hand-configured-workspace"
+    hand_configured.mkdir()
+    home = get_hermes_home_for_profile(agent_name)
+    config_path = home / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    config["workspace"] = str(hand_configured)
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    response = client.post(f"/api/wrapper/v1/agent-seeder/simple/apply/{agent_name}")
+    entry = response.json()["data"]
+
+    assert "workspace_created" not in entry
+    final_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert final_config["workspace"] == str(hand_configured)
 
 
 def test_apply_writes_agent_md_when_workspace_is_configured(
@@ -330,6 +387,35 @@ def test_seeder_root_env_var_overrides_default(
     default = resolve_seeder_root()
     assert default.name == "seeder"
     assert default != override_root.resolve()
+
+
+def test_agent_workspaces_root_derives_from_default_workspace_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never a second, independently-hardcoded '/workspace' default — the
+    per-agent workspaces root is always the PARENT of whatever
+    HERMES_WEBUI_DEFAULT_WORKSPACE actually points at (set by the real
+    container's boot script to e.g. /workspace/default), so a per-agent
+    directory always lands as a real sibling of the default profile's own
+    workspace."""
+    from hermes_webui_wrapper.config import resolve_agent_workspaces_root
+
+    monkeypatch.setenv("HERMES_WEBUI_DEFAULT_WORKSPACE", "/workspace/default")
+
+    assert resolve_agent_workspaces_root() == Path("/workspace")
+
+
+def test_agent_workspaces_root_raises_when_env_var_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail closed outside a real container rather than guessing a path —
+    same convention as Settings.from_env()'s HERMES_FRONTEND_ORIGIN check."""
+    from hermes_webui_wrapper.config import resolve_agent_workspaces_root
+
+    monkeypatch.delenv("HERMES_WEBUI_DEFAULT_WORKSPACE", raising=False)
+
+    with pytest.raises(RuntimeError, match="HERMES_WEBUI_DEFAULT_WORKSPACE"):
+        resolve_agent_workspaces_root()
 
 
 # ── mode scoping ─────────────────────────────────────────────────────────

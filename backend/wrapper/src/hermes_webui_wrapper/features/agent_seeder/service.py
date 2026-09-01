@@ -31,15 +31,26 @@ For each agent in a mode's tree:
 1. Create the profile via `api.profiles.create_profile_api` if it doesn't
    already exist (idempotent — an existing profile is never re-created or
    destroyed).
-2. Overwrite SOUL.md from `soul.md`, via
+2. `_ensure_agent_workspace`: if that profile has no `workspace`/
+   `default_workspace` configured yet, create a real directory named
+   after the agent under `config.resolve_agent_workspaces_root()` (e.g.
+   `/workspace/pm`, sibling of the default profile's own
+   `/workspace/default`) and write it into `config.yaml` as `workspace`.
+   Never overwrites an already-configured workspace. This is what makes
+   step 3 below actually apply for a newly seeded agent, instead of
+   always hitting the skip path `create_profile_api` alone would leave it
+   in (that function never sets a workspace itself).
+3. Overwrite SOUL.md from `soul.md`, via
    `features.agent_config.service.update_soul`.
-3. If a workspace is already configured for that profile, overwrite its
-   workspace AGENTS.md from `agent.md`, via
+4. If a workspace is configured for that profile (from step 2, or already
+   set by hand), overwrite its workspace AGENTS.md from `agent.md`, via
    `features.agent_config.service.update_agent_instructions`. Skipped
-   (recorded, not an error) if no workspace is configured yet.
-4. Copy every applicable skill folder (global + this agent's own) into
+   (recorded, not an error) only if genuinely still unconfigured (e.g.
+   `HERMES_WEBUI_DEFAULT_WORKSPACE` unset outside a real container, so
+   step 2 itself couldn't run).
+5. Copy every applicable skill folder (global + this agent's own) into
    `<profile_home>/skills/<name>/`, via `seeder_kit.copy_skill_dirs`.
-5. Discover this agent's applicable tool directories (global + its own)
+6. Discover this agent's applicable tool directories (global + its own)
    via `seeder_kit.discover_tools_in_dirs` — validating the tool tree
    before anything is written, so a broken tool module is caught at seed
    time — then write one `mcp_servers.hermes-seeder` entry via
@@ -112,6 +123,61 @@ def _create_profile_if_missing(agent: AgentSpec) -> bool:
     except (ValueError, PermissionError, RuntimeError) as exc:
         raise AgentSeederError("agent_seeder_profile_create_failed", str(exc), 400) from exc
     return True
+
+
+def _ensure_agent_workspace(agent: AgentSpec, profile_home: Path) -> str | None:
+    """Create `<agent_workspaces_root>/<agent.slug>/` on disk and write it
+    into this profile's `config.yaml` as `workspace`, if that profile
+    doesn't already have one configured. Returns the workspace path
+    written, or `None` if nothing was done (an existing profile already
+    has its own `workspace`/`default_workspace` — never overwritten,
+    same "never clobber what's already configured" rule every other step
+    here follows).
+
+    This is what makes `agent.md` -> workspace AGENTS.md (see
+    `_apply_agent_instructions`) actually apply for a NEWLY seeded agent
+    instead of always hitting the `agent_config_workspace_not_configured`
+    skip path — `create_profile_api` itself never sets a workspace (see
+    `features/agent_config/service.py`'s own module docstring), so
+    without this every seeded agent needed one set by hand first.
+
+    Outside a real container (`HERMES_WEBUI_DEFAULT_WORKSPACE` unset —
+    `resolve_agent_workspaces_root()` raises `RuntimeError`), this is a
+    soft no-op, not a hard failure of the whole apply: `_apply_agent_instructions`
+    already has its own graceful "no workspace configured" skip path for
+    exactly this case, and every other step here (soul, skills, tools)
+    still needs to run regardless of whether a workspace could be
+    auto-created.
+    """
+    from hermes_webui_wrapper.config import resolve_agent_workspaces_root
+
+    config_path = profile_home / "config.yaml"
+    try:
+        config = load_profile_config(config_path)
+    except ValueError as exc:
+        raise AgentSeederError("agent_seeder_config_unreadable", str(exc), 500) from exc
+
+    if config.get("workspace") or config.get("default_workspace"):
+        return None
+
+    try:
+        workspaces_root = resolve_agent_workspaces_root()
+    except RuntimeError:
+        return None
+
+    workspace_dir = workspaces_root / agent.slug
+    try:
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise AgentSeederError("agent_seeder_workspace_create_failed", str(exc), 500) from exc
+
+    config["workspace"] = str(workspace_dir)
+    try:
+        save_profile_config(config_path, config)
+    except OSError as exc:
+        raise AgentSeederError("agent_seeder_config_write_failed", str(exc), 500) from exc
+
+    return str(workspace_dir)
 
 
 def _apply_soul(agent: AgentSpec) -> bool:
@@ -193,10 +259,15 @@ def _apply_agent(tree: SeederTree, agent: AgentSpec) -> dict[str, Any]:
     result: dict[str, Any] = {"agent": agent.slug, "display_name": agent.folder_name}
 
     result["profile_created"] = _create_profile_if_missing(agent)
+    profile_home = get_hermes_home_for_profile(agent.slug)
+
+    workspace_created = _ensure_agent_workspace(agent, profile_home)
+    if workspace_created:
+        result["workspace_created"] = workspace_created
+
     result["soul_updated"] = _apply_soul(agent)
     _apply_agent_instructions(agent, result)
 
-    profile_home = get_hermes_home_for_profile(agent.slug)
     result["skills_seeded"] = _apply_skills(tree, agent, profile_home)
     result.update(_apply_mcp_tools(tree, agent, profile_home))
 
