@@ -108,6 +108,7 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: None,
                 offset: None,
+                health: None,
             }),
         )
         .await;

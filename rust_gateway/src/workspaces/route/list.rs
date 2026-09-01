@@ -16,25 +16,37 @@ use crate::workspaces::WorkspaceStatus;
 /// Default page size for `GET /workspaces` when `limit` is omitted.
 const DEFAULT_LIST_LIMIT: i64 = 50;
 
-/// Upper bound on `limit`, enforced regardless of what a caller requests —
-/// see `../../../docs/list-workspaces-plan.md`: without this, `?limit=100000`
-/// could force one query to scan/return the entire table.
+/// Upper bound on `limit` regardless of what a caller requests.
 const MAX_LIST_LIMIT: i64 = 200;
 
-/// Per-workspace timeout for the live health check `list_workspaces_route`
-/// runs against every `Ready` row — see
-/// `../../../docs/list-workspaces-plan.md`'s "Live health check" section.
-/// Long enough for a genuinely healthy wrapper's ordinary response, short
-/// enough that one hung container cannot noticeably stall the whole list
-/// request (all rows are checked CONCURRENTLY, so the request's total
-/// added latency is bounded by this one constant, not by
-/// `rows_checked * timeout`).
+/// Per-workspace timeout for the live health check against each `Ready`
+/// row. All rows are checked concurrently, so total added latency is
+/// bounded by this constant, not by `rows_checked * timeout`.
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Deserialize)]
 pub struct ListWorkspacesQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// `None` → live health-check every `Ready` row (default). `Some("skip")`
+    /// → pure DB projection, `healthy: null` on every row. Any other value
+    /// is rejected with `400 invalid_health_mode`.
+    pub health: Option<String>,
+}
+
+/// What `list_workspaces_route` should do about live health-checking.
+#[derive(PartialEq, Eq, Debug)]
+enum HealthMode {
+    Live,
+    Skip,
+}
+
+fn parse_health_mode(health: Option<&str>) -> Result<HealthMode, ()> {
+    match health {
+        None => Ok(HealthMode::Live),
+        Some("skip") => Ok(HealthMode::Skip),
+        Some(_) => Err(()),
+    }
 }
 
 #[derive(Serialize)]
@@ -42,13 +54,10 @@ struct WorkspaceListItemData {
     workspace_id: String,
     name: String,
     status: &'static str,
-    /// Live result of checking this row's wrapper RIGHT NOW — NOT derived
-    /// from `status`. `false` for every `creating`/`failed` row (nothing
-    /// to check yet) and for a `ready` row whose live check just failed
-    /// (crashed/hung container since it was marked ready). `true` only
-    /// when a `ready` row's check just succeeded. See
-    /// `../../../docs/list-workspaces-plan.md`.
-    healthy: bool,
+    /// `None` when `?health=skip` (no check performed). Otherwise the
+    /// live result of checking this row's wrapper right now — not derived
+    /// from `status`.
+    healthy: Option<bool>,
     host_port: Option<i64>,
     desktop_port: Option<i64>,
     created_at: String,
@@ -65,20 +74,12 @@ struct ListWorkspacesData {
 ///
 /// Optional `?limit=<n>&offset=<n>` query params. `limit` defaults to
 /// `DEFAULT_LIST_LIMIT` and is capped at `MAX_LIST_LIMIT`; `offset`
-/// defaults to 0. Both must be non-negative — a negative value is a
-/// caller bug, rejected with `400 invalid_pagination` rather than
-/// silently clamped (see module/plan doc for why silent clamping is
-/// worse). A `limit` above the cap is NOT rejected — it's silently
-/// clamped down to `MAX_LIST_LIMIT`, since "you asked for more than we
-/// allow" is a normal, expected case, not a caller bug the way a
-/// negative number is; the response's echoed `limit` tells the caller
-/// what was actually used.
+/// defaults to 0. Both must be non-negative, rejected with
+/// `400 invalid_pagination` otherwise. A `limit` above the cap is silently
+/// clamped; the response's echoed `limit` reflects what was actually used.
 ///
-/// One SQL query, but NOT a pure DB projection: every `Ready` row's
-/// wrapper is health-checked live, right now, concurrently — see
-/// `../../../docs/list-workspaces-plan.md`'s "Live health check" section for
-/// why and its cost tradeoffs. `Creating`/`Failed` rows are never
-/// checked (no port to check).
+/// By default every `Ready` row's wrapper is health-checked live,
+/// concurrently; `?health=skip` skips that fanout entirely.
 pub async fn list_workspaces_route(
     State(state): State<Arc<WorkspacesState>>,
     Query(query): Query<ListWorkspacesQuery>,
@@ -102,9 +103,24 @@ pub async fn list_workspaces_route(
     }
     let limit = requested_limit.min(MAX_LIST_LIMIT);
 
+    let health_mode = match parse_health_mode(query.health.as_deref()) {
+        Ok(mode) => mode,
+        Err(()) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_health_mode",
+                "health must be omitted or set to 'skip'",
+            )
+        }
+    };
+
     match state.store.list(limit, offset).await {
         Ok(items) => {
-            let workspaces = check_health_and_build_list_items(&state.http_client, items).await;
+            let healthy_by_index = match health_mode {
+                HealthMode::Live => run_health_checks(&state.http_client, &items).await,
+                HealthMode::Skip => vec![None; items.len()],
+            };
+            let workspaces = build_list_items(items, healthy_by_index);
             success(
                 StatusCode::OK,
                 ListWorkspacesData {
@@ -125,24 +141,14 @@ pub async fn list_workspaces_route(
     }
 }
 
-/// Run every `Ready` item's live health check CONCURRENTLY (one
+/// Runs every `Ready` item's live health check CONCURRENTLY (one
 /// `tokio::task::JoinSet` task per item, not a sequential loop — see
-/// `HEALTH_CHECK_TIMEOUT`'s doc comment for why this matters), then
-/// assemble the final response items in the SAME order `items` came in
-/// (the store's `ORDER BY`, not task-completion order — a caller paging
-/// through results must see a stable order regardless of which
-/// container happened to answer its health check fastest).
-async fn check_health_and_build_list_items(
-    client: &reqwest::Client,
-    items: Vec<WorkspaceListItem>,
-) -> Vec<WorkspaceListItemData> {
+/// `HEALTH_CHECK_TIMEOUT`'s doc comment for why), returning results in the
+/// SAME order `items` came in (the store's `ORDER BY`, not
+/// task-completion order).
+async fn run_health_checks(client: &reqwest::Client, items: &[WorkspaceListItem]) -> Vec<Option<bool>> {
     let mut checks = tokio::task::JoinSet::new();
     for (index, item) in items.iter().enumerate() {
-        // Every other combination (not `Ready`, or — should be
-        // unreachable per `mark_ready`'s invariant, but handled anyway,
-        // failing closed — `Ready` with no recorded port) has nothing to
-        // check, so no task is spawned for it; it keeps its `false`
-        // default in `healthy_by_index` below.
         if let (WorkspaceStatus::Ready, Some(host_port)) = (&item.status, item.host_port) {
             let client = client.clone();
             let wrapper_port = host_port as u16;
@@ -155,16 +161,22 @@ async fn check_health_and_build_list_items(
         }
     }
 
-    let mut healthy_by_index = vec![false; items.len()];
+    let mut healthy_by_index = vec![Some(false); items.len()];
     while let Some(result) = checks.join_next().await {
-        // A task can only fail to join on panic — `check_wrapper_health`
-        // has no panicking path, but failing closed (leaving that row
-        // `false`) rather than unwrapping is still correct if it ever did.
         if let Ok((index, healthy)) = result {
-            healthy_by_index[index] = healthy;
+            healthy_by_index[index] = Some(healthy);
         }
     }
+    healthy_by_index
+}
 
+/// Projects store rows plus their (already-computed) `healthy` results into
+/// response items. `healthy_by_index[i]` is `None` in `?health=skip` mode,
+/// `Some(_)` (live result) otherwise.
+fn build_list_items(
+    items: Vec<WorkspaceListItem>,
+    healthy_by_index: Vec<Option<bool>>,
+) -> Vec<WorkspaceListItemData> {
     items
         .into_iter()
         .zip(healthy_by_index)
@@ -204,6 +216,7 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: None,
                 offset: None,
+                health: None,
             }),
         )
         .await;
@@ -243,6 +256,7 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: None,
                 offset: None,
+                health: None,
             }),
         )
         .await;
@@ -282,6 +296,7 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: None,
                 offset: None,
+                health: None,
             }),
         )
         .await;
@@ -331,6 +346,7 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: None,
                 offset: None,
+                health: None,
             }),
         )
         .await;
@@ -364,6 +380,7 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: None,
                 offset: None,
+                health: None,
             }),
         )
         .await;
@@ -382,6 +399,7 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: Some(-1),
                 offset: None,
+                health: None,
             }),
         )
         .await;
@@ -398,6 +416,7 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: None,
                 offset: Some(-1),
+                health: None,
             }),
         )
         .await;
@@ -418,11 +437,85 @@ mod tests {
             Query(ListWorkspacesQuery {
                 limit: Some(100_000),
                 offset: None,
+                health: None,
             }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert_eq!(body["data"]["limit"], MAX_LIST_LIMIT);
+    }
+
+    /// `?health=skip` on an empty store: pure DB projection, no rows to
+    /// check, but the mode itself must not error and must still return
+    /// the normal empty-array envelope.
+    #[tokio::test]
+    async fn list_workspaces_health_skip_returns_empty_array_when_none_exist() {
+        let state = temp_state().await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+                health: Some("skip".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["data"]["workspaces"], serde_json::json!([]));
+    }
+
+    /// `?health=skip` on a `Ready` row must report `healthy: null` — no
+    /// `check_wrapper_health` call was made at all, so there is no live
+    /// result to report, positive or negative (unlike default mode's
+    /// `false`, which means "checked and unreachable").
+    #[tokio::test]
+    async fn list_workspaces_health_skip_reports_healthy_null_for_a_ready_workspace() {
+        let state = temp_state().await;
+        create_workspace_route(
+            State(state.clone()),
+            Json(CreateWorkspaceRequest {
+                name: "skip-health-ws".to_string(),
+                password: None,
+            }),
+        )
+        .await;
+
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+                health: Some("skip".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        let workspaces = body["data"]["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0]["status"], "ready");
+        assert!(workspaces[0]["healthy"].is_null());
+    }
+
+    /// Any `health` value other than `skip` is a caller bug (e.g. a typo)
+    /// and must fail closed with `400 invalid_health_mode`, not silently
+    /// fall back to the default live-check behavior.
+    #[tokio::test]
+    async fn list_workspaces_rejects_unknown_health_mode() {
+        let state = temp_state().await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+                health: Some("bogus".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "invalid_health_mode");
     }
 }

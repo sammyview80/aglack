@@ -73,6 +73,36 @@ endpoint. This section documents the actual mechanism and what it costs.
   wrapper once per call. Acceptable at this project's current scale
   (dev-stage, no auth, small workspace counts) — revisit if that changes.
 
+## `?health=skip` mode: pure DB read for rails/sidebars
+
+The "Live health check" section above is the default, and stays the
+default for any caller that doesn't say otherwise. But not every caller
+needs it: a workspace-switcher rail/sidebar just wants an instant list
+to render — it doesn't need to know live reachability, and paying up to
+`HEALTH_CHECK_TIMEOUT` (2s) of tail latency, plus a real network call to
+every running container, on every render is wasted cost for that UI.
+
+`GET /workspaces?health=skip` opts into that: `list_workspaces_route`
+skips `run_health_checks`'s health-check fanout entirely (no
+`check_wrapper_health` calls, no spawned tasks) and passes a `None`
+`healthy_by_index` straight into `build_list_items`, which goes from
+`state.store.list(...)` to response items. Every item's `healthy` field
+is `null` in this mode — not `false` — because `false` means "checked
+and found unreachable," and skip mode performs no check at all.
+
+The parameter is absent-by-default and fails closed: omitting `health`
+keeps the existing live-check behavior unchanged, `health=skip` opts
+into the fast path, and any other value (e.g. a typo'd `health=skpi`)
+is rejected with `400 invalid_health_mode` rather than silently falling
+back to either mode — a caller that actually wanted live health should
+not silently get a stale skip response, and vice versa.
+
+A caller that needs to know real reachability (e.g. a workspace detail
+view before proxying a request into it) should keep using the default
+mode; `?health=skip` is only for a listing surface where being wrong
+about live health for a moment is acceptable in exchange for instant
+render.
+
 ## Naming: `idempotency_key` IS the workspace name
 
 `workspace_creations.idempotency_key` is the caller-supplied `name` from
