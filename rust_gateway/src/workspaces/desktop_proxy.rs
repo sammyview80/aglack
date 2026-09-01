@@ -109,7 +109,21 @@ async fn desktop_proxy(
 
     if let Some(ws) = ws {
         let target_ws_url = format!("ws://127.0.0.1:{}{rewritten_path}", ports.desktop_port);
-        return ws.on_upgrade(move |socket| relay_websocket(socket, target_ws_url));
+        // Real bug found live: negotiate the SAME `binary` subprotocol
+        // the real KasmVNC backend always returns (confirmed live: its
+        // nginx answers with `sec-websocket-protocol: binary` — see this
+        // module's doc comment and `build_upstream_request`, which
+        // already sets this on the OUTBOUND gateway->container leg).
+        // Without `.protocols(...)` here, axum accepts the browser's
+        // upgrade but returns no `Sec-WebSocket-Protocol` header at all,
+        // leaving the browser's own `WebSocket.protocol` empty — a real,
+        // observable divergence from what a direct connection provides,
+        // and the root cause of a real "stuck on Connecting..." report
+        // (byte relay itself works either way; this is about matching
+        // the real backend's exact contract on the browser-facing leg).
+        return ws
+            .protocols(["binary"])
+            .on_upgrade(move |socket| relay_websocket(socket, target_ws_url));
     }
 
     let target_addr = format!("127.0.0.1:{}", ports.desktop_port);
@@ -349,12 +363,44 @@ mod tests {
 
         // The "browser": a real tokio-tungstenite WebSocket client
         // connecting to the GATEWAY's desktop route, not the upstream
-        // directly — proving the whole relay chain works.
+        // directly — proving the whole relay chain works. Real browsers
+        // (via KasmVNC's own `rfb.js`, `_wsProtocols = ['binary']`)
+        // request the `binary` subprotocol on the upgrade — a bare
+        // `connect_async(url)` with no headers does NOT request any
+        // subprotocol, which is a different, non-representative request
+        // shape than a real browser sends; `into_client_request()` +
+        // `SEC_WEBSOCKET_PROTOCOL` here matches the real one.
         let gateway_ws_url =
             format!("ws://127.0.0.1:{gateway_port}/workspaces/ws-1/desktop/websockify");
-        let (mut browser_socket, _response) = tokio_tungstenite::connect_async(&gateway_ws_url)
+        let mut browser_request = gateway_ws_url.as_str().into_client_request().unwrap();
+        browser_request.headers_mut().insert(
+            http::header::SEC_WEBSOCKET_PROTOCOL,
+            http::HeaderValue::from_static("binary"),
+        );
+        let (mut browser_socket, response) = tokio_tungstenite::connect_async(browser_request)
             .await
             .expect("browser connects through the gateway's desktop proxy");
+
+        // Real bug found live: the gateway's own upgrade response to the
+        // BROWSER must echo back a negotiated `Sec-WebSocket-Protocol`,
+        // matching what the real KasmVNC backend itself always sends
+        // (confirmed live against a real container's nginx: it returns
+        // `sec-websocket-protocol: binary`) — a browser's own WebSocket
+        // client ending up with `.protocol === ""` instead of `"binary"`
+        // is a real, observable divergence from the real backend's
+        // contract (this is the root cause of the reported "stuck on
+        // Connecting..." — KasmVNC's client never saw the header a real
+        // deployment always provides).
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+                .and_then(|v| v.to_str().ok()),
+            Some("binary"),
+            "the gateway's response to the BROWSER's upgrade request must negotiate the \
+             'binary' subprotocol, exactly like the real KasmVNC backend does — without it \
+             the browser's WebSocket.protocol is empty, unlike a real direct connection"
+        );
 
         browser_socket
             .send(TungsteniteMessage::Text("hello desktop".to_string()))
