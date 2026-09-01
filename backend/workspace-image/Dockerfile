@@ -114,8 +114,32 @@ RUN /opt/hermes/native/fts5_cjk/build.sh /opt/hermes/native/fts5_cjk/dist
 # built for it there anymore (see the wrapper install right below).
 #
 # backend/upstream/ is NEVER modified — see revamp/backend/UPSTREAM.md.
+#
+# backend/seeder_kit/ (the framework-agnostic tool-discovery/skill-copy
+# library, see its own README.md) and backend/seeder/ (the actual seed
+# CONTENT — SOUL.md/AGENTS.md/tools/skills per mode, see its own README.md)
+# are copied in as the SAME sibling layout the wrapper's own code already
+# assumes: `features/agent_seeder/service.py`'s `_default_seeder_root()`
+# resolves `<wrapper-root>/../seeder` at RUNTIME — must exist as a real
+# directory in the final image, same as upstream/wrapper's sibling
+# relationship. `seeder_kit` additionally needs to be INSTALLED (below),
+# separately from and BEFORE the wrapper.
+#
+# Real bug this fixes: without these two COPY lines, a container built
+# from this image has no `agent_seeder`/`agent_config` native routes at
+# all — the wrapper install below fails outright resolving the missing
+# `seeder-kit` dependency, or (on an image built before that dependency
+# existed) the wrapper silently has no seeder content to apply, and any
+# request to `/api/wrapper/v1/agent-seeder/*` or `/agent-config/*` falls
+# through to the proxied catch-all, which replays it through UPSTREAM's
+# OWN CSRF check (`_check_csrf`) — producing "Cross-origin mismatch - check
+# reverse proxy headers" for a request that was never supposed to go
+# anywhere near that code path. Confirmed live: this exact symptom on an
+# "Apply mode" click against a container built before this fix.
 RUN mkdir -p /opt/hermes-webui
 COPY backend/upstream /opt/hermes-webui/upstream
+COPY backend/seeder_kit /opt/hermes-webui/seeder_kit
+COPY backend/seeder /opt/hermes-webui/seeder
 COPY backend/wrapper /opt/hermes-webui/wrapper
 
 # Install the wrapper INTO the agent's own venv — NOT a separate
@@ -127,12 +151,28 @@ COPY backend/wrapper /opt/hermes-webui/wrapper
 # Verified live in a running container: fastapi/uvicorn/pyyaml/cryptography
 # (the wrapper's own runtime deps) are ALREADY present in /opt/hermes/.venv
 # as hermes-agent's own transitive dependencies — this install only adds
-# the wrapper package itself, not a second copy of its dependency tree.
+# the wrapper package itself (and seeder-kit, its own small dependency —
+# see the seeder_kit/seeder COPY block above), not a second copy of the
+# agent's whole dependency tree.
 # `_default_upstream_root()` in the wrapper's own config.py resolves
 # `<wrapper-package-root>/../upstream` — installing FROM
 # `/opt/hermes-webui/wrapper` (sibling of `/opt/hermes-webui/upstream`,
 # the exact layout already in this tree) keeps that default resolution
-# correct with zero extra config.
+# correct with zero extra config. Same reasoning now applies to
+# `/opt/hermes-webui/seeder` for `_default_seeder_root()`.
+#
+# `seeder-kit` is installed as its OWN separate `-e` step, BEFORE the
+# wrapper, and the wrapper's `pyproject.toml` depends on the plain name
+# `seeder-kit` (no `file://` URL) — see that file's own comment on this
+# dependency for why: `uv pip install -e <dir>` (this exact install mode)
+# cannot resolve a RELATIVE `file://../seeder_kit` URL declared inside a
+# package's own metadata, and hardcoding an absolute
+# `file:///opt/hermes-webui/seeder_kit` path into a manifest meant to also
+# work for local dev (a different install root) is the wrong fix. Order
+# matters here: this must run AFTER seeder_kit is a real installed
+# package in this venv, or the wrapper's dependency resolution fails
+# needing something named `seeder-kit` that doesn't exist yet.
+RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/seeder_kit
 RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/wrapper
 
 # ---- Stage 3: the final image — webtop desktop + built hermes venv + our own WebUI ----
