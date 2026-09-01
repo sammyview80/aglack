@@ -159,6 +159,7 @@ pub async fn diagnose_workspace(
     let before = snapshot(
         launcher,
         http_client,
+        workspace_id,
         &container_name,
         &record,
         timeouts.health_check,
@@ -208,6 +209,7 @@ pub async fn diagnose_workspace(
                     timeouts.post_restart_wrapper
                 )),
                 wait_readiness(wait_for_desktop_ready(
+                    workspace_id,
                     desktop_port as u16,
                     timeouts.post_restart_desktop
                 )),
@@ -263,6 +265,7 @@ pub async fn diagnose_workspace(
 async fn snapshot(
     launcher: &dyn ContainerLauncher,
     http_client: &reqwest::Client,
+    workspace_id: &str,
     container_name: &str,
     record: &WorkspaceRecord,
     health_check_timeout: Duration,
@@ -274,7 +277,7 @@ async fn snapshot(
     } = launcher.inspect(container_name).await?;
 
     let (wrapper_healthy, desktop_healthy) = if running {
-        check_both_services(http_client, record, health_check_timeout).await
+        check_both_services(http_client, workspace_id, record, health_check_timeout).await
     } else {
         (false, false)
     };
@@ -297,6 +300,7 @@ async fn snapshot(
 /// invariant — see `resolve.rs`) fails closed as unhealthy on both.
 async fn check_both_services(
     http_client: &reqwest::Client,
+    workspace_id: &str,
     record: &WorkspaceRecord,
     timeout: Duration,
 ) -> (bool, bool) {
@@ -305,7 +309,7 @@ async fn check_both_services(
     };
     tokio::join!(
         check_wrapper_health(http_client, wrapper_port as u16, timeout),
-        check_desktop_health(http_client, desktop_port as u16, timeout),
+        check_desktop_health(http_client, workspace_id, desktop_port as u16, timeout),
     )
 }
 

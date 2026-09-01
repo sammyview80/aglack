@@ -126,21 +126,21 @@ async fn desktop_proxy(
             .on_upgrade(move |socket| relay_websocket(socket, target_ws_url));
     }
 
+    // Real bug found live: unlike the wrapper (hermes_webui_proxy.rs) and
+    // onboarding routes, which strip this gateway's own routing prefix
+    // before forwarding (the wrapper is mounted at ITS OWN root and has
+    // no idea it's reached through a prefix), the desktop's plain HTTP
+    // requests must forward the ORIGINAL, UNSTRIPPED path — once
+    // `SUBFOLDER` is set (see `container.rs`'s `desktop_subfolder_env_arg`),
+    // the container's own kclient app is mounted at that exact prefix,
+    // and nginx passes the request URI straight through unmodified.
+    // Confirmed live: a bare `/` (the old, stripped behavior) 404s
+    // ("Cannot GET /") once SUBFOLDER changes where kclient answers;
+    // the full original `/workspaces/<id>/desktop/...` path returns 200.
+    // `None` here means `forward_to` forwards `req`'s own path+query
+    // completely unchanged — see its own doc comment.
     let target_addr = format!("127.0.0.1:{}", ports.desktop_port);
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-    let full_rewritten_path = format!("{rewritten_path}{query}");
-
-    forward_to(
-        &state.http_client,
-        &target_addr,
-        req,
-        Some(&full_rewritten_path),
-    )
-    .await
+    forward_to(&state.http_client, &target_addr, req, None).await
 }
 
 /// Relay frames bidirectionally between the browser's already-upgraded
@@ -251,10 +251,19 @@ mod tests {
     }
 
     /// Plain (non-WebSocket) HTTP requests — the KasmVNC web client's own
-    /// HTML/JS/CSS — must forward exactly like the other two proxy
-    /// routes, via a real network hop.
+    /// HTML/JS/CSS, and any of its own plain XHR calls — must forward
+    /// with the ORIGINAL, UNSTRIPPED path, unlike the wrapper/onboarding
+    /// proxy routes. Real bug found live: once `SUBFOLDER` is set (see
+    /// `container.rs`'s `desktop_subfolder_env_arg`), the container's own
+    /// kclient app is mounted at that exact `/workspaces/<id>/desktop/`
+    /// prefix, and nginx passes the request URI straight through
+    /// unmodified — stripping this gateway's own routing prefix before
+    /// forwarding (as `hermes_webui_proxy.rs`/`onboarding_proxy.rs` both
+    /// correctly do, since THEIR backends are mounted at their own root)
+    /// would send kclient a bare `/` it has nothing mounted at anymore,
+    /// confirmed live as a real 404 ("Cannot GET /").
     #[tokio::test]
-    async fn plain_http_request_forwards_to_recorded_desktop_port() {
+    async fn plain_http_request_forwards_the_full_unstripped_path() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind echo desktop");
@@ -291,7 +300,60 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), "/index.html");
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).unwrap(),
+            "/workspaces/ws-1/desktop/index.html",
+            "the backend (kclient, once SUBFOLDER-mounted) must receive the FULL original \
+             path, not this gateway's own routing prefix stripped off"
+        );
+    }
+
+    /// The root case (`desktop_proxy_route_root`, no further path
+    /// segments) must ALSO forward its own full original path
+    /// (`/workspaces/:id/desktop/`) — not a bare `/` — for the same
+    /// reason as the wildcard case above.
+    #[tokio::test]
+    async fn root_path_forwards_the_full_unstripped_path() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind echo desktop");
+        let desktop_port = listener.local_addr().unwrap().port();
+        let echo_handler = |req: HttpRequest<Body>| async move { req.uri().path().to_string() };
+        let app: Router = Router::new()
+            .route("/", any_method(echo_handler))
+            .route("/*path", any_method(echo_handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let store = temp_store().await;
+        store
+            .begin_creation("my-workspace", "ws-1")
+            .await
+            .expect("begin_creation");
+        store
+            .mark_ready("my-workspace", "hermes-ws-ws-1", 12345, desktop_port)
+            .await
+            .expect("mark_ready");
+        let state = state_with_store(store);
+
+        let response = desktop_proxy_route_root(
+            State(state),
+            Path("ws-1".to_string()),
+            None,
+            HttpRequest::builder()
+                .uri("/workspaces/ws-1/desktop/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).unwrap(),
+            "/workspaces/ws-1/desktop/"
+        );
     }
 
     /// The real thing this whole module exists for: a genuine WebSocket
