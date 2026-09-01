@@ -274,20 +274,77 @@ pub(crate) async fn wait_for_wrapper_ready(
     }
 }
 
-/// Poll `http://127.0.0.1:<port>/` (the desktop nginx's own root — see
-/// `desktop_proxy.rs`'s module doc for the confirmed-live nginx config)
-/// until it answers or `timeout` elapses. Verified live that the desktop
-/// reliably comes up faster than the wrapper (~2s vs ~3.5s), so this is a
-/// short timeout — it exists to make `Ready` a real guarantee for the
-/// desktop too, not because the desktop is expected to be the slow part.
+/// The single source of truth for the desktop's subpath — the SAME
+/// string used both as the container's `SUBFOLDER` env var (see
+/// `desktop_subfolder_env_arg`) and as the path segment every desktop
+/// HTTP check must request instead of the bare root. Real bug found live
+/// (via a real headless-Chrome + CDP session, then confirmed by manually
+/// launching a real container): once `SUBFOLDER` is set, the container's
+/// own kclient app mounts its ENTIRE Express app under that exact path
+/// (`app.use(SUBFOLDER, baseRouter)`) — a bare `GET /` against the
+/// desktop port now 404s; only `GET <this path>` answers. Every caller
+/// that talks to the desktop's HTTP port (`wait_for_desktop_ready`,
+/// `check_desktop_health`) MUST use this same path, not a hardcoded `/`,
+/// or the fix that made the browser's OWN websocket connect to the right
+/// place breaks the gateway's own readiness/health checks against that
+/// same container instead.
+fn desktop_subpath(workspace_id: &str) -> String {
+    format!("/workspaces/{workspace_id}/desktop/")
+}
+
+/// Build the `-e SUBFOLDER=<value>` argument (as one `KEY=VALUE` string,
+/// the exact shape `docker create -e` expects) so the webtop image's
+/// bundled KasmVNC client ("kclient", `/kclient/index.js` inside the
+/// container) knows it is being served from a subpath instead of the
+/// site root.
+///
+/// This is REQUIRED, not cosmetic — verified live with a real headless
+/// Chrome + CDP session: without it, the desktop's own VNC client (its
+/// `app/ui.js`'s `UI.connect()`) builds an ABSOLUTE websocket URL as
+/// `ws://<host>[:<port>]/websockify` — no path prefix at all — because
+/// `kclient`'s own server-rendered iframe template only injects the
+/// correct subpath into the client's `path` setting when `SUBFOLDER` is
+/// set (see `kclient`'s own `index.js`: `SUBFOLDER != '/'` computes
+/// `PATH = '&path=' + SUBFOLDER.substring(1) + 'websockify'`, injected
+/// into the iframe src via `<%- path -%>`). Without it, the browser's
+/// real WebSocket connects to the GATEWAY'S OWN ROOT `/websockify` —
+/// which has no route — and the handshake never completes: this is the
+/// exact, confirmed mechanism behind a real "stuck on Connecting..."
+/// report (`Network.webSocketCreated` fires, no
+/// `Network.webSocketHandshakeResponseReceived` ever follows).
+///
+/// The trailing slash is REQUIRED: `kclient` computes
+/// `SUBFOLDER.substring(1) + 'websockify'` with no separator inserted —
+/// a value without a trailing slash would produce e.g.
+/// `workspaces/<id>/desktopwebsockify` (missing path segment boundary).
+/// Also required as the exact prefix `kclient`'s own `app.use(SUBFOLDER,
+/// baseRouter)` mounts its whole Express app under, so its other routes
+/// (`/vnc/*`, `/public/*`, `/manifest.json`, the file-browser socket.io
+/// namespace) resolve correctly through the gateway too, not just the
+/// VNC websocket specifically.
+fn desktop_subfolder_env_arg(workspace_id: &str) -> String {
+    format!("SUBFOLDER={}", desktop_subpath(workspace_id))
+}
+
+/// Poll `http://127.0.0.1:<port><desktop_subpath>` (see `desktop_subpath`
+/// — NOT the bare root; the desktop's own app is mounted there once
+/// `SUBFOLDER` is set) until it answers or `timeout` elapses. Verified
+/// live that the desktop reliably comes up faster than the wrapper (~2s
+/// vs ~3.5s), so this is a short timeout — it exists to make `Ready` a
+/// real guarantee for the desktop too, not because the desktop is
+/// expected to be the slow part.
 ///
 /// `pub(crate)` — see `wait_for_wrapper_ready`'s doc comment; `diagnosis.rs`
 /// reuses this too.
 pub(crate) async fn wait_for_desktop_ready(
+    workspace_id: &str,
     desktop_port: u16,
     timeout: Duration,
 ) -> Result<(), super::CreateWorkspaceError> {
-    let url = format!("http://127.0.0.1:{desktop_port}/");
+    let url = format!(
+        "http://127.0.0.1:{desktop_port}{}",
+        desktop_subpath(workspace_id)
+    );
     let client = reqwest::Client::new();
     let deadline = tokio::time::Instant::now() + timeout;
     let poll_interval = Duration::from_millis(500);
@@ -344,17 +401,21 @@ pub(crate) async fn check_wrapper_health(
 }
 
 /// Same shape and same reasoning as `check_wrapper_health` immediately
-/// above, but against the desktop nginx's own root (matching
-/// `wait_for_desktop_ready`'s URL) instead of the wrapper's health
-/// endpoint. Used by `diagnosis.rs` so a diagnosis report never treats
-/// the desktop as a second-class service that "we don't bother"
+/// above, but against the desktop's own subpath (see `desktop_subpath` —
+/// NOT the bare root, once `SUBFOLDER` is set) instead of the wrapper's
+/// health endpoint. Used by `diagnosis.rs` so a diagnosis report never
+/// treats the desktop as a second-class service that "we don't bother"
 /// checking live — see `../../docs/diagnose-workspace-plan.md`.
 pub(crate) async fn check_desktop_health(
     client: &reqwest::Client,
+    workspace_id: &str,
     desktop_port: u16,
     timeout: Duration,
 ) -> bool {
-    let url = format!("http://127.0.0.1:{desktop_port}/");
+    let url = format!(
+        "http://127.0.0.1:{desktop_port}{}",
+        desktop_subpath(workspace_id)
+    );
     match tokio::time::timeout(timeout, client.get(&url).send()).await {
         Ok(Ok(response)) => response.status().is_success(),
         Ok(Err(_)) | Err(_) => false,
@@ -372,6 +433,7 @@ impl ContainerLauncher for DockerCliLauncher {
         let desktop_port = pick_free_port().await?;
         let wrapper_publish_arg = format!("{wrapper_port}:8787");
         let desktop_publish_arg = format!("{desktop_port}:3000");
+        let subfolder_env_arg = desktop_subfolder_env_arg(workspace_id);
 
         run_docker(
             &container_name,
@@ -383,6 +445,8 @@ impl ContainerLauncher for DockerCliLauncher {
                 &wrapper_publish_arg,
                 "-p",
                 &desktop_publish_arg,
+                "-e",
+                &subfolder_env_arg,
                 &self.image_tag,
             ],
         )
@@ -393,7 +457,7 @@ impl ContainerLauncher for DockerCliLauncher {
         run_docker(&container_name, &["start", &container_name]).await?;
 
         wait_for_wrapper_ready(wrapper_port, Duration::from_secs(30)).await?;
-        wait_for_desktop_ready(desktop_port, Duration::from_secs(15)).await?;
+        wait_for_desktop_ready(workspace_id, desktop_port, Duration::from_secs(15)).await?;
 
         Ok(LaunchedContainer {
             container_name,
@@ -810,6 +874,24 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Real bug found live (via a real headless-Chrome + CDP session):
+    /// without `SUBFOLDER` set to the exact gateway-facing prefix, the
+    /// desktop's own VNC client opens its websocket at the gateway's
+    /// ROOT (`ws://<host>/websockify`, no route there) instead of the
+    /// per-workspace path — the handshake then never completes, which is
+    /// the exact mechanism behind a real "stuck on Connecting..." report.
+    #[test]
+    fn desktop_subfolder_env_arg_has_the_workspaces_prefix_and_trailing_slash() {
+        let arg = desktop_subfolder_env_arg("abc-123");
+        assert_eq!(
+            arg, "SUBFOLDER=/workspaces/abc-123/desktop/",
+            "kclient's own index.js computes `SUBFOLDER.substring(1) + 'websockify'` with \
+             no separator inserted — a missing trailing slash would produce a malformed path \
+             like 'desktopwebsockify', and a wrong prefix would point the client's websocket \
+             at a path this gateway doesn't route at all"
+        );
+    }
+
     /// Pure string-content assertions on the generated boot script — the
     /// real `docker create`/`cp`/`start` sequence + actual container
     /// behavior is verified by a separate manual end-to-end run (see
@@ -951,5 +1033,99 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .await;
         }
+    }
+
+    /// Accept exactly one real HTTP connection and answer 200 ONLY if the
+    /// request line's path exactly matches `expected_path`, 404
+    /// otherwise — proves a caller requested the SUBFOLDER-prefixed path
+    /// specifically, not just "any path happened to return 200" (a naive
+    /// always-200 fixture would silently pass even after the real
+    /// regression this guards against — see `desktop_subpath`'s doc
+    /// comment for the live bug this is about).
+    async fn serve_ok_only_for_path(listener: TcpListener, expected_path: &'static str) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            let request_line = String::from_utf8_lossy(&buf[..n]);
+            let requested_path = request_line
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("");
+            let response = if requested_path == expected_path {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
+            } else {
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .as_slice()
+            };
+            let _ = stream.write_all(response).await;
+        }
+    }
+
+    /// Real bug found live: `wait_for_desktop_ready` used to check the
+    /// bare root, but once `SUBFOLDER` is set (see
+    /// `desktop_subfolder_env_arg`), the desktop's own app answers ONLY
+    /// at `/workspaces/<id>/desktop/` — a bare `/` 404s. This proves the
+    /// function requests the CORRECT prefixed path specifically (a server
+    /// that only answers 200 there, 404 everywhere else, including bare
+    /// `/`).
+    #[tokio::test]
+    async fn wait_for_desktop_ready_requests_the_workspace_subpath_not_bare_root() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        tokio::spawn(serve_ok_only_for_path(
+            listener,
+            "/workspaces/ws-123/desktop/",
+        ));
+
+        let result = wait_for_desktop_ready("ws-123", port, Duration::from_secs(2)).await;
+        assert!(
+            result.is_ok(),
+            "must succeed against a server answering the correct subpath"
+        );
+    }
+
+    /// Same bug, `check_desktop_health` side (used by `diagnosis.rs`) —
+    /// a server answering only at the workspace's subpath must be
+    /// reported healthy; one answering only at the bare root (the OLD,
+    /// wrong behavior) must be reported UNHEALTHY, since that's not
+    /// where the real desktop app answers once `SUBFOLDER` is set.
+    #[tokio::test]
+    async fn check_desktop_health_is_true_only_for_the_workspace_subpath() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        tokio::spawn(serve_ok_only_for_path(
+            listener,
+            "/workspaces/ws-456/desktop/",
+        ));
+
+        let client = reqwest::Client::new();
+        let healthy = check_desktop_health(&client, "ws-456", port, Duration::from_secs(2)).await;
+        assert!(healthy);
+    }
+
+    #[tokio::test]
+    async fn check_desktop_health_is_false_when_server_only_answers_bare_root() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        // Simulates the OLD, wrong behavior: a server that only answers
+        // "/" — exactly what the desktop's own app stops doing once
+        // SUBFOLDER is set (see desktop_subpath's doc comment).
+        tokio::spawn(serve_ok_only_for_path(listener, "/"));
+
+        let client = reqwest::Client::new();
+        let healthy = check_desktop_health(&client, "ws-789", port, Duration::from_secs(2)).await;
+        assert!(
+            !healthy,
+            "a server that only answers bare '/' must be reported unhealthy — that's not \
+             where the real desktop app answers once SUBFOLDER is set"
+        );
     }
 }
