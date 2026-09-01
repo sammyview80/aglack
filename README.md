@@ -73,6 +73,71 @@ Already set up and just want to run again? Use `./run.sh` directly — it
 is what `bootstrap.sh` hands off to; see its own header comment for
 exactly what it starts.
 
+## `aglack` CLI
+
+A single dev CLI (`cli/aglack`, plain POSIX/bash — no build step, no
+runtime dependency of its own) that wraps this project's scripts and
+tools behind one consistent entrypoint, so you never have to remember
+which subdirectory a given check lives in.
+
+### Install
+
+This repo is **private** — GitHub returns 404 for an unauthenticated
+`curl` of a raw file on a private repo, so a bare
+`curl https://raw.githubusercontent.com/... | sh` does **not** work here
+(verified: it 404s). The installer instead uses **`git` over SSH** (your
+existing repo access) to fetch its own source, then symlinks the CLI —
+this is the accurate "one line" install for a private repo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sammyview80/aglack/aglack/cli/install.sh -o /tmp/aglack-install.sh \
+  && sh /tmp/aglack-install.sh
+```
+
+(Downloading the installer script itself over `curl` still needs
+either a public copy of just that one file, or `gh auth token` /
+`Authorization: token` header — if you don't have that set up yet, skip
+straight to running it from a checkout you already have, below.)
+
+If you already have a checkout (e.g. from Install above), just run it
+directly — no curl needed:
+
+```bash
+sh cli/install.sh
+```
+
+Either way it clones (or updates) the repo to `~/.aglack/src` and
+symlinks `cli/aglack` onto your `PATH` (`~/.local/bin` by default).
+Re-running it updates the checkout and re-links the CLI — safe to run
+again any time. See `cli/install.sh`'s own header for every env override
+(`AGLACK_SRC_DIR`, `AGLACK_BIN_DIR`, `AGLACK_REPO`, `AGLACK_BRANCH`).
+
+Already have a checkout and don't want a second copy under
+`~/.aglack/src`? Skip the installer and just add `cli/` to your `PATH`,
+or call it directly: `./cli/aglack help`.
+
+### Usage
+
+```bash
+aglack help                    # full command list
+aglack bootstrap                # setup (if needed) + run everything
+aglack up                       # run everything (assumes setup already done)
+aglack install-deps             # just the setup half
+aglack test                     # run every suite (gateway, wrapper, seeder, frontend)
+aglack test gateway              # just one suite
+aglack image build               # docker build the workspace-image
+aglack workspace list            # GET /workspaces on the real gateway
+aglack workspace create [name]   # POST /workspaces — create a real container
+aglack workspace rm <id>         # DELETE /workspaces/:id
+aglack status                    # is the gateway reachable?
+```
+
+Every command is a thin wrapper — `aglack up` runs `run.sh`, `aglack test
+gateway` runs `cargo test`, `aglack image build` runs the same `docker
+build` from the Install section above, `aglack workspace ...` calls the
+gateway's own HTTP API (see `rust_gateway/src/app.rs`'s routes). Nothing
+here reimplements those tools; it only gives one name to remember.
+
 ### Manual setup (equivalent, step by step)
 
 ```bash

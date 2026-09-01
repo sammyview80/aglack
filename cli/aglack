@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# aglack — dev CLI for the hermano project (rust_gateway + backend/wrapper
+# + frontend + workspace-image).
+#
+# Usage: aglack <command> [args]
+#
+# This is a thin wrapper: every command below does exactly what the
+# project's own scripts/tools already do (bootstrap.sh, run.sh, cargo,
+# pytest, npm, docker) — nothing here reimplements them, it only gives
+# one consistent entrypoint so a developer never has to remember which
+# subdirectory a given check lives in.
+set -euo pipefail
+
+# ── Locate the project root ─────────────────────────────────────────────────
+# Resolve relative to THIS script's real location (following symlinks),
+# not the caller's $PWD, so `aglack` works from any directory once
+# installed — same reasoning as run.sh's own ROOT resolution.
+resolve_root() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  local script_dir
+  script_dir="$(cd -P "$(dirname "$src")" && pwd)"
+  # This script lives at <root>/cli/aglack when run from a checkout.
+  if [ -f "$script_dir/../run.sh" ]; then
+    (cd "$script_dir/.." && pwd)
+    return
+  fi
+  echo "" # signal: not found
+}
+
+ROOT="$(resolve_root)"
+if [ -z "$ROOT" ] && [ -n "${AGLACK_ROOT:-}" ]; then
+  ROOT="$AGLACK_ROOT"
+fi
+if [ -z "$ROOT" ]; then
+  echo "aglack: cannot locate the hermano project root." >&2
+  echo "  Run this from inside a checkout, or set AGLACK_ROOT=/path/to/hermano." >&2
+  exit 1
+fi
+
+# ── Shared config (best-effort; commands that need it check for themselves) ──
+GATEWAY_URL="${AGLACK_GATEWAY_URL:-}"
+if [ -z "$GATEWAY_URL" ] && [ -f "$ROOT/rust_gateway/.env" ]; then
+  host="$(grep -m1 '^GATEWAY_HOST=' "$ROOT/rust_gateway/.env" | cut -d= -f2- || true)"
+  port="$(grep -m1 '^GATEWAY_PORT=' "$ROOT/rust_gateway/.env" | cut -d= -f2- || true)"
+  [ -n "$host" ] && [ -n "$port" ] && GATEWAY_URL="http://${host}:${port}"
+fi
+GATEWAY_URL="${GATEWAY_URL:-http://127.0.0.1:8080}"
+
+usage() {
+  cat <<EOF
+aglack — dev CLI for the hermano project
+
+Usage: aglack <command> [args]
+
+Setup
+  install-deps        Install frontend deps + copy .env files if missing
+                       (same as ./bootstrap.sh's setup half, no run)
+
+Run (local dev, routing-only stack)
+  up                   Start rust_gateway + test_backend + frontend
+                       (same as ./run.sh; foreground, Ctrl+C stops all)
+  bootstrap            Setup (if needed) then up (same as ./bootstrap.sh)
+
+Test
+  test                 Run every suite: cargo test, pytest x2, npm build
+  test gateway          -> (cd rust_gateway && cargo test)
+  test wrapper           -> (cd backend/wrapper && pytest)
+  test seeder            -> (cd backend/seeder_kit && pytest)
+  test frontend           -> (cd frontend && npm run build)
+
+Docker / real workspace containers
+  image build           Build the workspace-image Docker image
+                         (hermes-workspace:dev)
+  workspace create [name]   POST /workspaces — create a real container
+  workspace list            GET  /workspaces  — list all workspaces
+  workspace rm <id>          DELETE /workspaces/:id
+  workspace diagnose <id>    POST /workspaces/:id/diagnose
+
+Info
+  status               Ping the gateway (GET /workspaces) and report up/down
+  version              Print aglack's own version
+  help                 Show this message
+
+Env overrides:
+  AGLACK_ROOT           project root (auto-detected by default)
+  AGLACK_GATEWAY_URL    gateway base URL (default: read from
+                        rust_gateway/.env, else http://127.0.0.1:8080)
+EOF
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "aglack: required command '$1' not found on PATH." >&2
+    exit 1
+  }
+}
+
+cmd_install_deps() {
+  if [ ! -f "$ROOT/.env.shared" ]; then
+    echo "aglack: creating .env.shared from .env.shared.example..."
+    cp "$ROOT/.env.shared.example" "$ROOT/.env.shared"
+  fi
+  if [ ! -f "$ROOT/rust_gateway/.env" ]; then
+    echo "aglack: creating rust_gateway/.env from rust_gateway/.env.example..."
+    cp "$ROOT/rust_gateway/.env.example" "$ROOT/rust_gateway/.env"
+  fi
+  if [ -f "$ROOT/frontend/.env.example" ] && [ ! -f "$ROOT/frontend/.env" ]; then
+    echo "aglack: creating frontend/.env from frontend/.env.example..."
+    cp "$ROOT/frontend/.env.example" "$ROOT/frontend/.env"
+  fi
+  if [ ! -d "$ROOT/frontend/node_modules" ]; then
+    require_cmd npm
+    echo "aglack: installing frontend dependencies (npm install)..."
+    (cd "$ROOT/frontend" && npm install)
+  fi
+  echo "aglack: setup done."
+}
+
+cmd_up() {
+  require_cmd cargo
+  require_cmd npm
+  exec "$ROOT/run.sh"
+}
+
+cmd_bootstrap() {
+  exec "$ROOT/bootstrap.sh"
+}
+
+cmd_test() {
+  local target="${1:-all}"
+  case "$target" in
+    all)
+      cmd_test gateway
+      cmd_test wrapper
+      cmd_test seeder
+      cmd_test frontend
+      ;;
+    gateway)
+      require_cmd cargo
+      (cd "$ROOT/rust_gateway" && cargo test)
+      ;;
+    wrapper)
+      local py="$ROOT/backend/wrapper/.venv/bin/pytest"
+      [ -x "$py" ] || py="pytest"
+      require_cmd "${py##*/}"
+      (cd "$ROOT/backend/wrapper" && "$py")
+      ;;
+    seeder)
+      require_cmd python3
+      (cd "$ROOT/backend/seeder_kit" && python3 -m pytest)
+      ;;
+    frontend)
+      require_cmd npm
+      (cd "$ROOT/frontend" && npm run build)
+      ;;
+    *)
+      echo "aglack: unknown test target '$target' (want: all|gateway|wrapper|seeder|frontend)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+cmd_image_build() {
+  require_cmd docker
+  local tag="${1:-hermes-workspace:dev}"
+  (cd "$ROOT/backend" && docker build -t "$tag" -f "$ROOT/backend/workspace-image/Dockerfile" .)
+}
+
+require_curl_jq() {
+  require_cmd curl
+}
+
+gw() {
+  # gw <method> <path> [json-body]
+  local method="$1" path="$2" body="${3:-}"
+  if [ -n "$body" ]; then
+    curl -sS -X "$method" "$GATEWAY_URL$path" \
+      -H 'Content-Type: application/json' -d "$body"
+  else
+    curl -sS -X "$method" "$GATEWAY_URL$path"
+  fi
+}
+
+cmd_workspace() {
+  require_curl_jq
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    create)
+      local name="${1:-}"
+      if [ -n "$name" ]; then
+        gw POST /workspaces "{\"name\":\"$name\"}"
+      else
+        gw POST /workspaces "{}"
+      fi
+      echo
+      ;;
+    list)
+      gw GET /workspaces
+      echo
+      ;;
+    rm|delete)
+      local id="${1:-}"
+      [ -z "$id" ] && { echo "aglack: workspace rm needs <id>" >&2; exit 1; }
+      gw DELETE "/workspaces/$id"
+      echo
+      ;;
+    diagnose)
+      local id="${1:-}"
+      [ -z "$id" ] && { echo "aglack: workspace diagnose needs <id>" >&2; exit 1; }
+      gw POST "/workspaces/$id/diagnose"
+      echo
+      ;;
+    *)
+      echo "aglack: unknown workspace subcommand '$sub' (want: create|list|rm|diagnose)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+cmd_status() {
+  require_cmd curl
+  if curl -sS -o /dev/null -w '' --max-time 3 "$GATEWAY_URL/workspaces" 2>/dev/null; then
+    echo "aglack: gateway UP at $GATEWAY_URL"
+  else
+    echo "aglack: gateway DOWN (unreachable at $GATEWAY_URL)"
+    exit 1
+  fi
+}
+
+AGLACK_VERSION="0.1.0"
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    install-deps) cmd_install_deps "$@" ;;
+    up) cmd_up "$@" ;;
+    bootstrap) cmd_bootstrap "$@" ;;
+    test) cmd_test "$@" ;;
+    image)
+      case "${1:-}" in
+        build) shift; cmd_image_build "$@" ;;
+        *) echo "aglack: unknown image subcommand (want: build)" >&2; exit 1 ;;
+      esac
+      ;;
+    workspace) cmd_workspace "$@" ;;
+    status) cmd_status "$@" ;;
+    version) echo "aglack $AGLACK_VERSION" ;;
+    help|-h|--help) usage ;;
+    *)
+      echo "aglack: unknown command '$cmd'" >&2
+      echo "" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
