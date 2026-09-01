@@ -33,7 +33,7 @@ is "where it's going."
 ## Repository state
 
 - Location: `/Users/saman/Documents/personal/hermano/revamp/`
-- Git: 3 commits, no remote configured, nothing pushed anywhere (explicit
+- Git: 16 commits, no remote configured, nothing pushed anywhere (explicit
   user choice — commit locally only, for now). Ask before ever pushing.
 - Sibling to the ORIGINAL, separate project at
   `/Users/saman/Documents/personal/hermano/backend` and
@@ -90,7 +90,7 @@ revamp/
 
 ## rust_gateway — what's built and verified
 
-**`cargo test`: 74/74 passing.** Run from `rust_gateway/`:
+**`cargo test`: 80/80 passing.** Run from `rust_gateway/`:
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"   # cargo not on default PATH on this machine
 cargo test
@@ -332,20 +332,13 @@ Three routes, all sharing one validation chokepoint
   into upstream Hermes WebUI).
 - **`ANY /workspaces/:id/desktop/*path`** — forwards to the workspace's
   webtop desktop (nginx on container port 3000, fronting KasmVNC). Plain
-  HTTP goes through the same `forward_to` byte-relay as the other two;
-  `/websockify` (the actual VNC stream) is a REAL WebSocket, relayed via
-  axum's `ws` feature (server/browser side) + `tokio-tungstenite` (client
-  side, dialing the container). Verified with a genuine end-to-end test:
-  a Python `websockets` client connected to
-  `ws://127.0.0.1:8080/workspaces/<id>/desktop/websockify` and received
-  the literal `b'RFB 003.008\n'` RFB/VNC handshake — real VNC bytes
-  through the whole chain (browser → gateway relay → nginx → KasmVNC →
-  back). Two real bugs found only by testing this live, both in
-  `desktop_proxy.rs`'s `build_upstream_request` (found by reading the
-  container's OWN log after each rejection, not guessed): KasmVNC's
-  websockify requires an `Origin` header (not sent by `tokio-tungstenite`
-  by default) AND a `Sec-WebSocket-Protocol: binary` negotiated
-  subprotocol — both now set explicitly on the outbound handshake.
+  HTTP AND the `/websockify` WebSocket upgrade both forward `req`'s
+  ORIGINAL, UNSTRIPPED path now — the opposite of the other two proxy
+  routes, and the opposite of an earlier version of this same route. See
+  **"Desktop 'stuck on Connecting' / crash debugging trail"** below for
+  the full real chain of bugs found live that led here — do not
+  "simplify" this route back to stripping the prefix without reading that
+  section first, it will silently reintroduce a real 502.
 
 Each proxy route's own path-prefix behavior is genuinely different
 (onboarding restricts to one namespace; hermes-webui doesn't restrict at
@@ -359,6 +352,202 @@ a bare trailing-slash request) into one call per feature. A dedicated test
 (`every_proxy_feature_prefix_is_reachable_through_the_real_router`) proves
 all three features' prefixes are actually wired into the real router, not
 just that their handler functions work in isolation.
+
+### Desktop "stuck on Connecting" / crash debugging trail
+
+Read this before touching `desktop_proxy.rs`, `container.rs`'s
+`SUBFOLDER`/`desktop_subpath` code, or
+`backend/workspace-image/patch_kasmvnc_lastactiveat.py`. Five real,
+distinct bugs were found in this area across one debugging session. The
+actual lesson is not any one of the five fixes below — it's that THREE
+separate times, a fix that was correct but incomplete got caught only by
+re-verifying it against a real browser or a real, freshly-relaunched
+container, never by re-reading the code: bug 2's fix → surfaced bug 3;
+bug 3's fix → (days later, on a fresh report) surfaced bug 4; the first
+version of bug 5's own E2E test gave a false pass, caught only by running
+a negative control against a deliberately unpatched image.
+
+**Reported symptom (screenshots, this exact session):** the webtop
+desktop either got stuck forever on "Connecting…", or loaded and then
+crashed with `Uncaught TypeError: Cannot read properties of undefined
+(reading 'lastActiveAt')` at `.../desktop/vnc/dist/main.bundle.js`.
+
+**Investigation tools that mattered — use these again, not curl alone:**
+- A real headless Chrome (`google-chrome --headless=new
+  --remote-debugging-port=<port>`) driven directly over the Chrome
+  DevTools Protocol via Python's `websockets` library (no
+  playwright/puppeteer installed in this environment) — this is the ONLY
+  way that actually caught most of these bugs. `curl`/plain
+  `python-websockets` against the raw HTTP/WS endpoints is not enough:
+  several of these bugs are specifically about what a REAL BROWSER does
+  (subprotocol negotiation, iframe `src` construction, JS runtime state)
+  that a bare protocol client never exercises.
+- Reading the REAL container's own files directly
+  (`docker exec <container> cat/grep ...`) instead of assuming — the
+  nginx config, the KasmVNC bundle, the `kclient`/`ui.js` source. Every
+  fix below traces to a specific line found this way.
+- Fetching the REAL upstream project's source at the EXACT version this
+  image ships (confirmed via `app/package.json` inside a running
+  container, then fetched from `raw.githubusercontent.com` at that exact
+  git tag) — not the latest `master`, which had already silently fixed
+  one of these bugs upstream (unreleased).
+- A negative control for every fix: rebuild the OLD/broken image or
+  revert the gateway code, rerun the exact same real-browser test, and
+  confirm it fails the way the original report said. Skipping this step
+  is what let the click-based E2E trigger below give a false pass for a
+  while — see bug 5.
+
+**Bug 1 — `forward_to` dropped all upstream response headers.**
+`1654c48`. Only `status` + `body` were copied from the upstream response;
+CSS through the gateway lost its `Content-Type`, breaking rendering.
+Fixed: copy every header except `Content-Length`/`Transfer-Encoding`
+(axum recomputes those). Not desktop-specific, but found via the same
+"stuck/broken desktop" report.
+
+**Bug 2 — browser-facing WebSocket upgrade never negotiated a
+subprotocol.** `159815a`. The real KasmVNC backend always answers with
+`Sec-WebSocket-Protocol: binary`; the gateway's own upgrade response to
+the BROWSER omitted this header entirely (axum's `WebSocketUpgrade`
+needs an explicit `.protocols([...])` call — it does not infer this from
+the outbound leg). Left the browser's own `WebSocket.protocol` empty —
+a real, observable divergence from a direct connection. Fixed with
+`.protocols(["binary"])`. **This fix alone was presented as resolving
+"stuck on Connecting" and was wrong to stop at** — verifying it against a
+real browser (not just asserting the response header) surfaced bug 3
+immediately after.
+
+**Bug 3 — `SUBFOLDER` never set, so the desktop's own JS builds the wrong
+absolute WebSocket URL.** `52cfb07` (reverted once as `02c2804`,
+reapplied as `ff7b739` in an unrelated test of the revert mechanism
+itself — net effect after both is identical to `52cfb07`). Traced with a
+real headless-Chrome CDP session: the browser's actual VNC WebSocket
+request went to `ws://<gateway>/websockify` — missing the ENTIRE
+`/workspaces/:id/desktop/` prefix, and that handshake never got a
+response at all. Root cause: the container's `kclient` app
+(LinuxServer.io's KasmVNC wrapper, `/kclient/index.js` — a separate
+Express/EJS app the desktop's `location /` actually proxies to, not
+KasmVNC's own `www` root) reads `process.env.SUBFOLDER` (default `/`)
+and only injects the correct `?path=` query param into its VNC iframe
+when `SUBFOLDER != '/'`. `DockerCliLauncher` never set it. Fix, two
+required parts (the first alone broke readiness, confirmed live before
+committing):
+1. `container.rs`: `docker create -e SUBFOLDER=/workspaces/<id>/desktop/`
+   (`desktop_subfolder_env_arg`, built from `desktop_subpath` — the
+   single source of truth for this string, reused everywhere below).
+   Once set, kclient's whole Express app is mounted UNDER that prefix —
+   a bare `/` legitimately 404s from then on. `wait_for_desktop_ready`/
+   `check_desktop_health` updated to request the correct subpath instead
+   of hardcoded root.
+2. `desktop_proxy.rs`: plain HTTP requests must forward the ORIGINAL,
+   UNSTRIPPED path (unlike the wrapper/onboarding proxies, whose
+   backends genuinely are mounted at their own root) — confirmed live,
+   the old stripped behavior now 404s ("Cannot GET /") once `SUBFOLDER`
+   takes effect.
+
+**Bug 4 — the gateway's own outbound `/websockify` dial used the
+STRIPPED path, and nginx no longer matches that.** `66bdef2`. Found days
+later, re-checking a fresh screenshot of the SAME symptom: the currently
+running gateway's own log showed `desktop websocket dial to
+ws://127.0.0.1:<port>/websockify failed: HTTP error: 502 Bad Gateway`
+across MULTIPLE, unrelated real containers — systemic, not one bad
+container. Root cause, found in the container's own
+`/var/log/nginx/error.log` ("upstream prematurely closed connection...
+upstream: http://127.0.0.1:6900/websockify"): once `SUBFOLDER` is set
+(bug 3), the base image's nginx does **not** keep a generic `location
+/websockify { proxy_pass ...:6901; }`. It REGENERATES its own config
+PER CONTAINER with a workspace-specific location instead — confirmed
+live, reading the config inside several different real containers:
+```
+location /workspaces/<id>/desktop/websockify {
+    proxy_pass http://127.0.0.1:6901;   # real KasmVNC
+}
+location / {
+    proxy_pass http://127.0.0.1:6900;   # kclient — NOT KasmVNC
+}
+```
+A request for the bare, stripped `/websockify` matches nothing that
+specific, silently falls through to the generic `location /` (port 6900,
+the wrong app entirely), and THAT connection gets closed immediately —
+a real 502 on the gateway's outbound dial. `desktop_proxy.rs`'s
+websocket branch had been left building its URL from the stripped
+wildcard path while the plain-HTTP branch (bug 3, part 2) was already
+fixed — missed at the time because that branch's own test fixture used
+a raw TCP/axum echo server on an arbitrary path (any path "works"
+against a fixture that doesn't care), never real nginx's actual
+per-container routing. Fixed: both branches now build their target URL
+from `req.uri().path()` (the full original path) — `desktop_proxy`'s
+`path` wildcard parameter is now unused in both route handlers and was
+removed, not left dead.
+
+**Bug 5 (base image, not this repo's own code) — KasmVNC's bundled JS
+crashes on an UNCLEAN disconnect.** `7c9fe33` (fix) + `2a100d1` (E2E
+test). `Uncaught TypeError: Cannot read properties of undefined (reading
+'lastActiveAt')` at `dist/main.bundle.js`. Confirmed: this container
+ships `@kasmtech/novnc` `v1.3.0` (read from a running container's own
+`app/package.json`); fetched upstream's REAL source at that exact tag —
+byte-for-byte identical to what's running, zero local drift. The bug: a
+5-second `setInterval` keep-alive tick reads `UI.rfb.lastActiveAt` with
+NO check that `UI.rfb` is still defined; `UI.rfb` is set to `undefined`
+elsewhere on disconnect. Bisected 137 commits between the `v1.3.0` tag
+and upstream `master` to find the real fix
+(`402c0c59d62424ff110bad8f14682deec7d4c780`, "fix unclean disconnect
+reconnect", PR #201, merged 2026-07-16) — confirmed UNRELEASED (no tag
+newer than `v1.3.0` exists as of this writing). Ported a small, surgical
+guard (`if (!UI.rfb) return;`), not upstream's full 185-line commit
+(which also adds unrelated reconnect-retry/VDI behavior) — see
+`patch_kasmvnc_lastactiveat.py`'s own module doc for the exact reasoning
+and the fail-closed byte-for-byte match it requires (the Docker BUILD
+fails loudly if the base image ever changes this exact code, rather than
+silently no-op'ing).
+
+Real, since-corrected mistake while building the E2E test for this bug
+(`e2e_test_kasmvnc_lastactiveat.py`): the FIRST version of the test
+clicked the page's own Disconnect button and asserted no crash followed
+— that gave a **false PASS even against a deliberately unpatched image**
+(caught only by actually running a negative control, which is why one
+was run). `UI.disconnect()` (the click handler) calls
+`clearInterval(UI._sessionTimeoutInterval)` SYNCHRONOUSLY before
+`UI.rfb` is ever cleared — a clean, user-initiated disconnect can never
+reach the buggy tick at all. The real trigger only happens via
+`disconnectFinished()`, reached on an UNCLEAN or server-initiated
+disconnect. Fixed the test to `pkill -9 Xvnc` (the real VNC server
+process) inside the container instead — reproduced the crash 5/5 times
+against the unpatched image, 0/5 against the patched one.
+
+**What is STILL genuinely unverified / open:**
+- Whether some OTHER real trigger for an unclean disconnect (a network
+  blip, the container being OOM-killed mid-session, a Docker restart)
+  behaves identically to the `pkill -9 Xvnc` test trigger — treated as
+  equivalent based on reading `rfb.js`'s `_fail()` path, not separately
+  reproduced with each distinct real trigger.
+- `POST /workspaces/:id/diagnose` (existing feature, built earlier —
+  see below) does **NOT** detect bug 5's failure mode at all, confirmed
+  live: run against a real crashed workspace, it reported
+  `desktop_healthy: true`, because it only checks whether the desktop's
+  HTTP root answers (which it does — the crash is a client-side JS
+  runtime error that happens later, in the browser, after the page
+  already loaded). A server-side HTTP health check has no way to see a
+  browser-side JS exception. If this needs to be detectable
+  server-side, it needs a NEW mechanism (e.g. the browser reporting its
+  own crash back to the gateway via `window.onerror` + a beacon
+  endpoint) — nothing like that exists yet.
+- `e2e_test_kasmvnc_lastactiveat.py` talks to a container directly via
+  `docker run`, never through `rust_gateway`'s own `desktop_proxy` —
+  it structurally could NOT have caught bug 4 (that lives entirely in
+  the gateway's own path-rewriting, not the container image). The two
+  bug classes are independent; a passing E2E run for one says nothing
+  about the other.
+- Fixing bug 4 requires a GATEWAY RESTART to take effect (it's Rust
+  code, not the Docker image) — a currently-running gateway process
+  does not pick this up on its own, and an already-running CONTAINER
+  from before bug 3's image fix does not get bug 5's JS patch either
+  (that's baked into the image at container-CREATE time). If a fresh
+  screenshot of this symptom shows up again, check BOTH: (a) was this
+  workspace's container created after the image was rebuilt with
+  `7c9fe33`? (`docker inspect` the container's image digest, or just its
+  `CreatedAt` vs. the commit date) (b) is the gateway process that's
+  actually serving it running the binary built after `66bdef2`? Two
+  independent staleness questions, not one.
 
 ### DB schema (`workspace_creations` table)
 
@@ -600,11 +789,14 @@ cd revamp
 
 ## Suggested next steps (not started)
 
-1. Real noVNC/KasmVNC-compatible frontend client for the desktop proxy
-   (transport is proven; nothing renders it yet).
-2. A `GET /workspaces/:id` status-poll endpoint so the creating page can
+1. A `GET /workspaces/:id` status-poll endpoint so the creating page can
    actually poll instead of showing one static response.
-3. Named volumes for workspace persistence across `docker rm`.
-4. A real auth/session layer (unblocks: gating onboarding routes,
+2. Named volumes for workspace persistence across `docker rm`.
+3. A real auth/session layer (unblocks: gating onboarding routes,
    multi-tenant routing beyond id validation).
+4. Some server-visible signal for the KasmVNC `lastActiveAt`-class of
+   client-side crash (see "Desktop 'stuck on Connecting' / crash
+   debugging trail" above, bug 5's "STILL genuinely unverified" list) —
+   `POST /workspaces/:id/diagnose` cannot see it today; would need a new
+   browser-reports-its-own-crash mechanism.
 5. When ready to push to a remote: ask first, none configured yet.
