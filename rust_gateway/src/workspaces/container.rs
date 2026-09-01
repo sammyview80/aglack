@@ -39,6 +39,11 @@ pub trait ContainerLauncher: Send + Sync {
     /// record must mean "you can really reach this workspace's onboarding
     /// endpoints now", not merely "docker start succeeded".
     async fn launch(&self, workspace_id: &str) -> Result<LaunchedContainer, super::CreateWorkspaceError>;
+
+    /// Stop and remove a previously launched container. A missing
+    /// container is success (already gone) — delete must still be able to
+    /// drop the store row.
+    async fn remove(&self, container_name: &str) -> Result<(), super::CreateWorkspaceError>;
 }
 
 /// Real Docker launcher: shells out to the `docker` CLI (matching the
@@ -246,6 +251,42 @@ async fn wait_for_desktop_ready(
     }
 }
 
+/// Single-attempt (no retry loop) check of whether a workspace's wrapper
+/// is answering `/api/wrapper/v1/health` RIGHT NOW — the same endpoint
+/// `wait_for_wrapper_ready` polls at launch time, but called once, not in
+/// a retry loop: a workspace that already reached `Ready` once is either
+/// up or it isn't, there's nothing to "wait for" here. Used by
+/// `list_workspaces_route` (see `route.rs` and
+/// `../../docs/list-workspaces-plan.md`) to report LIVE health on every
+/// `Ready` row, not just the DB's last-written status.
+///
+/// Takes a reused `reqwest::Client` (the caller's `WorkspacesState`'s
+/// `http_client`) rather than constructing a new one per call — unlike
+/// `wait_for_wrapper_ready`/`wait_for_desktop_ready` above (called once
+/// per container launch, where a fresh client is cheap and inconsequential),
+/// this is called once per `Ready` row on EVERY list request, so reusing
+/// the client's connection pool actually matters here.
+///
+/// Returns a plain `bool`, not a `Result` — every failure mode (timeout,
+/// connection refused, non-success status) means exactly one thing to a
+/// caller of this function: "not healthy right now." There is no
+/// separate action to take for a timeout versus a connection error, so
+/// there is no error variant worth distinguishing.
+pub(crate) async fn check_wrapper_health(
+    client: &reqwest::Client,
+    wrapper_port: u16,
+    timeout: Duration,
+) -> bool {
+    let health_url = format!("http://127.0.0.1:{wrapper_port}/api/wrapper/v1/health");
+    match tokio::time::timeout(timeout, client.get(&health_url).send()).await {
+        Ok(Ok(response)) => response.status().is_success(),
+        // Either the request itself errored (connection refused, DNS,
+        // etc.) or the outer `timeout` elapsed first — both mean "not
+        // healthy right now" to this function's caller.
+        Ok(Err(_)) | Err(_) => false,
+    }
+}
+
 #[async_trait]
 impl ContainerLauncher for DockerCliLauncher {
     async fn launch(&self, workspace_id: &str) -> Result<LaunchedContainer, super::CreateWorkspaceError> {
@@ -282,6 +323,29 @@ impl ContainerLauncher for DockerCliLauncher {
             wrapper_port,
             desktop_port,
         })
+    }
+
+    async fn remove(&self, container_name: &str) -> Result<(), super::CreateWorkspaceError> {
+        let output = Command::new("docker")
+            .args(["rm", "-f", container_name])
+            .output()
+            .await
+            .map_err(|err| {
+                super::CreateWorkspaceError::Container(format!(
+                    "failed to run `docker rm -f` for container {container_name}: {err}"
+                ))
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let detail = String::from_utf8_lossy(&output.stderr);
+        if detail.contains("No such container") {
+            return Ok(());
+        }
+        Err(super::CreateWorkspaceError::Container(format!(
+            "`docker rm -f` failed for container {container_name}: {}",
+            detail.trim()
+        )))
     }
 }
 
@@ -349,6 +413,7 @@ async fn deliver_boot_script(container_name: &str) -> Result<(), super::CreateWo
 pub struct FakeLauncher {
     call_count: AtomicUsize,
     fail_next_n_calls: AtomicUsize,
+    remove_count: AtomicUsize,
 }
 
 impl Default for FakeLauncher {
@@ -356,6 +421,7 @@ impl Default for FakeLauncher {
         Self {
             call_count: AtomicUsize::new(0),
             fail_next_n_calls: AtomicUsize::new(0),
+            remove_count: AtomicUsize::new(0),
         }
     }
 }
@@ -369,7 +435,12 @@ impl FakeLauncher {
         Self {
             call_count: AtomicUsize::new(0),
             fail_next_n_calls: AtomicUsize::new(n),
+            remove_count: AtomicUsize::new(0),
         }
+    }
+
+    pub fn remove_count(&self) -> usize {
+        self.remove_count.load(Ordering::SeqCst)
     }
 }
 
@@ -396,6 +467,11 @@ impl ContainerLauncher for FakeLauncher {
             wrapper_port: 40000 + call_count,
             desktop_port: 50000 + call_count,
         })
+    }
+
+    async fn remove(&self, _container_name: &str) -> Result<(), super::CreateWorkspaceError> {
+        self.remove_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -466,5 +542,78 @@ mod tests {
         // detached (setsid ... &) rather than this script waiting on it.
         assert!(script.trim_end().ends_with("exit 0"));
         assert!(script.contains("setsid su"));
+    }
+
+    /// A real (if minimal) HTTP server answering `/api/wrapper/v1/health`
+    /// with 200 must be reported healthy — proves the URL construction
+    /// and success-status check against a REAL listener, not a mocked
+    /// `reqwest::Response`.
+    #[tokio::test]
+    async fn check_wrapper_health_is_true_when_the_real_endpoint_answers_200() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        tokio::spawn(serve_one_health_ok(listener));
+
+        let client = reqwest::Client::new();
+        let healthy = check_wrapper_health(&client, port, Duration::from_secs(2)).await;
+        assert!(healthy);
+    }
+
+    /// Nothing listening on the port at all (the container crashed, or
+    /// was never really there) must be reported unhealthy, not panic or
+    /// hang — this is the common real-world case this function exists
+    /// to detect.
+    #[tokio::test]
+    async fn check_wrapper_health_is_false_when_nothing_is_listening() {
+        // Bind then immediately drop the listener: frees the OS-assigned
+        // port back up while guaranteeing nothing else grabbed it in the
+        // meantime for the immediately-following connection attempt.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        drop(listener);
+
+        let client = reqwest::Client::new();
+        let healthy = check_wrapper_health(&client, port, Duration::from_secs(2)).await;
+        assert!(!healthy);
+    }
+
+    /// A listener that accepts the TCP connection but never answers must
+    /// be treated as unhealthy once the given timeout elapses — proves
+    /// the `tokio::time::timeout` wrapper actually bounds the call, not
+    /// just the connect step (a hung/wedged wrapper process would accept
+    /// the connection and then never respond, not refuse it outright).
+    #[tokio::test]
+    async fn check_wrapper_health_is_false_when_the_response_never_comes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        tokio::spawn(async move {
+            // Accept and hold the connection open without ever writing a
+            // response — simulates a hung wrapper process.
+            if let Ok((stream, _)) = listener.accept().await {
+                std::mem::forget(stream);
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let healthy =
+            check_wrapper_health(&client, port, Duration::from_millis(200)).await;
+        assert!(!healthy);
+    }
+
+    /// Minimal HTTP/1.1 server: accepts one connection, replies with a
+    /// bare `200 OK`, done. Just enough to make `reqwest` see a real
+    /// successful HTTP response for the "healthy" test case above —
+    /// deliberately not using axum/a real router here, since the only
+    /// thing under test is `check_wrapper_health`'s own request/response
+    /// handling, not a full HTTP server implementation.
+    async fn serve_one_health_ok(listener: TcpListener) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+        }
     }
 }

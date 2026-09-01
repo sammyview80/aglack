@@ -90,7 +90,7 @@ revamp/
 
 ## rust_gateway — what's built and verified
 
-**`cargo test`: 42/42 passing.** Run from `rust_gateway/`:
+**`cargo test`: 57/57 passing.** Run from `rust_gateway/`:
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"   # cargo not on default PATH on this machine
 cargo test
@@ -121,21 +121,50 @@ success: { "ok": true, "data": <T> }
 error:   { "ok": false, "error": { "code": "...", "message": "..." } }
 ```
 
-### `GET /workspaces` — list, optimized (pure DB projection)
+### `GET /workspaces` — list, with a live health check per row
 
 Plan doc: `docs/list-workspaces-plan.md`. Response:
-`{ ok: true, data: { workspaces: [{ workspace_id, name, status, host_port,
-desktop_port, created_at }], limit, offset } }`.
+`{ ok: true, data: { workspaces: [{ workspace_id, name, status, healthy,
+host_port, desktop_port, created_at }], limit, offset } }`.
 
-"Optimized" here means the same thing it means for the wrapper's native
-onboarding routes: no N+1, no container/network calls. `WorkspaceStore::list`
-is exactly one `SELECT ... ORDER BY created_at DESC, rowid DESC LIMIT ?
-OFFSET ?` — `rowid` is the tie-break because `created_at` (unix seconds as a
-string, see `store.rs`'s `chrono_now`) only has second resolution and rows
-created within the same second would otherwise have no defined order.
-Ports/status are exactly whatever the last `mark_ready`/`mark_failed` wrote
-— a stale-but-cheap read; a caller needing live confirmation still goes
-through the existing per-workspace proxy routes' `resolve.rs` check.
+`WorkspaceStore::list` is one SQL query — `SELECT ... ORDER BY created_at
+DESC, rowid DESC LIMIT ? OFFSET ?` — `rowid` is the tie-break because
+`created_at` (unix seconds as a string, see `store.rs`'s `chrono_now`)
+only has second resolution and rows created within the same second would
+otherwise have no defined order.
+
+**`status` vs `healthy` — two different questions, deliberately kept
+separate:** `status` is the DB's last-written value from `mark_ready`/
+`mark_failed` (stale-but-free). `healthy` is a REAL, live check run on
+every single `GET /workspaces` call, against every `status == Ready` row:
+`container.rs`'s `check_wrapper_health` hits that row's recorded
+`host_port`'s `/api/wrapper/v1/health` once (2s timeout,
+`HEALTH_CHECK_TIMEOUT` in `route.rs`), and all `Ready` rows are checked
+CONCURRENTLY via one `tokio::task::JoinSet` task per row (`route.rs`'s
+`check_health_and_build_list_items`) — the request's added latency is
+bounded by one timeout, not `rows_checked × timeout`. `Creating`/`Failed`
+rows are never checked (no port to check) and are always `healthy: false`.
+A `Ready` row whose container has since crashed/hung also reports
+`healthy: false` — `status` alone would still (wrongly) say "ready"
+forever in that case.
+
+This was a deliberate, direct-instruction reversal of this endpoint's
+original design (see `docs/list-workspaces-plan.md`'s "Earlier draft"
+note): the first version was a pure DB projection with zero network
+calls, matching the wrapper's own "optimized" native-route pattern.
+Product decision overrode that — the dashboard mockup's "N healthy"
+count and per-row status must reflect real container health, not a
+stale DB column, and the cost (one HTTP round trip per `Ready` workspace,
+every list call, capped at 2s tail latency by concurrency) was judged
+acceptable at this project's current scale (dev-stage, no auth, small
+workspace counts). Revisit if that scale assumption stops holding.
+
+Live end-to-end proof (not just unit tests): a real `rust_gateway`
+process against a throwaway SQLite DB, with two `Ready` rows inserted
+directly — one pointing at a real listener answering
+`/api/wrapper/v1/health` with 200 (`healthy: true`), one pointing at a
+port with nothing listening (`healthy: false`) — both correctly
+distinguished through a real `curl` against the real running binary.
 
 `name` is `idempotency_key` renamed at the type boundary
 (`WorkspaceListItem`, a type distinct from `WorkspaceRecord`) — the raw
@@ -148,6 +177,15 @@ for more — the response echoes back the `limit` actually used. A negative
 `limit` or `offset` is rejected with `400 invalid_pagination` (a caller
 bug, not a "too much" request). Registered on the same `/workspaces` path
 as `POST /workspaces`, distinguished by HTTP method.
+
+### `DELETE /workspaces/:id` — stop container, drop row
+
+`delete_workspace` in `workspaces/mod.rs` is the one store+launcher pair
+for teardown (mirrors `create_workspace`). Looks up by `workspace_id`,
+`docker rm -f` when `container_name` is `Some` (missing container =
+success), then `DELETE FROM workspace_creations`. Unknown id →
+`404 workspace_not_found`. Docker failure → `502 workspace_delete_failed`,
+row kept so retry works. CORS `allow_methods` includes DELETE.
 
 ### Container launch (`DockerCliLauncher` in `container.rs`)
 
@@ -422,7 +460,21 @@ those no longer exist).
 
 **Create → creating → onboarding flow, wired to `rust_gateway` (not
 directly to the wrapper):**
-- `features/workspace/api.ts` — `POST /workspaces` via `VITE_GATEWAY_URL`.
+- `features/workspace/api.ts` — `POST /workspaces` via `VITE_GATEWAY_URL`,
+  `GET /workspaces` list, `DELETE /workspaces/:id`, plus `hermesWebuiUrl` /
+  `desktopUrl` (gateway proxy prefixes, never the wrapper origin).
+- `/` workspace list matches the sibling design Dashboard row tools:
+  Open → Hermes Web (`/hermes-webui/`), Terminal + Key → `/onboarding/:id`,
+  ExternalLink → desktop UI (`/desktop/`), Trash → confirm + DELETE.
+- The dashboard's "N healthy" count, the "Healthy" filter chip, and each
+  row's status dot/label all read the gateway's LIVE `healthy` field
+  (`features/workspace/components/workspace-list.tsx`'s `healthyCount`/
+  `statusLabel`/`healthDotClass`) — NOT `status`. A `ready` row whose
+  container has since died renders as "Unhealthy" with a red dot, and is
+  excluded from the "Healthy" filter and count, even though `status` on
+  the wire still says `"ready"`. This was a direct fix: an earlier
+  version of this same dashboard filtered/counted by `status === 'ready'`
+  alone, which would have shown a dead container as healthy forever.
 - `pages/creating-workspace-page.tsx` — shows the POST response; on
   `status: ready`, **"Continue to setup"** navigates to
   `/onboarding/:workspaceId`; **"Done"** remains a skip path (clears
@@ -444,7 +496,8 @@ directly to the wrapper):**
   for a caught error → toast + display string.
 
 **Known real limitation:** `rust_gateway` has no `GET /workspaces/:id`
-status-poll endpoint (only `POST /workspaces` exists) — the creating page
+status-poll endpoint (list + create + delete exist; no single-id GET) —
+the creating page
 can't poll a `creating` result to see if it later became `ready`; it can
 only show what the one POST response said and let the user retry.
 

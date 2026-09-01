@@ -21,7 +21,7 @@ pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};
 pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
 pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
 pub use onboarding_proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
-pub use route::{create_workspace_route, list_workspaces_route, WorkspacesState};
+pub use route::{create_workspace_route, delete_workspace_route, list_workspaces_route, WorkspacesState};
 pub use store::{WorkspaceRecord, WorkspaceStatus, WorkspaceStore};
 
 /// One request to create a workspace, and the one place that decides
@@ -67,6 +67,25 @@ pub async fn create_workspace(
     }
 
     launch_and_record(store, launcher, idempotency_key, &record.workspace_id).await
+}
+
+/// Stop the workspace's container (if one was launched) and drop its
+/// store row. `None` means no such workspace — the HTTP layer turns that
+/// into `404 workspace_not_found`. Container remove runs before the row
+/// delete: a Docker failure leaves the row so the caller can retry.
+pub async fn delete_workspace(
+    store: &WorkspaceStore,
+    launcher: &dyn ContainerLauncher,
+    workspace_id: &str,
+) -> Result<Option<WorkspaceRecord>, CreateWorkspaceError> {
+    let Some(record) = store.find_by_workspace_id(workspace_id).await? else {
+        return Ok(None);
+    };
+    if let Some(container_name) = &record.container_name {
+        launcher.remove(container_name).await?;
+    }
+    store.delete_by_workspace_id(workspace_id).await?;
+    Ok(Some(record))
 }
 
 /// Actually launch a container for an already-claimed `workspace_id` and
@@ -207,5 +226,74 @@ mod tests {
             .expect("connect creates the database file and its parent dir");
 
         assert!(db_path.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_unknown_workspace_returns_none_and_does_not_remove_a_container() {
+        let store = temp_store().await;
+        let launcher = FakeLauncher::default();
+
+        let result = delete_workspace(&store, &launcher, "does-not-exist")
+            .await
+            .expect("delete of unknown id is not an error");
+
+        assert!(result.is_none());
+        assert_eq!(launcher.remove_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn delete_ready_workspace_removes_the_container_and_the_row() {
+        let store = temp_store().await;
+        let launcher = FakeLauncher::default();
+        let created = create_workspace(&store, &launcher, "to-delete")
+            .await
+            .expect("create succeeds");
+
+        let deleted = delete_workspace(&store, &launcher, &created.workspace_id)
+            .await
+            .expect("delete succeeds")
+            .expect("workspace existed");
+
+        assert_eq!(deleted.workspace_id, created.workspace_id);
+        assert_eq!(launcher.remove_count(), 1);
+        assert!(
+            store
+                .find_by_workspace_id(&created.workspace_id)
+                .await
+                .expect("lookup succeeds")
+                .is_none()
+        );
+        assert!(store.list(50, 0).await.expect("list succeeds").is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_failed_workspace_with_no_container_skips_remove() {
+        let store = temp_store().await;
+        let launcher = FakeLauncher::that_fails_first(1);
+        let _ = create_workspace(&store, &launcher, "failed-key").await;
+        let failed = store
+            .find("failed-key")
+            .await
+            .expect("lookup succeeds")
+            .expect("row exists after failed launch");
+
+        let deleted = delete_workspace(&store, &launcher, &failed.workspace_id)
+            .await
+            .expect("delete succeeds")
+            .expect("workspace existed");
+
+        assert_eq!(deleted.workspace_id, failed.workspace_id);
+        assert_eq!(
+            launcher.remove_count(),
+            0,
+            "no container was launched, so remove must not be called"
+        );
+        assert!(
+            store
+                .find_by_workspace_id(&failed.workspace_id)
+                .await
+                .expect("lookup succeeds")
+                .is_none()
+        );
     }
 }

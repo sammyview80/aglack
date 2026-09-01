@@ -17,19 +17,61 @@ The wrapper's own onboarding routes earned that word by skipping a full
 proxy/dispatch replay for calls that don't need it (see
 `backend/wrapper/AGENTS.md`). The same discipline applies here:
 
-- **One SQL query, no N+1.** A naive implementation might call
-  `find_by_workspace_id` once per row after some other lookup — this does
-  not: `list_workspaces` is a single `SELECT ... ORDER BY ... LIMIT ...
-  OFFSET ...` against `workspace_creations`, full stop.
-- **No container/network calls.** This is a pure DB projection. It does
-  NOT re-check a workspace's live health (unlike `resolve.rs`'s per-request
-  readiness check on the proxy routes) — `status`/ports are exactly what
-  the last `mark_ready`/`mark_failed` wrote. A stale-but-cheap read, not a
-  fresh-but-expensive one. Callers that need live confirmation still go
-  through the existing per-workspace proxy routes.
+- **One SQL query, no N+1 at the DB layer.** A naive implementation might
+  call `find_by_workspace_id` once per row after some other lookup — this
+  does not: `WorkspaceStore::list` is a single `SELECT ... ORDER BY ...
+  LIMIT ... OFFSET ...` against `workspace_creations`, full stop.
+- **Live health, fanned out concurrently, not serially.** Per direct
+  product decision, this endpoint DOES report real-time health, not just
+  the DB's last-written `status` — a workspace that crashed after
+  `mark_ready` must not read as `ready` forever (see "Live health check"
+  below for the exact mechanism and its cost tradeoffs).
 - **Only listing-relevant columns.** No `idempotency_key` exposed as its
   own field — it's surfaced as `name` (see below), the only column name
   meaningful to a caller.
+
+## Live health check (per-row, concurrent, bounded)
+
+Earlier draft of this doc proposed a pure DB projection with NO live
+check, deferring health entirely to a hypothetical
+`GET /workspaces/:id/health` endpoint. Direct instruction overrode that:
+the list response itself must reflect live container health, no separate
+endpoint. This section documents the actual mechanism and what it costs.
+
+- Only rows with `status == Ready` (and therefore a recorded
+  `host_port`) are checked at all — `Creating`/`Failed` rows have no
+  wrapper to reach, so their reported `status` stays exactly the DB value.
+- For each `Ready` row, the SAME check the launch sequence itself already
+  performs (`container.rs`'s `wait_for_wrapper_ready`, hitting
+  `http://127.0.0.1:<host_port>/api/wrapper/v1/health`) is called ONCE,
+  with a short per-call timeout (2s — long enough for a healthy wrapper's
+  ordinary response, short enough that one hung container cannot stall
+  the whole list request). This is not the polling retry loop the launch
+  path uses; a single attempt is enough here — the loop's job (wait for a
+  container that is still booting) doesn't apply to a workspace that
+  already reached `Ready` once.
+- All `Ready` rows' checks run CONCURRENTLY (`route.rs`'s
+  `check_health_and_build_list_items`, one `tokio::task::JoinSet` task
+  per row), not sequentially — the wall-clock cost of listing N ready
+  workspaces is one health-check round trip, not N of them back to back.
+  Response items are reassembled in the store's original `ORDER BY`
+  order, not task-completion order — a caller paging through results
+  must see a stable order regardless of which container answers fastest.
+- Reported as `healthy: bool` on each list item — `true` only when the
+  live check just succeeded; `false` for a `Ready` DB row whose live
+  check failed (crashed/hung container) OR any row that was never
+  `Ready` in the first place (`creating`/`failed`) — `healthy` answers
+  "can I use this workspace right now," not "did this row reach Ready at
+  some point in the past" (that's still `status`).
+- **Cost tradeoff, stated plainly:** this makes `GET /workspaces` an
+  O(ready workspace count) network-fanout call, not a pure DB read. That
+  is a deliberate, direct-instruction departure from the original
+  "no container calls" plan. Request frequency (how often a dashboard
+  polls this endpoint) is unaffected by this change — what changes is
+  that every SINGLE call now carries a real, if bounded (2s max per row,
+  all rows concurrent), tail latency, and hits every running container's
+  wrapper once per call. Acceptable at this project's current scale
+  (dev-stage, no auth, small workspace counts) — revisit if that changes.
 
 ## Naming: `idempotency_key` IS the workspace name
 

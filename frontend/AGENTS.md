@@ -2,7 +2,7 @@
 
 Vite + React 19 + TypeScript. One HTTP backend from the browser:
 `rust_gateway` (workspaces + per-workspace onboarding proxy). Envelope
-parser is `lib/api.ts`. Screens: `/create`, `/creating`,
+parser is `lib/api.ts`. Screens: `/` (workspace list), `/create`, `/creating`,
 `/onboarding/:workspaceId`.
 
 Read this before editing. Do not invent a parallel tree.
@@ -16,9 +16,10 @@ Read this before editing. Do not invent a parallel tree.
      `127.0.0.1`, `:8080`, `:5173`, `:8787`, a wrapper listen address).
      `VITE_*` is read only in `src/lib/env.ts`; callers use helpers
      (`gatewayUrl()`). Never `import.meta.env.VITE_*` in features/pages.
-   - Workspace id: from the route (`useParams`) or from
-     `createWorkspace`'s result. Pass it into every onboarding call.
-     Never invent, cache as a global, or bake an id into source.
+   - Workspace id: from the route (`useParams`), from `createWorkspace`'s
+     result, or from `listWorkspaces`'s items. Pass it into every
+     onboarding call. Never invent, cache as a global, or bake an id
+     into source.
    - Provider catalog / models / categories / OAuth flags: from
      `GET .../onboarding/status` only. Do not hardcode provider ids,
      model lists, or category order as the source of truth (UI sort
@@ -29,6 +30,23 @@ Read this before editing. Do not invent a parallel tree.
 4. **Errors:** `handleError` (toast + string). Never `alert()`, never toast
    from `api.ts`.
 5. **Workspaces:** POST `/workspaces` `{ name, password? }`. No `kind`.
+   GET `/workspaces` lists `{ workspaces, limit, offset }` — `name` is the
+   caller-facing workspace name (gateway renamed `idempotency_key`; do
+   not mention or depend on that column). Each item's `healthy` is a LIVE
+   per-request check the gateway just ran against that workspace's
+   container — independent of `status`; a `ready` row can be
+   `healthy: false` if its container died after being marked ready. Use
+   `healthy`, not `status`, for anything claiming to show whether a
+   workspace is usable right now (health counts, "Healthy" filters,
+   status dots) — see `rust_gateway/docs/list-workspaces-plan.md`. Omit
+   `limit`/`offset` on first load; page with echoed `limit` and `offset`
+   of `items.length`. Never send negatives. DELETE `/workspaces/:id`
+   stops the container (if any) and drops the row
+   (`workspace_not_found` / `workspace_delete_failed`). Hermes Web:
+   `${gatewayUrl()}/workspaces/:id/hermes-webui/`. Desktop UI:
+   `${gatewayUrl()}/workspaces/:id/desktop/`. Build those with
+   `hermesWebuiUrl` / `desktopUrl` in `features/workspace/api.ts` — never
+   a wrapper origin. Remap snake_case in `features/workspace/api.ts`.
 6. **Onboarding:** chat/text MODEL providers only. No image/video/web-search
    /chat-gateway UI. Wire snake_case remaps to camelCase in
    `features/onboarding/api.ts` (same as workspace). Every call takes
@@ -42,9 +60,9 @@ Read this before editing. Do not invent a parallel tree.
 ```
 src/
   app/          providers, error-boundary, toaster, router
-  pages/        onboarding-page, create-workspace-page, creating-workspace-page, not-found-page
+  pages/        workspaces-page, onboarding-page, create-workspace-page, creating-workspace-page, not-found-page
   features/
-    workspace/  rust_gateway POST /workspaces (camelCase result DTO)
+    workspace/  rust_gateway GET+POST+DELETE /workspaces (camelCase DTOs)
     onboarding/ rust_gateway /workspaces/:id/onboarding/* (camelCase DTOs)
     theme/
   lib/

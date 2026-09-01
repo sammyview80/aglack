@@ -6,8 +6,7 @@
 
 use axum::{
     http::{HeaderValue, Method},
-    routing::any,
-    routing::post,
+    routing::{any, delete, post},
     Router,
 };
 use std::sync::Arc;
@@ -15,9 +14,10 @@ use tower_http::cors::CorsLayer;
 
 use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
-    create_workspace_route, desktop_proxy_route_root, desktop_proxy_route_with_path,
-    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, list_workspaces_route,
-    onboarding_proxy_route_root, onboarding_proxy_route_with_path, WorkspacesState,
+    create_workspace_route, delete_workspace_route, desktop_proxy_route_root,
+    desktop_proxy_route_with_path, hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path,
+    list_workspaces_route, onboarding_proxy_route_root, onboarding_proxy_route_with_path,
+    WorkspacesState,
 };
 
 /// Register one per-workspace proxy feature's pair of routes: the exact
@@ -72,13 +72,15 @@ pub fn build_router(
         .unwrap_or_else(|err| panic!("invalid FRONTEND_ORIGIN {frontend_origin:?}: {err}"));
     let cors = CorsLayer::new()
         .allow_origin(origin)
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
-    let mut workspaces_router = Router::new().route(
-        "/workspaces",
-        post(create_workspace_route).get(list_workspaces_route),
-    );
+    let mut workspaces_router = Router::new()
+        .route(
+            "/workspaces",
+            post(create_workspace_route).get(list_workspaces_route),
+        )
+        .route("/workspaces/:id", delete(delete_workspace_route));
     workspaces_router = register_workspace_proxy_pair(
         workspaces_router,
         "/workspaces/:id/onboarding",
@@ -265,5 +267,65 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// `DELETE /workspaces/:id` must dispatch to `delete_workspace_route`
+    /// through the real router — an unknown id is used so the handler
+    /// itself runs and returns `workspace_not_found`, proving dispatch
+    /// rather than axum's own "no route matched".
+    #[tokio::test]
+    async fn delete_workspace_is_reachable_through_the_real_router() {
+        let app = build_router(
+            unused_proxy_state(),
+            temp_workspaces_state().await,
+            "http://127.0.0.1:5173",
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/workspaces/does-not-exist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A browser preflight for DELETE must be allowed — without DELETE in
+    /// `allow_methods`, the dashboard delete button's CORS preflight is
+    /// blocked before this server ever runs `delete_workspace_route`.
+    #[tokio::test]
+    async fn preflight_delete_from_configured_frontend_origin_is_allowed() {
+        let app = build_router(
+            unused_proxy_state(),
+            temp_workspaces_state().await,
+            "http://127.0.0.1:5173",
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/workspaces/does-not-exist")
+                    .header("Origin", "http://127.0.0.1:5173")
+                    .header("Access-Control-Request-Method", "DELETE")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let allow_origin = response
+            .headers()
+            .get("access-control-allow-origin")
+            .expect("preflight response must include Access-Control-Allow-Origin")
+            .to_str()
+            .unwrap();
+        assert_eq!(allow_origin, "http://127.0.0.1:5173");
     }
 }

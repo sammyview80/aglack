@@ -27,16 +27,20 @@
 //! generic parser for both outcomes instead of a bespoke shape per route.
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Response,
     Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 
+use super::container::check_wrapper_health;
+use super::store::WorkspaceListItem;
 use super::{
-    create_workspace, ContainerLauncher, CreateWorkspaceError, WorkspaceStatus, WorkspaceStore,
+    create_workspace, delete_workspace, ContainerLauncher, CreateWorkspaceError, WorkspaceStatus,
+    WorkspaceStore,
 };
 use crate::response::{error, success};
 
@@ -156,6 +160,16 @@ const DEFAULT_LIST_LIMIT: i64 = 50;
 /// could force one query to scan/return the entire table.
 const MAX_LIST_LIMIT: i64 = 200;
 
+/// Per-workspace timeout for the live health check `list_workspaces_route`
+/// runs against every `Ready` row — see
+/// `../../docs/list-workspaces-plan.md`'s "Live health check" section.
+/// Long enough for a genuinely healthy wrapper's ordinary response, short
+/// enough that one hung container cannot noticeably stall the whole list
+/// request (all rows are checked CONCURRENTLY, so the request's total
+/// added latency is bounded by this one constant, not by
+/// `rows_checked * timeout`).
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[derive(Deserialize)]
 pub struct ListWorkspacesQuery {
     pub limit: Option<i64>,
@@ -167,6 +181,13 @@ struct WorkspaceListItemData {
     workspace_id: String,
     name: String,
     status: &'static str,
+    /// Live result of checking this row's wrapper RIGHT NOW — NOT derived
+    /// from `status`. `false` for every `creating`/`failed` row (nothing
+    /// to check yet) and for a `ready` row whose live check just failed
+    /// (crashed/hung container since it was marked ready). `true` only
+    /// when a `ready` row's check just succeeded. See
+    /// `../../docs/list-workspaces-plan.md`.
+    healthy: bool,
     host_port: Option<i64>,
     desktop_port: Option<i64>,
     created_at: String,
@@ -192,8 +213,11 @@ struct ListWorkspacesData {
 /// negative number is; the response's echoed `limit` tells the caller
 /// what was actually used.
 ///
-/// Pure DB projection — no container/network calls, one SQL query. See
-/// `../../docs/list-workspaces-plan.md`.
+/// One SQL query, but NOT a pure DB projection: every `Ready` row's
+/// wrapper is health-checked live, right now, concurrently — see
+/// `../../docs/list-workspaces-plan.md`'s "Live health check" section for
+/// why and its cost tradeoffs. `Creating`/`Failed` rows are never
+/// checked (no port to check).
 pub async fn list_workspaces_route(
     State(state): State<Arc<WorkspacesState>>,
     Query(query): Query<ListWorkspacesQuery>,
@@ -219,21 +243,7 @@ pub async fn list_workspaces_route(
 
     match state.store.list(limit, offset).await {
         Ok(items) => {
-            let workspaces = items
-                .into_iter()
-                .map(|item| WorkspaceListItemData {
-                    workspace_id: item.workspace_id,
-                    name: item.name,
-                    status: match item.status {
-                        WorkspaceStatus::Creating => "creating",
-                        WorkspaceStatus::Ready => "ready",
-                        WorkspaceStatus::Failed => "failed",
-                    },
-                    host_port: item.host_port,
-                    desktop_port: item.desktop_port,
-                    created_at: item.created_at,
-                })
-                .collect();
+            let workspaces = check_health_and_build_list_items(&state.http_client, items).await;
             success(
                 StatusCode::OK,
                 ListWorkspacesData {
@@ -249,6 +259,110 @@ pub async fn list_workspaces_route(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "workspace_list_failed",
                 "failed to list workspaces",
+            )
+        }
+    }
+}
+
+/// Run every `Ready` item's live health check CONCURRENTLY (one
+/// `tokio::task::JoinSet` task per item, not a sequential loop — see
+/// `HEALTH_CHECK_TIMEOUT`'s doc comment for why this matters), then
+/// assemble the final response items in the SAME order `items` came in
+/// (the store's `ORDER BY`, not task-completion order — a caller paging
+/// through results must see a stable order regardless of which
+/// container happened to answer its health check fastest).
+async fn check_health_and_build_list_items(
+    client: &reqwest::Client,
+    items: Vec<WorkspaceListItem>,
+) -> Vec<WorkspaceListItemData> {
+    let mut checks = tokio::task::JoinSet::new();
+    for (index, item) in items.iter().enumerate() {
+        match (&item.status, item.host_port) {
+            (WorkspaceStatus::Ready, Some(host_port)) => {
+                let client = client.clone();
+                let wrapper_port = host_port as u16;
+                checks.spawn(async move {
+                    (index, check_wrapper_health(&client, wrapper_port, HEALTH_CHECK_TIMEOUT).await)
+                });
+            }
+            // Nothing to check: not `Ready`, or (should be unreachable
+            // per `mark_ready`'s invariant, but handled anyway, failing
+            // closed) `Ready` with no recorded port.
+            _ => {}
+        }
+    }
+
+    let mut healthy_by_index = vec![false; items.len()];
+    while let Some(result) = checks.join_next().await {
+        // A task can only fail to join on panic — `check_wrapper_health`
+        // has no panicking path, but failing closed (leaving that row
+        // `false`) rather than unwrapping is still correct if it ever did.
+        if let Ok((index, healthy)) = result {
+            healthy_by_index[index] = healthy;
+        }
+    }
+
+    items
+        .into_iter()
+        .zip(healthy_by_index)
+        .map(|(item, healthy)| WorkspaceListItemData {
+            workspace_id: item.workspace_id,
+            name: item.name,
+            status: match item.status {
+                WorkspaceStatus::Creating => "creating",
+                WorkspaceStatus::Ready => "ready",
+                WorkspaceStatus::Failed => "failed",
+            },
+            healthy,
+            host_port: item.host_port,
+            desktop_port: item.desktop_port,
+            created_at: item.created_at,
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct DeleteWorkspaceData {
+    workspace_id: String,
+}
+
+/// DELETE /workspaces/:id
+///
+/// Stops the workspace container (if one exists) and drops the store row.
+/// Unknown id → `404 workspace_not_found`. Docker remove failure →
+/// `502 workspace_delete_failed` and the row is left so the caller can
+/// retry. A workspace that never launched a container (failed/creating)
+/// still deletes the row.
+pub async fn delete_workspace_route(
+    State(state): State<Arc<WorkspacesState>>,
+    Path(workspace_id): Path<String>,
+) -> Response {
+    match delete_workspace(&state.store, state.launcher.as_ref(), &workspace_id).await {
+        Ok(None) => error(
+            StatusCode::NOT_FOUND,
+            "workspace_not_found",
+            format!("no workspace with id {workspace_id:?}"),
+        ),
+        Ok(Some(record)) => success(
+            StatusCode::OK,
+            DeleteWorkspaceData {
+                workspace_id: record.workspace_id,
+            },
+        ),
+        Err(err @ CreateWorkspaceError::Store(_)) => {
+            eprintln!("rust_gateway: delete_workspace store error: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "workspace_store_failed",
+                "failed to delete workspace",
+            )
+        }
+        Err(err @ CreateWorkspaceError::Container(_)) => {
+            eprintln!("rust_gateway: delete_workspace container error: {err}");
+            error(
+                StatusCode::BAD_GATEWAY,
+                "workspace_delete_failed",
+                "failed to remove workspace container",
             )
         }
     }
@@ -370,6 +484,14 @@ mod tests {
     /// The `idempotency_key`/name distinction must survive all the way out
     /// through the HTTP response, not just in the store layer — see
     /// `store.rs`'s `list_surfaces_idempotency_key_as_name`.
+    ///
+    /// `FakeLauncher`'s ports are fake/unreachable (see its own doc
+    /// comment), so `healthy` is asserted `false` here — this test is
+    /// about the name/status/port fields, not the live check itself (see
+    /// `list_workspaces_reports_healthy_true_for_a_ready_workspace_whose_wrapper_answers`
+    /// and
+    /// `list_workspaces_reports_healthy_false_for_a_ready_workspace_whose_wrapper_is_unreachable`
+    /// below for that).
     #[tokio::test]
     async fn list_workspaces_includes_created_workspace_with_name() {
         let state = temp_state().await;
@@ -393,6 +515,106 @@ mod tests {
         assert_eq!(workspaces[0]["status"], "ready");
         assert!(workspaces[0]["host_port"].is_number());
         assert!(workspaces[0]["desktop_port"].is_number());
+    }
+
+    /// A `Ready` row whose wrapper port has NOTHING listening (the
+    /// container crashed, or — as here — never really existed) must
+    /// report `healthy: false`, even though `status` itself stays
+    /// `"ready"` — proves the two fields are independent (see this
+    /// route's doc comment): `status` is the DB's last-written value,
+    /// `healthy` is live, right now.
+    #[tokio::test]
+    async fn list_workspaces_reports_healthy_false_for_a_ready_workspace_whose_wrapper_is_unreachable() {
+        let store = temp_store().await;
+        store
+            .begin_creation("unreachable-ws", "id-unreachable")
+            .await
+            .expect("begin_creation succeeds");
+        // A real, currently-unbound port: guaranteed nothing answers here.
+        store
+            .mark_ready("unreachable-ws", "fake-container", 1, 2)
+            .await
+            .expect("mark_ready succeeds");
+        let state = state_with_store(store, Arc::new(FakeLauncher::default()));
+
+        let response =
+            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
+                .await;
+        let body = body_json(response).await;
+        let workspaces = body["data"]["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0]["status"], "ready");
+        assert_eq!(workspaces[0]["healthy"], false);
+    }
+
+    /// A `Ready` row whose wrapper port DOES have something answering
+    /// `/api/wrapper/v1/health` with 200 must report `healthy: true` —
+    /// the positive-path proof that `list_workspaces_route` performs a
+    /// REAL live check against a real listener, not a hardcoded value.
+    #[tokio::test]
+    async fn list_workspaces_reports_healthy_true_for_a_ready_workspace_whose_wrapper_answers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let store = temp_store().await;
+        store
+            .begin_creation("healthy-ws", "id-healthy")
+            .await
+            .expect("begin_creation succeeds");
+        store
+            .mark_ready("healthy-ws", "fake-container", port, port)
+            .await
+            .expect("mark_ready succeeds");
+        let state = state_with_store(store, Arc::new(FakeLauncher::default()));
+
+        let response =
+            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
+                .await;
+        let body = body_json(response).await;
+        let workspaces = body["data"]["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0]["healthy"], true);
+    }
+
+    /// `Creating`/`Failed` rows must always report `healthy: false` — they
+    /// have no wrapper to check at all (no recorded port), so there is no
+    /// live-check outcome to report other than "not healthy."
+    #[tokio::test]
+    async fn list_workspaces_reports_healthy_false_for_creating_and_failed_rows() {
+        let state = state_with_store(
+            temp_store().await,
+            Arc::new(FakeLauncher::that_fails_first(1)),
+        );
+        // First attempt fails -> row is `Failed`.
+        let _ = create_workspace_route(
+            State(state.clone()),
+            Json(CreateWorkspaceRequest {
+                name: "failed-ws".to_string(),
+                password: None,
+            }),
+        )
+        .await;
+
+        let response =
+            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
+                .await;
+        let body = body_json(response).await;
+        let workspaces = body["data"]["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0]["status"], "failed");
+        assert_eq!(workspaces[0]["healthy"], false);
     }
 
     #[tokio::test]
@@ -436,5 +658,43 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert_eq!(body["data"]["limit"], MAX_LIST_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn deleting_unknown_workspace_returns_404_not_found() {
+        let state = temp_state().await;
+        let response = delete_workspace_route(State(state), Path("does-not-exist".to_string())).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"]["code"], "workspace_not_found");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_ready_workspace_returns_its_id_and_empties_the_list() {
+        let state = temp_state().await;
+        let created = create_workspace_route(
+            State(state.clone()),
+            Json(CreateWorkspaceRequest {
+                name: "delete-me".to_string(),
+                password: None,
+            }),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::OK);
+        let created_body = body_json(created).await;
+        let workspace_id = created_body["data"]["workspace_id"].as_str().unwrap().to_string();
+
+        let deleted = delete_workspace_route(State(state.clone()), Path(workspace_id.clone())).await;
+        assert_eq!(deleted.status(), StatusCode::OK);
+        let deleted_body = body_json(deleted).await;
+        assert_eq!(deleted_body["ok"], true);
+        assert_eq!(deleted_body["data"]["workspace_id"], workspace_id);
+
+        let listed =
+            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
+                .await;
+        let listed_body = body_json(listed).await;
+        assert_eq!(listed_body["data"]["workspaces"], serde_json::json!([]));
     }
 }

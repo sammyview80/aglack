@@ -279,6 +279,18 @@ impl WorkspaceStore {
             .await?
             .ok_or(sqlx::Error::RowNotFound)
     }
+
+    /// Drop the row for `workspace_id`. Returns `true` if a row was
+    /// actually deleted, `false` if no such workspace exists. Does not
+    /// touch Docker — `delete_workspace` in `mod.rs` is the one place
+    /// that pairs this with `ContainerLauncher::remove`.
+    pub async fn delete_by_workspace_id(&self, workspace_id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM workspace_creations WHERE workspace_id = ?")
+            .bind(workspace_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 /// Current UTC time as an ISO-8601 string. A tiny local helper rather than
@@ -385,5 +397,37 @@ mod list_tests {
         assert_eq!(result[0].status, WorkspaceStatus::Ready);
         assert_eq!(result[0].host_port, Some(12345));
         assert_eq!(result[0].desktop_port, Some(12346));
+    }
+
+    #[tokio::test]
+    async fn delete_by_workspace_id_removes_the_row() {
+        let store = temp_store().await;
+        store
+            .begin_creation("to-delete", "id-delete")
+            .await
+            .expect("begin_creation succeeds");
+
+        let deleted = store
+            .delete_by_workspace_id("id-delete")
+            .await
+            .expect("delete succeeds");
+        assert!(deleted);
+        assert!(
+            store
+                .find_by_workspace_id("id-delete")
+                .await
+                .expect("lookup succeeds")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_by_workspace_id_returns_false_for_unknown_id() {
+        let store = temp_store().await;
+        let deleted = store
+            .delete_by_workspace_id("does-not-exist")
+            .await
+            .expect("delete succeeds");
+        assert!(!deleted);
     }
 }

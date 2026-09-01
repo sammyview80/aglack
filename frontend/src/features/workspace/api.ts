@@ -1,6 +1,8 @@
 /**
- * Client for rust_gateway's POST /workspaces (see
- * rust_gateway/src/workspaces/route.rs for the authoritative contract).
+ * Client for rust_gateway's /workspaces routes (see
+ * rust_gateway/src/workspaces/route.rs): POST create, GET list,
+ * DELETE by id. Hermes WebUI / desktop URLs are gateway proxy prefixes,
+ * not the wrapper's own origin.
  *
  * Base URL comes from VITE_GATEWAY_URL via lib/env.ts — never hardcode
  * a host/port here. Response parsing goes through `apiFetch` (lib/api.ts)
@@ -11,6 +13,8 @@ import { apiFetch } from '@/lib/api'
 import { gatewayUrl } from '@/lib/env'
 import type {
   CreateWorkspaceResult,
+  ListWorkspacesResult,
+  WorkspaceListItem,
   WorkspaceStatus,
 } from '@/features/workspace/types'
 
@@ -43,4 +47,82 @@ export async function createWorkspace(
     status: data.status,
     containerName: data.container_name,
   }
+}
+
+type WorkspaceListItemApiData = {
+  workspace_id: string
+  name: string
+  status: WorkspaceStatus
+  healthy: boolean
+  host_port: number | null
+  desktop_port: number | null
+  created_at: string
+}
+
+type ListWorkspacesApiData = {
+  workspaces: WorkspaceListItemApiData[]
+  limit: number
+  offset: number
+}
+
+export type ListWorkspacesQuery = {
+  limit?: number
+  offset?: number
+}
+
+function mapListItem(row: WorkspaceListItemApiData): WorkspaceListItem {
+  return {
+    workspaceId: row.workspace_id,
+    name: row.name,
+    status: row.status,
+    healthy: row.healthy,
+    hostPort: row.host_port,
+    desktopPort: row.desktop_port,
+    createdAt: row.created_at,
+  }
+}
+
+/**
+ * GET /workspaces. Omit `limit`/`offset` to use the gateway defaults
+ * (echoed back on the result). Do not send negatives — the gateway
+ * rejects those with `invalid_pagination`. A `limit` above the gateway
+ * cap is clamped server-side; trust `result.limit`, not what you asked.
+ */
+export async function listWorkspaces(
+  query: ListWorkspacesQuery = {},
+): Promise<ListWorkspacesResult> {
+  const params = new URLSearchParams()
+  if (query.limit !== undefined) params.set('limit', String(query.limit))
+  if (query.offset !== undefined) params.set('offset', String(query.offset))
+  const suffix = params.size > 0 ? `?${params}` : ''
+  const data = await apiFetch<ListWorkspacesApiData>(gatewayUrl(), `/workspaces${suffix}`)
+  return {
+    workspaces: data.workspaces.map(mapListItem),
+    limit: data.limit,
+    offset: data.offset,
+  }
+}
+
+/**
+ * DELETE /workspaces/:id. Stops the container (if any) and drops the
+ * store row. Unknown id → `ApiError.code === 'workspace_not_found'`.
+ * Docker remove failure → `workspace_delete_failed` (row kept).
+ */
+export async function deleteWorkspace(workspaceId: string): Promise<{ workspaceId: string }> {
+  const data = await apiFetch<{ workspace_id: string }>(
+    gatewayUrl(),
+    `/workspaces/${encodeURIComponent(workspaceId)}`,
+    { method: 'DELETE' },
+  )
+  return { workspaceId: data.workspace_id }
+}
+
+/** Hermes WebUI for this workspace, via the gateway proxy (new tab). */
+export function hermesWebuiUrl(workspaceId: string): string {
+  return `${gatewayUrl()}/workspaces/${encodeURIComponent(workspaceId)}/hermes-webui/`
+}
+
+/** Webtop desktop UI for this workspace, via the gateway proxy (new tab). */
+export function desktopUrl(workspaceId: string): string {
+  return `${gatewayUrl()}/workspaces/${encodeURIComponent(workspaceId)}/desktop/`
 }
