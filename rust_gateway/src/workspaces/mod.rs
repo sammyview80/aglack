@@ -22,6 +22,7 @@ pub(crate) mod route;
 mod store;
 #[cfg(test)]
 pub(crate) mod test_support;
+mod wrapper_prefix_proxy;
 
 pub use agent_seeder_proxy::{agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path};
 pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};

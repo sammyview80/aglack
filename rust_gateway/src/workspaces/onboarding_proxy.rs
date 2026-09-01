@@ -1,8 +1,7 @@
 //! `ANY /workspaces/:id/onboarding/*path` (and its no-trailing-path
-//! sibling, `/workspaces/:id/onboarding/`) — validates `id` via
-//! `resolve.rs` (must exist AND be `ready`), then forwards the request to
-//! that specific workspace's wrapper at
-//! `http://127.0.0.1:<wrapper_port>/api/wrapper/v1/onboarding/<path>` (see
+//! sibling, `/workspaces/:id/onboarding/`) — thin handler pair delegating
+//! to `wrapper_prefix_proxy::forward_to_wrapper_namespace` with namespace
+//! `"onboarding"` (see
 //! `backend/wrapper/src/hermes_webui_wrapper/api/v1/onboarding.py` for the
 //! wrapper-side routes this forwards to).
 //!
@@ -16,9 +15,8 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::resolve::resolve_ready_workspace;
 use super::route::WorkspacesState;
-use crate::proxy::forward_to;
+use super::wrapper_prefix_proxy::forward_to_wrapper_namespace;
 
 /// Handles `/workspaces/:id/onboarding/*path` — axum captures both
 /// segments, so `path` is always present here (possibly empty only if a
@@ -28,7 +26,7 @@ pub async fn onboarding_proxy_route_with_path(
     Path((workspace_id, path)): Path<(String, String)>,
     req: Request,
 ) -> Response {
-    onboarding_proxy(state, workspace_id, &path, req).await
+    forward_to_wrapper_namespace(state, workspace_id, "onboarding", &path, req).await
 }
 
 /// Handles `/workspaces/:id/onboarding/` (the exact prefix, no further
@@ -40,37 +38,7 @@ pub async fn onboarding_proxy_route_root(
     Path(workspace_id): Path<String>,
     req: Request,
 ) -> Response {
-    onboarding_proxy(state, workspace_id, "", req).await
-}
-
-async fn onboarding_proxy(
-    state: Arc<WorkspacesState>,
-    workspace_id: String,
-    path: &str,
-    req: Request,
-) -> Response {
-    let ports = match resolve_ready_workspace(&state.store, &workspace_id).await {
-        Ok(ports) => ports,
-        Err(response) => return response,
-    };
-
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
-    // Preserve the original request's query string (e.g. GET
-    // /oauth/poll?flow_id=... — see backend/wrapper's onboarding routes) —
-    // only the PATH is being rewritten to strip this route's own
-    // `/workspaces/:id/onboarding` prefix.
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-    let rewritten_path = if path.is_empty() {
-        format!("/api/wrapper/v1/onboarding{query}")
-    } else {
-        format!("/api/wrapper/v1/onboarding/{path}{query}")
-    };
-
-    forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await
+    forward_to_wrapper_namespace(state, workspace_id, "onboarding", "", req).await
 }
 
 #[cfg(test)]

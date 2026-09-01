@@ -1,9 +1,7 @@
 //! `ANY /workspaces/:id/agent-seeder/*path` (and its no-trailing-path
-//! sibling, `/workspaces/:id/agent-seeder/`) — validates `id` via
-//! `resolve.rs` (must exist AND be `ready`), then forwards the request to
-//! that specific workspace's wrapper at
-//! `http://127.0.0.1:<wrapper_port>/api/wrapper/v1/agent-seeder/<path>`
-//! (see
+//! sibling, `/workspaces/:id/agent-seeder/`) — thin handler pair
+//! delegating to `wrapper_prefix_proxy::forward_to_wrapper_namespace` with
+//! namespace `"agent-seeder"` (see
 //! `backend/wrapper/src/hermes_webui_wrapper/api/v1/agent_seeder.py` for
 //! the wrapper-side routes this forwards to).
 //!
@@ -17,9 +15,8 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::resolve::resolve_ready_workspace;
 use super::route::WorkspacesState;
-use crate::proxy::forward_to;
+use super::wrapper_prefix_proxy::forward_to_wrapper_namespace;
 
 /// Handles `/workspaces/:id/agent-seeder/*path` — axum captures both
 /// segments, so `path` is always present here (possibly empty only if a
@@ -29,7 +26,7 @@ pub async fn agent_seeder_proxy_route_with_path(
     Path((workspace_id, path)): Path<(String, String)>,
     req: Request,
 ) -> Response {
-    agent_seeder_proxy(state, workspace_id, &path, req).await
+    forward_to_wrapper_namespace(state, workspace_id, "agent-seeder", &path, req).await
 }
 
 /// Handles `/workspaces/:id/agent-seeder/` (the exact prefix, no further
@@ -41,36 +38,7 @@ pub async fn agent_seeder_proxy_route_root(
     Path(workspace_id): Path<String>,
     req: Request,
 ) -> Response {
-    agent_seeder_proxy(state, workspace_id, "", req).await
-}
-
-async fn agent_seeder_proxy(
-    state: Arc<WorkspacesState>,
-    workspace_id: String,
-    path: &str,
-    req: Request,
-) -> Response {
-    let ports = match resolve_ready_workspace(&state.store, &workspace_id).await {
-        Ok(ports) => ports,
-        Err(response) => return response,
-    };
-
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
-    // Preserve the original request's query string — only the PATH is
-    // being rewritten to strip this route's own
-    // `/workspaces/:id/agent-seeder` prefix.
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-    let rewritten_path = if path.is_empty() {
-        format!("/api/wrapper/v1/agent-seeder{query}")
-    } else {
-        format!("/api/wrapper/v1/agent-seeder/{path}{query}")
-    };
-
-    forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await
+    forward_to_wrapper_namespace(state, workspace_id, "agent-seeder", "", req).await
 }
 
 #[cfg(test)]

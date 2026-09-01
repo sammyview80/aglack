@@ -61,6 +61,9 @@ src/
 │   │   ├── list.rs                 GET /workspaces
 │   │   ├── delete.rs               DELETE /workspaces/:id
 │   │   └── diagnose.rs             POST /workspaces/:id/diagnose
+│   ├── wrapper_prefix_proxy.rs   shared resolve→rewrite→forward logic for
+│   │                             every /workspaces/:id/<namespace>/*path
+│   │                             wrapper-namespace proxy
 │   ├── onboarding_proxy.rs       ANY /workspaces/:id/onboarding/*path
 │   ├── agent_seeder_proxy.rs     ANY /workspaces/:id/agent-seeder/*path
 │   ├── hermes_webui_proxy.rs     ANY /workspaces/:id/hermes-webui/*path
@@ -80,12 +83,14 @@ top-level route → `app.rs`'s route table + a new file in `workspaces/route/`
 concern → a new file in `workspaces/container/`, not a bigger
 `docker_launcher.rs`. New per-workspace proxy feature (a fifth namespace
 beyond onboarding/agent-seeder/hermes-webui/desktop) → a new
-`workspaces/<name>_proxy.rs` reusing `resolve.rs` + `proxy::forward_to`,
-matching the existing four (register it in `app.rs` via
-`register_workspace_proxy_pair` and add it to
+`workspaces/<name>_proxy.rs` holding only a thin root+wildcard handler
+pair that delegates to `wrapper_prefix_proxy::forward_to_wrapper_namespace`
+with its namespace prefix (see `agent_seeder_proxy.rs` for the exact
+shape — a few lines, not a copied module), then register it in `app.rs`
+via `register_workspace_proxy_pair` and add it to
 `every_proxy_feature_prefix_is_reachable_through_the_real_router`'s URI
-list — see `agent_seeder_proxy.rs`'s own addition for the exact diff
-shape). No empty placeholder folders — a module
+list. Behavior tests (unknown-id 404, not-ready rejection, prefix-strip
+rewrite) live with the namespace module. No empty placeholder folders — a module
 folder (`container/`, `route/`) earns its `mod.rs` only once it actually
 holds more than one file's worth of one clear responsibility; do not
 pre-split a small, single-purpose file (e.g. `store.rs`, `diagnosis.rs`)
