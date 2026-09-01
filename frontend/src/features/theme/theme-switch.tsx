@@ -12,6 +12,7 @@ export function ThemeSwitch() {
       variant="ghost"
       size="icon"
       role="switch"
+      className="threads-theme-switch"
       aria-checked={dark}
       aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
       onClick={toggleTheme}

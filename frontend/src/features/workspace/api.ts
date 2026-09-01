@@ -1,7 +1,7 @@
 /**
  * Client for rust_gateway's /workspaces routes (see
  * rust_gateway/src/workspaces/route.rs): POST create, GET list,
- * DELETE by id. Hermes WebUI / desktop URLs are gateway proxy prefixes,
+ * DELETE by id, POST diagnose. Hermes WebUI / desktop URLs are gateway proxy prefixes,
  * not the wrapper's own origin.
  *
  * Base URL comes from VITE_GATEWAY_URL via lib/env.ts — never hardcode
@@ -13,6 +13,9 @@ import { apiFetch } from '@/lib/api'
 import { gatewayUrl } from '@/lib/env'
 import type {
   CreateWorkspaceResult,
+  DiagnosisAction,
+  DiagnosisReport,
+  DiagnosisSnapshot,
   ListWorkspacesResult,
   WorkspaceListItem,
   WorkspaceStatus,
@@ -115,6 +118,54 @@ export async function deleteWorkspace(workspaceId: string): Promise<{ workspaceI
     { method: 'DELETE' },
   )
   return { workspaceId: data.workspace_id }
+}
+
+type DiagnosisSnapshotApi = {
+  container_running: boolean
+  container_exit_code: number | null
+  container_oom_killed: boolean
+  wrapper_healthy: boolean
+  desktop_healthy: boolean
+}
+
+type DiagnosisReportApi = {
+  workspace_id: string
+  before: DiagnosisSnapshotApi
+  action: DiagnosisAction
+  after: DiagnosisSnapshotApi | null
+}
+
+function mapSnapshot(row: DiagnosisSnapshotApi): DiagnosisSnapshot {
+  return {
+    containerRunning: row.container_running,
+    containerExitCode: row.container_exit_code,
+    containerOomKilled: row.container_oom_killed,
+    wrapperHealthy: row.wrapper_healthy,
+    desktopHealthy: row.desktop_healthy,
+  }
+}
+
+/**
+ * POST /workspaces/:id/diagnose. Inspects Docker state + live wrapper/
+ * desktop health. If unhealthy, stop then start the existing container
+ * and re-checks. HTTP 200 even when a restart does not fix things —
+ * read `action` + `after`, do not treat 200 as "now healthy".
+ * Unknown id → `workspace_not_found`. No container yet →
+ * `workspace_no_container`. Inspect/store failure →
+ * `workspace_diagnosis_failed`.
+ */
+export async function diagnoseWorkspace(workspaceId: string): Promise<DiagnosisReport> {
+  const data = await apiFetch<DiagnosisReportApi>(
+    gatewayUrl(),
+    `/workspaces/${encodeURIComponent(workspaceId)}/diagnose`,
+    { method: 'POST' },
+  )
+  return {
+    workspaceId: data.workspace_id,
+    before: mapSnapshot(data.before),
+    action: data.action,
+    after: data.after ? mapSnapshot(data.after) : null,
+  }
 }
 
 /** Hermes WebUI for this workspace, via the gateway proxy (new tab). */

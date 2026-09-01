@@ -42,3 +42,26 @@ export type ListWorkspacesResult = {
   offset: number
 }
 
+/** One live look at a workspace container — `before` / `after` on diagnose. */
+export type DiagnosisSnapshot = {
+  containerRunning: boolean
+  containerExitCode: number | null
+  containerOomKilled: boolean
+  wrapperHealthy: boolean
+  desktopHealthy: boolean
+}
+
+export type DiagnosisAction = 'none' | 'restarted' | 'restart_failed'
+
+/**
+ * POST /workspaces/:id/diagnose. `after` is null when nothing changed
+ * (`none`) or the stop/start command itself failed (`restart_failed`).
+ * `restarted` always has `after`, which may still be unhealthy.
+ */
+export type DiagnosisReport = {
+  workspaceId: string
+  before: DiagnosisSnapshot
+  action: DiagnosisAction
+  after: DiagnosisSnapshot | null
+}
+

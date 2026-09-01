@@ -1,12 +1,6 @@
 import type { ReactNode } from 'react'
+import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 
 type PageFallbackProps = {
   title: string
@@ -14,34 +8,41 @@ type PageFallbackProps = {
   actionLabel?: string
   onAction?: () => void
   extra?: ReactNode
+  embedded?: boolean
 }
 
-/** Shared empty / error / 404 card. Do not invent a second full-page fallback. */
-export function PageFallback({
+function FallbackBody({
   title,
   description,
   actionLabel,
   onAction,
   extra,
-}: PageFallbackProps) {
+}: Omit<PageFallbackProps, 'embedded'>) {
   return (
-    <main className="flex min-h-dvh items-center justify-center p-6">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>{title}</CardTitle>
-          <CardDescription>{description}</CardDescription>
-        </CardHeader>
-        {(onAction && actionLabel) || extra ? (
-          <CardContent className="flex flex-col gap-3">
-            {extra}
-            {onAction && actionLabel ? (
-              <Button type="button" onClick={onAction}>
-                {actionLabel}
-              </Button>
-            ) : null}
-          </CardContent>
-        ) : null}
-      </Card>
-    </main>
+    <>
+      <h2>{title}</h2>
+      <div className="divider" />
+      <p className="post-copy">{description}</p>
+      {(onAction && actionLabel) || extra ? (
+        <div className="mt-6 flex flex-col gap-3">
+          {extra}
+          {onAction && actionLabel ? (
+            <Button type="button" onClick={onAction}>
+              {actionLabel}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
+/** Shared empty / error / 404 card. Do not invent a second full-page fallback. */
+export function PageFallback({ embedded = false, ...props }: PageFallbackProps) {
+  if (embedded) return <FallbackBody {...props} />
+  return (
+    <SlackOnboardingLayout title={props.title}>
+      <FallbackBody {...props} />
+    </SlackOnboardingLayout>
   )
 }

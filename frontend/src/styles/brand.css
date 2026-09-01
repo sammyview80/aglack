@@ -1,4 +1,4 @@
-/* Brand palette. Change the four hex values — onboarding + Discord follow. */
+/* Threads palette. Light matches Bolt chrome; dark is the same system inverted. */
 :root {
   --brand-plum: #450c3f;
   --brand-plum-deep: #2a0726;
@@ -12,21 +12,20 @@
   --brand-muted: #7a4a73;
   --brand-line: #d2e4a8;
 
-  --brand-bg: var(--brand-cream);
-  --brand-fg: var(--brand-plum);
-  --brand-muted-fg: var(--brand-muted);
-  --brand-primary: var(--brand-sage);
-  --brand-primary-hover: color-mix(in srgb, var(--brand-sage) 72%, white);
-  --brand-on-primary: var(--brand-plum);
-  --brand-surface: var(--brand-cream);
-  --brand-preview: var(--brand-plum);
-  --brand-hover: var(--brand-pale);
-  --brand-accent: var(--brand-sage);
-  --brand-accent-bg: color-mix(in srgb, var(--brand-sage) 35%, transparent);
-  --brand-accent-text: var(--brand-plum);
-  --brand-border: var(--brand-line);
+  --brand-bg: #f8f8f9;
+  --brand-fg: #25252d;
+  --brand-muted-fg: #77777e;
+  --brand-primary: #6743ed;
+  --brand-primary-hover: #7652ed;
+  --brand-on-primary: #ffffff;
+  --brand-surface: #ffffff;
+  --brand-preview: #fafafb;
+  --brand-hover: #e7e7eb;
+  --brand-accent: #6743ed;
+  --brand-accent-bg: #f0ebff;
+  --brand-accent-text: #6947df;
+  --brand-border: #e3e3e5;
 
-  /* Slack workspace (Discord route). Onboarding still uses cream/plum. */
   --slack-bg: #ffffff;
   --slack-hover: #f8f8f8;
   --slack-selected: #e8e8e8;
@@ -35,33 +34,33 @@
   --slack-text: #1d1c1d;
   --slack-muted: #616061;
   --slack-faint: #868686;
-  --slack-blue: #1264a3;
+  --slack-blue: #6743ed;
   --slack-rail-selected: rgba(255, 255, 255, 0.16);
 }
 
 html[data-theme="dark"] {
-  --brand-bg: #1a1d21;
-  --brand-fg: #e8e8e8;
-  --brand-muted-fg: #9a9b9e;
-  --brand-primary: #1d9bd1;
-  --brand-primary-hover: #2eb0e8;
+  --brand-bg: #16161c;
+  --brand-fg: #ececef;
+  --brand-muted-fg: #9a9aa3;
+  --brand-primary: #7b5cff;
+  --brand-primary-hover: #8f74ff;
   --brand-on-primary: #ffffff;
-  --brand-surface: #222529;
-  --brand-preview: #1a1d21;
-  --brand-hover: #2c2d30;
-  --brand-accent: #1d9bd1;
-  --brand-accent-bg: color-mix(in srgb, #1d9bd1 22%, transparent);
-  --brand-accent-text: #e8e8e8;
-  --brand-border: rgba(232, 232, 232, 0.13);
+  --brand-surface: #23232b;
+  --brand-preview: #1c1c22;
+  --brand-hover: #2c2c34;
+  --brand-accent: #7b5cff;
+  --brand-accent-bg: color-mix(in srgb, #7b5cff 22%, transparent);
+  --brand-accent-text: #cfc4ff;
+  --brand-border: #34343c;
 
-  --slack-bg: #1a1d21;
-  --slack-hover: #222529;
-  --slack-selected: #2c2d30;
-  --slack-border: rgba(232, 232, 232, 0.13);
-  --slack-border-strong: rgba(232, 232, 232, 0.28);
-  --slack-text: #d1d2d3;
-  --slack-muted: #9a9b9e;
+  --slack-bg: #1c1c22;
+  --slack-hover: #23232b;
+  --slack-selected: #2c2c34;
+  --slack-border: rgba(236, 236, 239, 0.13);
+  --slack-border-strong: rgba(236, 236, 239, 0.28);
+  --slack-text: #ececef;
+  --slack-muted: #9a9aa3;
   --slack-faint: #6f7072;
-  --slack-blue: #1d9bd1;
+  --slack-blue: #7b5cff;
   --slack-rail-selected: rgba(255, 255, 255, 0.16);
 }

@@ -1,13 +1,7 @@
+import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { Button } from '@/components/ui/button'
 import { PageFallback } from '@/components/page-fallback'
 import { StatusAlert } from '@/components/status-alert'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import type { CreateWorkspaceResult } from '@/features/workspace/types'
 
 type CreatingStatusProps = {
@@ -43,35 +37,36 @@ export function CreatingStatus({
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center p-6">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>Workspace: {workspaceName}</CardTitle>
-          <CardDescription>
-            {result.status === 'ready' && `Ready. Container: ${result.containerName}`}
-            {result.status === 'creating' &&
-              'Still creating — the gateway accepted the request but there is no status endpoint yet to confirm when it finishes. Try again in a moment.'}
-            {result.status === 'failed' && 'Workspace creation failed.'}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <StatusAlert message={error} />
-          {result.status === 'ready' ? (
-            <>
-              <Button type="button" onClick={onContinue}>
-                Continue to setup
-              </Button>
-              <Button type="button" variant="ghost" onClick={onDone}>
-                Done
-              </Button>
-            </>
-          ) : (
-            <Button type="button" onClick={onRetry} disabled={busy}>
-              {busy ? 'Working…' : result.status === 'failed' ? 'Retry' : 'Try again'}
+    <SlackOnboardingLayout title="Creating" workspaceName={workspaceName} busy={busy}>
+      <h2>
+        {result.status === 'ready' && 'Ready'}
+        {result.status === 'creating' && 'Still creating'}
+        {result.status === 'failed' && 'Creation failed'}
+      </h2>
+      <div className="divider" />
+      <p className="post-copy">
+        {result.status === 'ready' && `Container: ${result.containerName}`}
+        {result.status === 'creating' &&
+          'The gateway accepted the request but there is no status endpoint yet to confirm when it finishes. Try again in a moment.'}
+        {result.status === 'failed' && 'Workspace creation failed.'}
+      </p>
+      <div className="mt-6 flex flex-col gap-3">
+        <StatusAlert message={error} />
+        {result.status === 'ready' ? (
+          <>
+            <Button type="button" size="lg" onClick={onContinue}>
+              Continue to setup
             </Button>
-          )}
-        </CardContent>
-      </Card>
-    </main>
+            <Button type="button" variant="ghost" onClick={onDone}>
+              Done
+            </Button>
+          </>
+        ) : (
+          <Button type="button" size="lg" onClick={onRetry} disabled={busy}>
+            {busy ? 'Working…' : result.status === 'failed' ? 'Retry' : 'Try again'}
+          </Button>
+        )}
+      </div>
+    </SlackOnboardingLayout>
   )
 }

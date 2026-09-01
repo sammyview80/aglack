@@ -1,28 +1,36 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   ArrowRight,
   ExternalLink,
+  HeartPulse,
   KeyRound,
+  MessageCircle,
   Plus,
   RefreshCw,
   Search,
   Terminal,
   Trash2,
 } from 'lucide-react'
-import { BrandMark } from '@/components/brand-mark'
+import { toast } from 'sonner'
+import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { PageFallback } from '@/components/page-fallback'
 import { StatusAlert } from '@/components/status-alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ThemeSwitch } from '@/features/theme/theme-switch'
 import {
   deleteWorkspace,
   desktopUrl,
+  diagnoseWorkspace,
   hermesWebuiUrl,
   listWorkspaces,
 } from '@/features/workspace/api'
-import { WorkspacePreview } from '@/features/workspace/components/workspace-preview'
-import type { WorkspaceListItem, WorkspaceStatus } from '@/features/workspace/types'
+import type {
+  DiagnosisReport,
+  DiagnosisSnapshot,
+  WorkspaceListItem,
+  WorkspaceStatus,
+} from '@/features/workspace/types'
 import { handleError } from '@/lib/handle-error'
 import { cn } from '@/lib/utils'
 
@@ -32,17 +40,12 @@ const LIST_ERRORS: Record<string, string> = {
   workspace_not_found: 'That workspace is already gone.',
   workspace_delete_failed: 'Could not stop the workspace container.',
   workspace_store_failed: 'Could not delete the workspace record.',
+  workspace_no_container: 'This workspace has no container to diagnose yet.',
+  workspace_diagnosis_failed: 'Could not inspect the workspace container.',
   network: 'Cannot reach the gateway. Is rust_gateway running?',
 }
 
 type FilterId = 'all' | 'healthy' | WorkspaceStatus
-
-const FILTERS: { id: FilterId; label: string }[] = [
-  { id: 'all', label: 'All' },
-  { id: 'healthy', label: 'Healthy' },
-  { id: 'creating', label: 'Starting' },
-  { id: 'failed', label: 'Failed' },
-]
 
 type WorkspaceListProps = {
   onCreate: () => void
@@ -55,35 +58,49 @@ function avatarColor(id: string): string {
     hash = (hash << 5) - hash + id.charCodeAt(i)
     hash |= 0
   }
-  return `hsl(${Math.abs(hash) % 360}, 62%, 45%)`
+  return `hsl(${Math.abs(hash) % 360}, 48%, 46%)`
 }
 
-/**
- * Combines `status` (the DB's last-written state) with `healthy` (the
- * gateway's live check on THIS list call — see
- * rust_gateway/docs/list-workspaces-plan.md) into one label. A `ready`
- * row whose container has since crashed/hung reads as "Unhealthy", not
- * "Ready" — the two fields are independent on the wire, but a user
- * looking at one row needs a single, honest answer to "can I use this
- * right now."
- */
 function statusLabel(status: WorkspaceStatus, healthy: boolean): string {
   if (status === 'creating') return 'Creating'
   if (status === 'failed') return 'Failed'
   return healthy ? 'Ready' : 'Unhealthy'
 }
 
-/** Dot color for the live health indicator — see `statusLabel` above. */
-function healthDotClass(status: WorkspaceStatus, healthy: boolean): string {
-  if (status === 'creating') return 'bg-amber-500'
-  if (status === 'failed') return 'bg-destructive'
-  return healthy ? 'bg-emerald-500' : 'bg-destructive'
+function snapshotUnhealthy(s: DiagnosisSnapshot): boolean {
+  return !s.containerRunning || !s.wrapperHealthy || !s.desktopHealthy
 }
 
-const TOOL_BTN =
-  'grid size-8 shrink-0 place-items-center rounded-md border-0 bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40'
+function snapshotDetail(s: DiagnosisSnapshot): string {
+  const bits: string[] = []
+  if (!s.containerRunning) {
+    if (s.containerOomKilled) bits.push('container OOM-killed')
+    else if (s.containerExitCode != null) {
+      bits.push(`container not running (exit ${s.containerExitCode})`)
+    } else bits.push('container not running')
+  }
+  if (!s.wrapperHealthy) bits.push('wrapper down')
+  if (!s.desktopHealthy) bits.push('desktop down')
+  return bits.join(', ') || 'unhealthy'
+}
+
+function diagnosisMessage(report: DiagnosisReport): { ok: boolean; text: string } {
+  if (report.action === 'none') {
+    return { ok: true, text: 'Already healthy. Nothing restarted.' }
+  }
+  if (report.action === 'restart_failed') {
+    return { ok: false, text: 'Could not restart the container (Docker stop/start failed).' }
+  }
+  const after = report.after
+  if (!after || snapshotUnhealthy(after)) {
+    const detail = after ? snapshotDetail(after) : 'still unhealthy'
+    return { ok: false, text: `Restarted, still unhealthy: ${detail}.` }
+  }
+  return { ok: true, text: 'Restarted. Workspace is healthy.' }
+}
 
 export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
+  const navigate = useNavigate()
   const [items, setItems] = useState<WorkspaceListItem[]>([])
   const [pageLimit, setPageLimit] = useState<number | null>(null)
   const [lastPageFull, setLastPageFull] = useState(false)
@@ -93,6 +110,7 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<FilterId>('all')
   const [previewId, setPreviewId] = useState<string | null>(null)
+  const [ready, setReady] = useState(false)
 
   async function loadFirst() {
     const next = await listWorkspaces()
@@ -116,6 +134,9 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
             }),
           )
         }
+      })
+      .finally(() => {
+        if (!cancelled) setReady(true)
       })
     return () => {
       cancelled = true
@@ -189,19 +210,38 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
     }
   }
 
-  const rowBusy = busy || busyId !== null
+  async function handleDiagnose(row: WorkspaceListItem) {
+    setBusyId(row.workspaceId)
+    setLoadError('')
+    const toastId = toast.loading(`Diagnosing "${row.name}"…`)
+    try {
+      const report = await diagnoseWorkspace(row.workspaceId)
+      const { ok, text } = diagnosisMessage(report)
+      toast.dismiss(toastId)
+      if (ok) toast.success(text)
+      else toast.error(text)
+      setLoadError(ok ? '' : text)
+      await loadFirst()
+    } catch (err) {
+      toast.dismiss(toastId)
+      setLoadError(
+        handleError(err, {
+          fallback: 'Failed to diagnose workspace',
+          messagesByCode: LIST_ERRORS,
+        }),
+      )
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const rowBusy = !ready || busy || busyId !== null
 
   const { filtered, healthyCount } = useMemo(() => {
     const query = search.trim().toLowerCase()
     let healthy = 0
     const visible = items.filter((item) => {
       if (item.healthy) healthy += 1
-      // 'healthy' filters on the LIVE per-request check (item.healthy),
-      // not the DB's last-written `status` — a `ready` row whose
-      // container has since crashed/hung must not show under "Healthy"
-      // (see rust_gateway/docs/list-workspaces-plan.md's "Live health
-      // check" section). Every other filter still matches `status`
-      // directly (creating/failed have no live check to differ from).
       const matchesFilter =
         filter === 'all' || (filter === 'healthy' ? item.healthy : item.status === filter)
       const matchesSearch =
@@ -214,11 +254,8 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
     return { filtered: visible, healthyCount: healthy }
   }, [filter, items, search])
 
-  const previewName =
-    filtered.find((item) => item.workspaceId === previewId)?.name ||
-    filtered[0]?.name ||
-    items[0]?.name ||
-    'Hermes'
+  const previewRow =
+    filtered.find((item) => item.workspaceId === previewId) || filtered[0] || items[0]
 
   if (loadError && items.length === 0) {
     return (
@@ -232,196 +269,210 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
   }
 
   return (
-    <div className="grid min-h-dvh lg:grid-cols-[minmax(0,1fr)_minmax(280px,46vw)]">
-      <section className="flex min-h-0 min-w-0 flex-col">
-        <header className="flex shrink-0 items-center justify-between gap-4 px-6 pt-4">
-          <BrandMark />
-          <ThemeSwitch />
-        </header>
+    <SlackOnboardingLayout workspaceName={previewRow?.name || 'Hermes'} title="Workspaces">
+      <h2>Workspaces</h2>
+      <div className="divider" />
+      <p className="post-copy">
+        {!ready
+          ? 'Loading workspaces…'
+          : items.length > 0
+            ? `${items.length} workspace${items.length === 1 ? '' : 's'}${
+                healthyCount > 0 ? ` · ${healthyCount} healthy` : ''
+              }`
+            : 'Create one to launch Hermes.'}
+      </p>
 
-        <div className="mx-auto flex w-full max-w-lg flex-1 flex-col justify-center gap-4 px-6 py-8">
-          <div className="flex items-end justify-between gap-3">
-            <h1 className="text-[clamp(1.65rem,3.2vw,2.15rem)] font-bold tracking-tight">
-              Workspaces
-            </h1>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={rowBusy}
-              onClick={() => void refresh()}
-              title="Refresh"
-            >
-              <RefreshCw />
-              Refresh
-            </Button>
+      <div className="mt-5 flex w-full items-center justify-end gap-3">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={rowBusy}
+          onClick={() => void refresh()}
+          title="Refresh"
+        >
+          <RefreshCw className={cn((!ready || busy) && 'animate-spin')} aria-hidden="true" />
+          Refresh
+        </Button>
+      </div>
+
+      {items.length > 0 ? (
+        <>
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              type="search"
+              placeholder="Search by name"
+              aria-label="Search workspaces"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              disabled={!ready}
+              className="pl-9"
+            />
           </div>
+          <div className="flex flex-wrap gap-1" role="tablist" aria-label="Filter by status">
+            {(
+              [
+                ['all', 'All'],
+                ['healthy', 'Healthy'],
+                ['creating', 'Starting'],
+                ['failed', 'Failed'],
+              ] as const
+            ).map(([id, label]) => (
+              <Button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={filter === id}
+                variant={filter === id ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => setFilter(id)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+        </>
+      ) : null}
 
-          <p className="text-sm text-muted-foreground">
-            {items.length > 0
-              ? `${items.length} workspace${items.length === 1 ? '' : 's'}${
-                  healthyCount > 0 ? ` · ${healthyCount} healthy` : ''
-                }`
-              : 'Create one to launch Hermes.'}
-          </p>
+      <StatusAlert message={loadError} />
 
-          <StatusAlert message={loadError} />
-
-          {items.length > 0 ? (
-            <>
-              <div className="relative">
-                <Search
-                  className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <Input
-                  type="search"
-                  placeholder="Search by name or id"
-                  aria-label="Search workspaces"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="h-10 rounded-full pl-10"
-                />
-              </div>
-              <div className="flex flex-wrap gap-2" role="tablist" aria-label="Filter by status">
-                {FILTERS.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={filter === f.id}
-                    className={cn(
-                      'h-7 cursor-pointer rounded-full border px-3 text-xs font-semibold transition-colors',
-                      filter === f.id
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-input bg-transparent text-muted-foreground hover:bg-muted',
-                    )}
-                    onClick={() => setFilter(f.id)}
+      {!ready ? (
+        <p className="text-sm text-muted-foreground">Loading workspaces…</p>
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No workspaces yet.</p>
+      ) : filtered.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {search ? `No workspaces match “${search}”.` : 'No workspaces match this filter.'}
+        </p>
+      ) : (
+        <ul className="overflow-hidden rounded-xl border border-border" aria-label="Your workspaces">
+          {filtered.map((row) => {
+            const initial = row.name.trim().charAt(0).toUpperCase() || 'W'
+            const busyRow = busyId === row.workspaceId
+            const label =
+              busyRow ? 'Diagnosing…' : statusLabel(row.status, row.healthy)
+            return (
+              <li
+                key={row.workspaceId}
+                className="border-b border-border last:border-b-0"
+                onMouseEnter={() => setPreviewId(row.workspaceId)}
+                onFocusCapture={() => setPreviewId(row.workspaceId)}
+              >
+                <div className={cn('flex items-center hover:bg-muted', busyRow && 'opacity-55')}>
+                  <a
+                    className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-foreground no-underline"
+                    href={hermesWebuiUrl(row.workspaceId)}
+                    target="_blank"
+                    rel="noreferrer"
                   >
-                    {f.label}
-                  </button>
-                ))}
-              </div>
-            </>
-          ) : null}
-
-          {items.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No workspaces yet.</p>
-          ) : filtered.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              {search ? `No workspaces match “${search}”.` : 'No workspaces match this filter.'}
-            </p>
-          ) : (
-            <ul
-              className="max-h-[min(46vh,420px)] overflow-auto rounded-[10px] border border-input"
-              aria-label="Your workspaces"
-            >
-              {filtered.map((row) => {
-                const initial = row.name.trim().charAt(0).toUpperCase() || 'W'
-                const toolsDisabled = rowBusy
-                return (
-                  <li
-                    key={row.workspaceId}
-                    onMouseEnter={() => setPreviewId(row.workspaceId)}
-                    onFocusCapture={() => setPreviewId(row.workspaceId)}
-                  >
-                    <div className="group relative flex items-stretch">
-                      <span className="absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-r-sm bg-primary opacity-0 transition-opacity group-hover:opacity-100" />
-                      <a
-                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-4 py-2.5 no-underline hover:bg-muted"
-                        href={hermesWebuiUrl(row.workspaceId)}
-                        target="_blank"
-                        rel="noreferrer"
-                        title="Open Hermes Web"
+                    <span
+                      className="grid size-9 shrink-0 place-items-center rounded-lg text-sm font-bold text-white"
+                      style={{ background: avatarColor(row.workspaceId) }}
+                      aria-hidden="true"
+                    >
+                      {initial}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <strong className="block truncate text-sm font-semibold">{row.name}</strong>
+                      <span className="text-xs text-muted-foreground">{label}</span>
+                    </span>
+                    <span className="hidden items-center gap-1 text-sm font-medium text-primary sm:flex">
+                      Open
+                      <ArrowRight className="size-3.5" aria-hidden="true" />
+                    </span>
+                  </a>
+                  <span className="flex shrink-0 gap-0.5 pr-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled={rowBusy}
+                      onClick={() => onSetup(row.workspaceId)}
+                      title="Setup"
+                      aria-label="Setup"
+                    >
+                      <Terminal aria-hidden="true" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled={rowBusy}
+                      onClick={() =>
+                        navigate(`/workspaces/${row.workspaceId}/chat`, { state: { name: row.name } })
+                      }
+                      title="Chat"
+                      aria-label="Chat"
+                    >
+                      <MessageCircle aria-hidden="true" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled={rowBusy}
+                      onClick={() => onSetup(row.workspaceId)}
+                      title="Connect provider"
+                      aria-label="Connect provider"
+                    >
+                      <KeyRound aria-hidden="true" />
+                    </Button>
+                    <a
+                      className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
+                      href={desktopUrl(row.workspaceId)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open desktop"
+                      aria-label="Open desktop"
+                    >
+                      <ExternalLink aria-hidden="true" />
+                    </a>
+                    {row.status !== 'creating' ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        disabled={rowBusy}
+                        onClick={() => void handleDiagnose(row)}
+                        title="Diagnose"
+                        aria-label="Diagnose"
                       >
-                        <span
-                          className="grid size-9 shrink-0 place-items-center rounded-md text-sm font-bold text-[var(--brand-cream)]"
-                          style={{ background: avatarColor(row.workspaceId) }}
-                          aria-hidden="true"
-                        >
-                          {initial}
-                        </span>
-                        <span className="grid min-w-0 gap-px">
-                          <strong className="truncate text-[0.95rem] font-bold">{row.name}</strong>
-                          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                            <span
-                              className={cn('size-1.5 shrink-0 rounded-full', healthDotClass(row.status, row.healthy))}
-                              aria-hidden="true"
-                            />
-                            {statusLabel(row.status, row.healthy)}
-                          </span>
-                        </span>
-                        <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[0.82rem] font-bold text-primary">
-                          Open
-                          <ArrowRight className="size-3.5" aria-hidden="true" />
-                        </span>
-                      </a>
-                      <span className="flex shrink-0 items-center gap-0.5 pr-2.5">
-                        <button
-                          type="button"
-                          className={TOOL_BTN}
-                          disabled={toolsDisabled}
-                          onClick={() => onSetup(row.workspaceId)}
-                          title="Terminal and setup"
-                          aria-label="Setup"
-                        >
-                          <Terminal className="size-3.5" aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          className={TOOL_BTN}
-                          disabled={toolsDisabled}
-                          onClick={() => onSetup(row.workspaceId)}
-                          title="Connect model provider"
-                          aria-label="Connect provider"
-                        >
-                          <KeyRound className="size-3.5" aria-hidden="true" />
-                        </button>
-                        <a
-                          className={cn(TOOL_BTN, toolsDisabled && 'pointer-events-none opacity-40')}
-                          href={desktopUrl(row.workspaceId)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="Open desktop UI"
-                          aria-label="Open UI"
-                          aria-disabled={toolsDisabled}
-                        >
-                          <ExternalLink className="size-3.5" aria-hidden="true" />
-                        </a>
-                        <button
-                          type="button"
-                          className={`${TOOL_BTN} hover:text-destructive`}
-                          disabled={toolsDisabled}
-                          onClick={() => void handleDelete(row)}
-                          title={`Delete ${row.name}`}
-                          aria-label={`Delete ${row.name}`}
-                        >
-                          <Trash2 className="size-3.5" aria-hidden="true" />
-                        </button>
-                      </span>
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
+                        <HeartPulse aria-hidden="true" />
+                      </Button>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="icon-sm"
+                      disabled={rowBusy}
+                      onClick={() => void handleDelete(row)}
+                      title={`Delete ${row.name}`}
+                      aria-label={`Delete ${row.name}`}
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </Button>
+                  </span>
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
 
-          {lastPageFull ? (
-            <Button type="button" variant="outline" disabled={rowBusy} onClick={() => void loadMore()}>
-              {busy ? 'Loading…' : 'Load more'}
-            </Button>
-          ) : null}
+      {lastPageFull ? (
+        <Button type="button" variant="outline" className="w-full" disabled={rowBusy} onClick={() => void loadMore()}>
+          {busy ? 'Loading…' : 'Load more'}
+        </Button>
+      ) : null}
 
-          <div className="flex flex-wrap items-center gap-4 pt-1">
-            <Button type="button" size="lg" onClick={onCreate}>
-              <Plus />
-              New workspace
-            </Button>
-          </div>
-        </div>
-      </section>
-
-      <WorkspacePreview name={previewName} />
-    </div>
+      <Button type="button" size="lg" className="w-full" onClick={onCreate}>
+        <Plus aria-hidden="true" />
+        New workspace
+      </Button>
+    </SlackOnboardingLayout>
   )
 }
