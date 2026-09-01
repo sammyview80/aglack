@@ -9,6 +9,7 @@
 
 pub(crate) mod container;
 mod desktop_proxy;
+pub(crate) mod diagnosis;
 mod hermes_webui_proxy;
 mod onboarding_proxy;
 pub(crate) mod resolve;
@@ -22,7 +23,8 @@ pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path}
 pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
 pub use onboarding_proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
 pub use route::{
-    create_workspace_route, delete_workspace_route, list_workspaces_route, WorkspacesState,
+    create_workspace_route, delete_workspace_route, diagnose_workspace_route,
+    list_workspaces_route, WorkspacesState,
 };
 pub use store::{WorkspaceRecord, WorkspaceStatus, WorkspaceStore};
 

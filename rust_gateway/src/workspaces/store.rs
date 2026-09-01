@@ -297,6 +297,57 @@ impl WorkspaceStore {
             .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    /// Same effect as `mark_ready`, keyed by `workspace_id` instead of
+    /// `idempotency_key` — for `diagnosis.rs`, the only caller that ever
+    /// needs to update a row's status after a stop/start recovery cycle
+    /// and only has `workspace_id` in hand (every OTHER writer of status —
+    /// `create_workspace_route`'s `name`, etc. — already has the
+    /// idempotency key from its own request shape, so this exists as a
+    /// distinct method rather than replacing `mark_ready` everywhere).
+    /// `Ok(None)` means no row for `workspace_id` (the row was deleted
+    /// concurrently — an accepted small race, same tolerance every other
+    /// per-workspace route already has; see `resolve.rs`'s module doc).
+    pub async fn mark_ready_by_workspace_id(
+        &self,
+        workspace_id: &str,
+        container_name: &str,
+        host_port: u16,
+        desktop_port: u16,
+    ) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
+        let status = WorkspaceStatus::Ready.as_db_str();
+        sqlx::query(
+            "UPDATE workspace_creations \
+             SET status = ?, container_name = ?, host_port = ?, desktop_port = ? \
+             WHERE workspace_id = ?",
+        )
+        .bind(status)
+        .bind(container_name)
+        .bind(i64::from(host_port))
+        .bind(i64::from(desktop_port))
+        .bind(workspace_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.find_by_workspace_id(workspace_id).await
+    }
+
+    /// Same effect as `mark_failed`, keyed by `workspace_id` — see
+    /// `mark_ready_by_workspace_id`'s doc comment for why this distinct
+    /// method exists.
+    pub async fn mark_failed_by_workspace_id(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
+        let status = WorkspaceStatus::Failed.as_db_str();
+        sqlx::query("UPDATE workspace_creations SET status = ? WHERE workspace_id = ?")
+            .bind(status)
+            .bind(workspace_id)
+            .execute(&self.pool)
+            .await?;
+
+        self.find_by_workspace_id(workspace_id).await
+    }
 }
 
 /// Current UTC time as an ISO-8601 string. A tiny local helper rather than
@@ -433,5 +484,69 @@ mod list_tests {
             .await
             .expect("delete succeeds");
         assert!(!deleted);
+    }
+
+    #[tokio::test]
+    async fn mark_ready_by_workspace_id_updates_status_and_ports() {
+        let store = temp_store().await;
+        store
+            .begin_creation("to-heal", "id-heal")
+            .await
+            .expect("begin_creation succeeds");
+        store
+            .mark_failed("to-heal")
+            .await
+            .expect("mark_failed succeeds");
+
+        let updated = store
+            .mark_ready_by_workspace_id("id-heal", "container-1", 111, 222)
+            .await
+            .expect("mark_ready_by_workspace_id succeeds")
+            .expect("row exists");
+
+        assert_eq!(updated.status, WorkspaceStatus::Ready);
+        assert_eq!(updated.host_port, Some(111));
+        assert_eq!(updated.desktop_port, Some(222));
+    }
+
+    #[tokio::test]
+    async fn mark_ready_by_workspace_id_returns_none_for_unknown_id() {
+        let store = temp_store().await;
+        let result = store
+            .mark_ready_by_workspace_id("does-not-exist", "container-1", 111, 222)
+            .await
+            .expect("does not error");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn mark_failed_by_workspace_id_updates_status() {
+        let store = temp_store().await;
+        store
+            .begin_creation("to-fail", "id-fail")
+            .await
+            .expect("begin_creation succeeds");
+        store
+            .mark_ready("to-fail", "container-1", 111, 222)
+            .await
+            .expect("mark_ready succeeds");
+
+        let updated = store
+            .mark_failed_by_workspace_id("id-fail")
+            .await
+            .expect("mark_failed_by_workspace_id succeeds")
+            .expect("row exists");
+
+        assert_eq!(updated.status, WorkspaceStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn mark_failed_by_workspace_id_returns_none_for_unknown_id() {
+        let store = temp_store().await;
+        let result = store
+            .mark_failed_by_workspace_id("does-not-exist")
+            .await
+            .expect("does not error");
+        assert!(result.is_none());
     }
 }

@@ -90,7 +90,7 @@ revamp/
 
 ## rust_gateway — what's built and verified
 
-**`cargo test`: 57/57 passing.** Run from `rust_gateway/`:
+**`cargo test`: 74/74 passing.** Run from `rust_gateway/`:
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"   # cargo not on default PATH on this machine
 cargo test
@@ -186,6 +186,66 @@ for teardown (mirrors `create_workspace`). Looks up by `workspace_id`,
 success), then `DELETE FROM workspace_creations`. Unknown id →
 `404 workspace_not_found`. Docker failure → `502 workspace_delete_failed`,
 row kept so retry works. CORS `allow_methods` includes DELETE.
+
+### `POST /workspaces/:id/diagnose` — real diagnosis + auto-heal
+
+Plan doc: `docs/diagnose-workspace-plan.md`. A POST (not GET — it can
+mutate real infrastructure): real `docker inspect` state
+(running/exit-code/OOM-killed) + live wrapper/desktop health checks
+(same single-attempt checks `GET /workspaces` uses). If any of the three
+signals is unhealthy, runs a real `docker stop` then `docker start`
+(NOT `docker restart` — two explicit steps so a `stop` failure vs a
+`start` failure is visible separately), waits for both services with the
+SAME longer readiness polls `DockerCliLauncher::launch` itself uses (30s
+wrapper / 15s desktop — a restarted container boots exactly as slowly as
+a freshly created one), then reports the real post-heal state and
+updates the store row (`mark_ready_by_workspace_id`/
+`mark_failed_by_workspace_id` — new store methods keyed by
+`workspace_id`, since diagnosis only has that, not the idempotency key).
+
+Response: `{ workspace_id, before: {...}, action: "none"|"restarted"|
+"restart_failed", after: {...} | null }`. `before`/`after` share one
+shape: `container_running`, `container_exit_code`, `container_oom_killed`,
+`wrapper_healthy`, `desktop_healthy`. `action: "none"` (already healthy,
+never touched) has `after: null`; `"restart_failed"` (the stop/start
+command itself errored) also has `after: null`; `"restarted"` always has
+a real `after`, which may still show unhealthy — a restart that doesn't
+fix things is a legitimate, honestly-reported outcome, not hidden behind
+a generic failure.
+
+Errors: unknown id → `404 workspace_not_found`; a workspace that never
+launched a container (still `creating` or `failed` before any container
+existed) → `409 workspace_no_container` (nothing to diagnose) — but a
+`failed` workspace that DOES have a `container_name` (a previous launch
+got far enough to create one, then failed) still proceeds to real
+diagnosis, that's the useful case this exists for.
+
+`ContainerLauncher` gained three new trait methods for this:
+`inspect` (parses `docker inspect --format '{{json .State}}'`),
+`stop`, `start_existing` (starts an EXISTING container — distinct from
+`launch`, which `docker create`s a brand new one). `container.rs` also
+gained `check_desktop_health` (same shape as the existing
+`check_wrapper_health`) and made `wait_for_wrapper_ready`/
+`wait_for_desktop_ready` `pub(crate)` so `diagnosis.rs` can reuse the
+exact same readiness-polling logic `launch` already trusts, instead of
+reinventing it. `diagnose_workspace` in the new `diagnosis.rs` module
+takes a `DiagnosisTimeouts` parameter (not hardcoded constants) so tests
+can use short timeouts against `FakeLauncher`'s fake ports without the
+suite actually waiting the real 30s/15s — `DiagnosisTimeouts::
+production()` is what the real route uses.
+
+**Live end-to-end proof** (not just unit tests): a real `rust_gateway`
+process, real `DockerCliLauncher`, a real throwaway container launched
+via `POST /workspaces` (~5s to `Ready`) — diagnosed healthy
+(`action: "none"`) — then genuinely `docker kill`ed (real `Running:
+false`, `ExitCode: 137`) — diagnosed again, which correctly reported the
+real crash in `before`, ran a real `docker stop`+`start` cycle, and
+`after` showed the container really running again with both services
+really answering (~4.3s round trip). The store row's ports were
+confirmed unchanged across the restart (Docker doesn't reassign `-p`
+mappings on stop/start). Cleaned up (`DELETE`, throwaway DB removed)
+without touching this dev machine's real, separately-running workspace
+containers/DB.
 
 ### Container launch (`DockerCliLauncher` in `container.rs`)
 

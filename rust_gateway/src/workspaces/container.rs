@@ -32,6 +32,22 @@ pub struct LaunchedContainer {
     pub desktop_port: u16,
 }
 
+/// Real, live Docker container state — see `ContainerLauncher::inspect`.
+/// Every field here is read from `docker inspect`, never inferred or
+/// defaulted, except `running` when a container does not exist at all
+/// (see that method's doc comment for that one case).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerState {
+    pub running: bool,
+    /// `None` while the container has never exited (still running, or —
+    /// same as Docker's own `docker inspect` — has no exit code recorded
+    /// yet). `Some(0)` is a clean exit; a diagnosis caller treats ANY
+    /// non-running state as unhealthy regardless of the exact code, but
+    /// the real code is still surfaced for a human reading the report.
+    pub exit_code: Option<i64>,
+    pub oom_killed: bool,
+}
+
 #[async_trait]
 pub trait ContainerLauncher: Send + Sync {
     /// Start a new container for `workspace_id` and return its identity
@@ -48,6 +64,32 @@ pub trait ContainerLauncher: Send + Sync {
     /// container is success (already gone) — delete must still be able to
     /// drop the store row.
     async fn remove(&self, container_name: &str) -> Result<(), super::CreateWorkspaceError>;
+
+    /// Real, live Docker state for an EXISTING container — see
+    /// `../../docs/diagnose-workspace-plan.md`'s "real diagnosis" section
+    /// for why this (not just an HTTP health check) is needed: it is the
+    /// only way to distinguish "the container process itself is gone"
+    /// from "the container is up but the wrapper inside hung."
+    async fn inspect(
+        &self,
+        container_name: &str,
+    ) -> Result<ContainerState, super::CreateWorkspaceError>;
+
+    /// Stop (not remove) a running container — the container and its
+    /// data survive; only the process inside is signaled to exit. Used by
+    /// diagnosis's stop-then-start recovery cycle, never by `delete`
+    /// (which calls `remove` instead). A container that is already
+    /// stopped is success, matching `remove`'s "missing = already done"
+    /// convention.
+    async fn stop(&self, container_name: &str) -> Result<(), super::CreateWorkspaceError>;
+
+    /// Start an EXISTING, already-created container — distinct from
+    /// `launch`, which `docker create`s a brand new one. Used by
+    /// diagnosis's recovery cycle after `stop`; the container keeps its
+    /// original name and published ports (Docker does not reassign `-p`
+    /// mappings across a stop/start cycle).
+    async fn start_existing(&self, container_name: &str)
+        -> Result<(), super::CreateWorkspaceError>;
 }
 
 /// Real Docker launcher: shells out to the `docker` CLI (matching the
@@ -202,7 +244,13 @@ fn wrapper_boot_script() -> String {
 /// retries — the wrapper crashing loudly and fast (as it does when
 /// `wrapper_boot_script`'s safe.directory step is missing) should fail
 /// this wait quickly, not silently wait the full timeout every time.
-async fn wait_for_wrapper_ready(
+///
+/// `pub(crate)` (not just used by `launch` below): `diagnosis.rs`'s heal
+/// cycle also waits for a wrapper to come back up after `docker start`,
+/// for the exact same reason `launch` waits after `docker create`+`start`
+/// — a restarted container's wrapper takes the same real boot time as a
+/// freshly created one's.
+pub(crate) async fn wait_for_wrapper_ready(
     wrapper_port: u16,
     timeout: Duration,
 ) -> Result<(), super::CreateWorkspaceError> {
@@ -232,7 +280,10 @@ async fn wait_for_wrapper_ready(
 /// reliably comes up faster than the wrapper (~2s vs ~3.5s), so this is a
 /// short timeout — it exists to make `Ready` a real guarantee for the
 /// desktop too, not because the desktop is expected to be the slow part.
-async fn wait_for_desktop_ready(
+///
+/// `pub(crate)` — see `wait_for_wrapper_ready`'s doc comment; `diagnosis.rs`
+/// reuses this too.
+pub(crate) async fn wait_for_desktop_ready(
     desktop_port: u16,
     timeout: Duration,
 ) -> Result<(), super::CreateWorkspaceError> {
@@ -288,6 +339,24 @@ pub(crate) async fn check_wrapper_health(
         // Either the request itself errored (connection refused, DNS,
         // etc.) or the outer `timeout` elapsed first — both mean "not
         // healthy right now" to this function's caller.
+        Ok(Err(_)) | Err(_) => false,
+    }
+}
+
+/// Same shape and same reasoning as `check_wrapper_health` immediately
+/// above, but against the desktop nginx's own root (matching
+/// `wait_for_desktop_ready`'s URL) instead of the wrapper's health
+/// endpoint. Used by `diagnosis.rs` so a diagnosis report never treats
+/// the desktop as a second-class service that "we don't bother"
+/// checking live — see `../../docs/diagnose-workspace-plan.md`.
+pub(crate) async fn check_desktop_health(
+    client: &reqwest::Client,
+    desktop_port: u16,
+    timeout: Duration,
+) -> bool {
+    let url = format!("http://127.0.0.1:{desktop_port}/");
+    match tokio::time::timeout(timeout, client.get(&url).send()).await {
+        Ok(Ok(response)) => response.status().is_success(),
         Ok(Err(_)) | Err(_) => false,
     }
 }
@@ -355,6 +424,130 @@ impl ContainerLauncher for DockerCliLauncher {
             detail.trim()
         )))
     }
+
+    async fn inspect(
+        &self,
+        container_name: &str,
+    ) -> Result<ContainerState, super::CreateWorkspaceError> {
+        inspect_container_state(container_name).await
+    }
+
+    async fn stop(&self, container_name: &str) -> Result<(), super::CreateWorkspaceError> {
+        let output = Command::new("docker")
+            .args(["stop", container_name])
+            .output()
+            .await
+            .map_err(|err| {
+                super::CreateWorkspaceError::Container(format!(
+                    "failed to run `docker stop` for container {container_name}: {err}"
+                ))
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let detail = String::from_utf8_lossy(&output.stderr);
+        // Matches `remove`'s "missing/already-gone is success" convention
+        // — a container already stopped (or already removed) has nothing
+        // left for `stop` to do.
+        if detail.contains("No such container") {
+            return Ok(());
+        }
+        Err(super::CreateWorkspaceError::Container(format!(
+            "`docker stop` failed for container {container_name}: {}",
+            detail.trim()
+        )))
+    }
+
+    async fn start_existing(
+        &self,
+        container_name: &str,
+    ) -> Result<(), super::CreateWorkspaceError> {
+        run_docker(container_name, &["start", container_name]).await
+    }
+}
+
+/// Parse `docker inspect --format '{{json .State}}' <container_name>`'s
+/// JSON output into a `ContainerState`. A separate free function (not a
+/// method) so it can be unit-tested against literal `docker inspect`-shaped
+/// JSON strings without needing a real Docker daemon (mirrors this file's
+/// existing convention of keeping pure parsing/string-building logic —
+/// see `wrapper_boot_script` — separate from the `Command`-running code
+/// around it).
+async fn inspect_container_state(
+    container_name: &str,
+) -> Result<ContainerState, super::CreateWorkspaceError> {
+    let output = Command::new("docker")
+        .args(["inspect", "--format", "{{json .State}}", container_name])
+        .output()
+        .await
+        .map_err(|err| {
+            super::CreateWorkspaceError::Container(format!(
+                "failed to run `docker inspect` for container {container_name}: {err}"
+            ))
+        })?;
+
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        // A missing container is a real, distinct diagnosis finding (the
+        // container was removed entirely, e.g. by something outside this
+        // gateway) — not a command failure. `running: false` with no exit
+        // code communicates that state; `diagnosis.rs`'s caller decides
+        // what to do about it, this function only reports what it saw.
+        if detail.contains("No such container") {
+            return Ok(ContainerState {
+                running: false,
+                exit_code: None,
+                oom_killed: false,
+            });
+        }
+        return Err(super::CreateWorkspaceError::Container(format!(
+            "`docker inspect` failed for container {container_name}: {}",
+            detail.trim()
+        )));
+    }
+
+    parse_container_state_json(&output.stdout, container_name)
+}
+
+/// The subset of `docker inspect`'s `.State` object this codebase reads.
+/// `#[serde(default)]` on every field: real `docker inspect` output
+/// always has all of these, but failing closed (treating a missing field
+/// as "not running" / "no exit code" / "not OOM-killed" rather than
+/// erroring the whole parse) is safer than a hard parse failure blocking
+/// a diagnosis over one unexpected Docker version's field naming.
+#[derive(serde::Deserialize)]
+struct DockerInspectState {
+    #[serde(default, rename = "Running")]
+    running: bool,
+    #[serde(default, rename = "ExitCode")]
+    exit_code: Option<i64>,
+    #[serde(default, rename = "OOMKilled")]
+    oom_killed: bool,
+}
+
+fn parse_container_state_json(
+    raw_stdout: &[u8],
+    container_name: &str,
+) -> Result<ContainerState, super::CreateWorkspaceError> {
+    let parsed: DockerInspectState = serde_json::from_slice(raw_stdout).map_err(|err| {
+        super::CreateWorkspaceError::Container(format!(
+            "failed to parse `docker inspect` output for container {container_name}: {err}"
+        ))
+    })?;
+
+    Ok(ContainerState {
+        running: parsed.running,
+        // Docker reports 0 for a container that has never exited (still
+        // running) — collapsing that specific case to `None` here, so a
+        // real, meaningful non-zero-or-zero exit code is never confused
+        // with "hasn't exited yet."
+        exit_code: if parsed.running {
+            None
+        } else {
+            parsed.exit_code
+        },
+        oom_killed: parsed.oom_killed,
+    })
 }
 
 async fn run_docker(
@@ -431,6 +624,17 @@ pub(crate) struct FakeLauncher {
     call_count: AtomicUsize,
     fail_next_n_calls: AtomicUsize,
     remove_count: AtomicUsize,
+    stop_count: AtomicUsize,
+    start_existing_count: AtomicUsize,
+    /// What `inspect` returns, and whether it should switch to a
+    /// "recovered" state once `start_existing` has actually been called —
+    /// see `that_reports` / `that_recovers_after_start` for how tests
+    /// configure this. `std::sync::Mutex` (not an atomic) since
+    /// `ContainerState` isn't a single scalar; `FakeLauncher` methods are
+    /// only ever awaited from single-threaded test code, so blocking
+    /// briefly inside an async fn here is not a real contention risk.
+    inspect_result: std::sync::Mutex<ContainerState>,
+    recovers_after_start: bool,
 }
 
 #[cfg(test)]
@@ -440,6 +644,14 @@ impl Default for FakeLauncher {
             call_count: AtomicUsize::new(0),
             fail_next_n_calls: AtomicUsize::new(0),
             remove_count: AtomicUsize::new(0),
+            stop_count: AtomicUsize::new(0),
+            start_existing_count: AtomicUsize::new(0),
+            inspect_result: std::sync::Mutex::new(ContainerState {
+                running: true,
+                exit_code: None,
+                oom_killed: false,
+            }),
+            recovers_after_start: false,
         }
     }
 }
@@ -454,12 +666,43 @@ impl FakeLauncher {
         Self {
             call_count: AtomicUsize::new(0),
             fail_next_n_calls: AtomicUsize::new(n),
-            remove_count: AtomicUsize::new(0),
+            ..Self::default()
         }
     }
 
     pub(crate) fn remove_count(&self) -> usize {
         self.remove_count.load(Ordering::SeqCst)
+    }
+
+    /// Configure what `inspect` reports, for a test that needs a specific
+    /// starting container state (e.g. `running: false` to simulate a
+    /// crashed container) without ever running real Docker commands.
+    pub(crate) fn that_reports(state: ContainerState) -> Self {
+        Self {
+            inspect_result: std::sync::Mutex::new(state),
+            ..Self::default()
+        }
+    }
+
+    /// Like `that_reports`, but `inspect` reports the given unhealthy
+    /// state UNTIL `start_existing` is actually called, after which it
+    /// reports healthy (`running: true`, clean exit) — simulates a real
+    /// stop/start cycle actually fixing the container, so diagnosis's
+    /// "re-check after healing" step has something real to observe.
+    pub(crate) fn that_recovers_after_start(unhealthy_state: ContainerState) -> Self {
+        Self {
+            inspect_result: std::sync::Mutex::new(unhealthy_state),
+            recovers_after_start: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn stop_count(&self) -> usize {
+        self.stop_count.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn start_existing_count(&self) -> usize {
+        self.start_existing_count.load(Ordering::SeqCst)
     }
 }
 
@@ -496,11 +739,76 @@ impl ContainerLauncher for FakeLauncher {
         self.remove_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+
+    async fn inspect(
+        &self,
+        _container_name: &str,
+    ) -> Result<ContainerState, super::CreateWorkspaceError> {
+        Ok(*self.inspect_result.lock().unwrap())
+    }
+
+    async fn stop(&self, _container_name: &str) -> Result<(), super::CreateWorkspaceError> {
+        self.stop_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn start_existing(
+        &self,
+        _container_name: &str,
+    ) -> Result<(), super::CreateWorkspaceError> {
+        self.start_existing_count.fetch_add(1, Ordering::SeqCst);
+        if self.recovers_after_start {
+            *self.inspect_result.lock().unwrap() = ContainerState {
+                running: true,
+                exit_code: None,
+                oom_killed: false,
+            };
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real `docker inspect --format '{{json .State}}'` shape for a
+    /// currently-running container — `ExitCode` present but must be
+    /// ignored (collapsed to `None`) since the container hasn't actually
+    /// exited (see `parse_container_state_json`'s doc comment).
+    #[test]
+    fn parse_container_state_reports_running_with_no_exit_code() {
+        let raw = br#"{"Running":true,"ExitCode":0,"OOMKilled":false}"#;
+        let state = parse_container_state_json(raw, "some-container").expect("parses");
+        assert!(state.running);
+        assert_eq!(state.exit_code, None);
+        assert!(!state.oom_killed);
+    }
+
+    /// A container that exited with a real non-zero code must surface
+    /// that exact code — this is the core diagnostic signal a live HTTP
+    /// health check alone cannot provide.
+    #[test]
+    fn parse_container_state_reports_exit_code_for_a_stopped_container() {
+        let raw = br#"{"Running":false,"ExitCode":137,"OOMKilled":false}"#;
+        let state = parse_container_state_json(raw, "some-container").expect("parses");
+        assert!(!state.running);
+        assert_eq!(state.exit_code, Some(137));
+    }
+
+    #[test]
+    fn parse_container_state_reports_oom_killed() {
+        let raw = br#"{"Running":false,"ExitCode":137,"OOMKilled":true}"#;
+        let state = parse_container_state_json(raw, "some-container").expect("parses");
+        assert!(state.oom_killed);
+    }
+
+    #[test]
+    fn parse_container_state_fails_closed_on_garbage_input() {
+        let raw = b"not json at all";
+        let result = parse_container_state_json(raw, "some-container");
+        assert!(result.is_err());
+    }
 
     /// Pure string-content assertions on the generated boot script — the
     /// real `docker create`/`cp`/`start` sequence + actual container

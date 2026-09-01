@@ -15,7 +15,7 @@ use tower_http::cors::CorsLayer;
 use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
     create_workspace_route, delete_workspace_route, desktop_proxy_route_root,
-    desktop_proxy_route_with_path, hermes_webui_proxy_route_root,
+    desktop_proxy_route_with_path, diagnose_workspace_route, hermes_webui_proxy_route_root,
     hermes_webui_proxy_route_with_path, list_workspaces_route, onboarding_proxy_route_root,
     onboarding_proxy_route_with_path, WorkspacesState,
 };
@@ -80,7 +80,8 @@ pub fn build_router(
             "/workspaces",
             post(create_workspace_route).get(list_workspaces_route),
         )
-        .route("/workspaces/:id", delete(delete_workspace_route));
+        .route("/workspaces/:id", delete(delete_workspace_route))
+        .route("/workspaces/:id/diagnose", post(diagnose_workspace_route));
     workspaces_router = register_workspace_proxy_pair(
         workspaces_router,
         "/workspaces/:id/onboarding",
@@ -327,5 +328,34 @@ mod tests {
             .to_str()
             .unwrap();
         assert_eq!(allow_origin, "http://127.0.0.1:5173");
+    }
+
+    /// `POST /workspaces/:id/diagnose` must dispatch to
+    /// `diagnose_workspace_route` through the real router — an unknown id
+    /// is used so the handler itself runs and returns
+    /// `workspace_not_found`, proving dispatch rather than axum's own
+    /// "no route matched". Also proves this new static `/diagnose`
+    /// segment does not collide with the `/workspaces/:id/*path`
+    /// wildcard proxy routes registered right after it.
+    #[tokio::test]
+    async fn diagnose_workspace_is_reachable_through_the_real_router() {
+        let app = build_router(
+            unused_proxy_state(),
+            temp_workspaces_state().await,
+            "http://127.0.0.1:5173",
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/workspaces/does-not-exist/diagnose")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
