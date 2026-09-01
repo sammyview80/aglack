@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { BrandMark } from '@/components/brand-mark'
+import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { FormField } from '@/components/form-field'
 import { PageFallback } from '@/components/page-fallback'
 import { PasswordInput } from '@/components/password-input'
 import { StatusAlert } from '@/components/status-alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ThemeSwitch } from '@/features/theme/theme-switch'
 import {
   applyOnboardingSetup,
   applySelfHostedSetup,
@@ -25,27 +24,18 @@ import {
   type ProviderCatalogEntry,
   type SetupNeedsConfirm,
 } from '@/features/onboarding/types'
-import { ApiError } from '@/lib/api'
 import { handleError } from '@/lib/handle-error'
 import { cn } from '@/lib/utils'
+import { GATEWAY_WORKSPACE_ERRORS, isInvalidWorkspace } from '@/lib/workspace-errors'
 
 const ONBOARDING_ERRORS: Record<string, string> = {
-  workspace_not_ready: 'This workspace is not ready yet.',
-  workspace_not_found: 'No workspace with that id.',
+  ...GATEWAY_WORKSPACE_ERRORS,
   onboarding_setup_failed: 'Setup failed — check provider, model, and key.',
   oauth_start_failed: 'This provider does not support OAuth here.',
   oauth_poll_failed: 'OAuth session expired or was not found.',
-  network: 'Cannot reach the gateway. Is rust_gateway running?',
 }
 
 const SELF_HOSTED = new Set(['ollama', 'lmstudio'])
-
-function isInvalidWorkspace(err: unknown): boolean {
-  return (
-    err instanceof ApiError &&
-    (err.code === 'workspace_not_found' || err.code === 'workspace_not_ready')
-  )
-}
 
 type OnboardingWizardProps = {
   workspaceId: string
@@ -163,6 +153,7 @@ export function OnboardingWizard({
     return (
       <Shell>
         <PageFallback
+          embedded
           title="Onboarding already complete"
           description="Chat model provider is configured for this workspace."
           actionLabel="Done"
@@ -299,20 +290,16 @@ export function OnboardingWizard({
   return (
     <Shell>
       <form
-        className="mx-auto flex w-full max-w-lg flex-1 flex-col gap-5 px-6 py-8"
+        className="flex w-full flex-col gap-5"
         onSubmit={(e) => {
           e.preventDefault()
           void submitSetup(false)
         }}
       >
         <div className="space-y-1">
-          <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            Model provider
-          </p>
-          <h1 className="text-2xl font-semibold tracking-tight">Set up Hermes</h1>
-          <p className="text-sm text-muted-foreground">
-            Chat/text models only. Pick a provider, then save.
-          </p>
+          <h2>Set up Hermes</h2>
+          <div className="divider" />
+          <p className="post-copy">Chat/text models only. Pick a provider, then save.</p>
         </div>
 
         <StatusAlert message={error} />
@@ -486,13 +473,5 @@ export function OnboardingWizard({
 }
 
 function Shell({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="flex shrink-0 items-center justify-between gap-4 px-6 pt-4">
-        <BrandMark />
-        <ThemeSwitch />
-      </header>
-      {children}
-    </div>
-  )
+  return <SlackOnboardingLayout>{children}</SlackOnboardingLayout>
 }
