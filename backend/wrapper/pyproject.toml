@@ -17,6 +17,25 @@ dependencies = [
     # Already a transitive dependency of fastapi; declared directly here
     # since features/*/schemas.py defines its own BaseModel subclasses.
     "pydantic>=2.0",
+    # The seeder-tree parser/tool-discovery/skill-copy library backing
+    # features/agent_seeder/ — see ../seeder_kit/README.md. NOT published
+    # to PyPI: a plain name here (no `file://` URL) deliberately, because
+    # `uv pip install -e <dir>` (non-project/non-workspace mode — what
+    # both local dev and the Docker image use to install this wrapper)
+    # cannot resolve a RELATIVE `file://../seeder_kit` URL declared inside
+    # a package's own metadata — it has no working directory to resolve
+    # against at that point, and fails with "relative path without a
+    # working directory" even when run from the correct cwd (confirmed:
+    # `cd` before the install call does not help). An absolute path would
+    # "fix" it but bakes one specific install root (e.g. Docker's
+    # `/opt/hermes-webui/seeder_kit`) into a manifest meant to work for
+    # local dev too. Instead: install `seeder-kit` from its own sibling
+    # checkout FIRST (a separate, explicit `pip install -e ../seeder_kit`
+    # step — see `../workspace-image/Dockerfile`'s two-step install and
+    # this project's own local dev instructions), THEN this wrapper —
+    # this plain name is satisfied by whatever's already in the
+    # environment, with zero path baked in here at all.
+    "seeder-kit",
 ]
 
 [project.optional-dependencies]
