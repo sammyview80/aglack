@@ -38,3 +38,30 @@ pub async fn connect(path: &Path) -> Result<SqlitePool, sqlx::Error> {
 
     Ok(pool)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::Row;
+
+    #[tokio::test]
+    async fn connect_creates_workspace_creations_indexes() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("test.db");
+
+        let pool = connect(&db_path).await.expect("connect succeeds");
+
+        let names: Vec<String> = sqlx::query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'workspace_creations'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("query sqlite_master succeeds")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+
+        assert!(names.contains(&"idx_workspace_creations_workspace_id".to_string()));
+        assert!(names.contains(&"idx_workspace_creations_created_at".to_string()));
+    }
+}
