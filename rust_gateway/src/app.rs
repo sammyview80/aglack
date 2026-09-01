@@ -14,10 +14,11 @@ use tower_http::cors::CorsLayer;
 
 use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
-    create_workspace_route, delete_workspace_route, desktop_proxy_route_root,
-    desktop_proxy_route_with_path, diagnose_workspace_route, hermes_webui_proxy_route_root,
-    hermes_webui_proxy_route_with_path, list_workspaces_route, onboarding_proxy_route_root,
-    onboarding_proxy_route_with_path, WorkspacesState,
+    agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path, create_workspace_route,
+    delete_workspace_route, desktop_proxy_route_root, desktop_proxy_route_with_path,
+    diagnose_workspace_route, hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path,
+    list_workspaces_route, onboarding_proxy_route_root, onboarding_proxy_route_with_path,
+    WorkspacesState,
 };
 
 /// Register one per-workspace proxy feature's pair of routes: the exact
@@ -87,6 +88,12 @@ pub fn build_router(
         "/workspaces/:id/onboarding",
         onboarding_proxy_route_root,
         onboarding_proxy_route_with_path,
+    );
+    workspaces_router = register_workspace_proxy_pair(
+        workspaces_router,
+        "/workspaces/:id/agent-seeder",
+        agent_seeder_proxy_route_root,
+        agent_seeder_proxy_route_with_path,
     );
     workspaces_router = register_workspace_proxy_pair(
         workspaces_router,
@@ -208,7 +215,7 @@ mod tests {
         assert_eq!(allow_origin, "http://127.0.0.1:5173");
     }
 
-    /// Proves `register_workspace_proxy_pair` actually wired all THREE
+    /// Proves `register_workspace_proxy_pair` actually wired all FOUR
     /// proxy features' root+wildcard routes into the real router — every
     /// existing proxy-route test elsewhere (`onboarding_proxy.rs` etc.)
     /// calls the handler function directly, never through `build_router`
@@ -229,6 +236,8 @@ mod tests {
         for uri in [
             "/workspaces/does-not-exist/onboarding/",
             "/workspaces/does-not-exist/onboarding/status",
+            "/workspaces/does-not-exist/agent-seeder/",
+            "/workspaces/does-not-exist/agent-seeder/apply",
             "/workspaces/does-not-exist/hermes-webui/",
             "/workspaces/does-not-exist/hermes-webui/api/sessions",
             "/workspaces/does-not-exist/desktop/",

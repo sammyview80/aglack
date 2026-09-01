@@ -11,6 +11,7 @@
 //! file) wires store + container together behind the public
 //! `create_workspace` entry point the HTTP route calls.
 
+mod agent_seeder_proxy;
 pub(crate) mod container;
 mod desktop_proxy;
 pub(crate) mod diagnosis;
@@ -22,6 +23,7 @@ mod store;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use agent_seeder_proxy::{agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path};
 pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};
 pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
 pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
