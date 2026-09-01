@@ -1,8 +1,23 @@
-# revamp
+# hermano ⚙️
 
-Multi-tenant platform that runs one **Hermes WebUI** agent environment per
-workspace, each in its own Docker container, behind a single Rust gateway
-and a React frontend.
+Multi-tenant control plane that runs one **Hermes WebUI** agent
+environment per workspace, each in its own Docker container, behind a
+single Rust gateway and a React frontend.
+
+`rust_gateway/` | `backend/wrapper/` | `frontend/`
+
+`STACK: RUST + PYTHON + REACT` · `RUNTIME: DOCKER REQUIRED` · `LICENSE: UNSET`
+
+One workspace, one container, one agent — created and torn down through
+a single control-plane API. No shared state between tenants beyond the
+gateway's own SQLite registry.
+
+| A real control-plane API | `POST/GET/DELETE /workspaces`, per-workspace proxy namespaces (`onboarding`, `agent-seeder`, `hermes-webui`, `desktop`), SQLite-backed registry, real `docker` CLI orchestration under `rust_gateway/`. |
+| --- | --- |
+| An agent-per-container model | Every workspace gets its own Docker container running Hermes WebUI plus a FastAPI sidecar wrapper — no cross-tenant process or filesystem sharing. |
+| A seeding pipeline for agents | `backend/seeder_kit/` + `backend/seeder/` create agent profiles (skills, souls, MCP tool runner) and a real per-agent workspace directory on first apply. |
+| A frontend that drives real workspaces | React 19 + Vite: create/list workspaces, onboarding wizard, mode select, per-workspace chat — talks to the gateway only through `VITE_GATEWAY_URL`. |
+| Test discipline enforced at every layer | `cargo test` (gateway), `pytest` (wrapper, seeder_kit), `npm run build` (frontend) — plus real `docker build` + `POST /workspaces` + `docker exec` verification for anything touching container boot, env vars, or filesystem ownership. |
 
 ```
 browser ── frontend (React 19 + Vite)
@@ -29,7 +44,36 @@ browser ── frontend (React 19 + Vite)
 | `backend/workspace-image/` | Dockerfile for the per-workspace container image | `python3 -m pytest backend/workspace-image` |
 | `frontend/` | React app: create/list workspaces, onboarding wizard, mode select, per-workspace chat | `npm run build` (type-checks) |
 
-## Run locally
+## Install
+
+Prerequisites: [Rust/cargo](https://rustup.rs), [Node.js/npm](https://nodejs.org),
+Docker (only needed later, for real workspace containers — not for the
+dev run below).
+
+```bash
+git clone git@github.com:sammyview80/aglack.git
+cd aglack
+```
+
+## How to use — one line
+
+```bash
+./bootstrap.sh
+```
+
+That single command sets up everything (copies `.env.shared` and
+`rust_gateway/.env` from their `.example` files if missing, runs
+`npm install` in `frontend/` if `node_modules` is missing) and then runs
+the whole stack for you — rust gateway, its `test_backend` dev stand-in,
+and the frontend — with interleaved logs in this terminal. Ctrl+C stops
+everything cleanly. Re-run any time; it is idempotent and never
+overwrites an `.env` file you've already customized.
+
+Already set up and just want to run again? Use `./run.sh` directly — it
+is what `bootstrap.sh` hands off to; see its own header comment for
+exactly what it starts.
+
+### Manual setup (equivalent, step by step)
 
 ```bash
 cp .env.shared.example .env.shared          # shared config (all services)
@@ -59,6 +103,22 @@ real containers via `POST /workspaces`.
 - Research notes: `docs/` (e.g. `docs/hermes-extensions-and-mcp.md` for
   the plugin/MCP integration landscape).
 
+## Pushing changes
+
+```bash
+git checkout aglack        # or your feature branch
+git add -A
+git commit -m "..."
+git push -u origin aglack   # first push of a new branch needs -u; omit after
+```
+
+`origin` is `git@github.com:sammyview80/aglack.git` (private). Verify
+your remote matches before pushing:
+
+```bash
+git remote -v
+```
+
 ## Verifying a change
 
 All suites must stay green:
@@ -82,3 +142,5 @@ container-permissions bug once (see `checkpoints/CHECKPOINT5.md`).
   `agent-seeder`) — do not expose publicly as-is.
 - No billing; SQLite single-machine stage (see
   `backend/wrapper/docs/rust-gateway-architecture.md` for the target).
+- No LICENSE file yet in this repository.
+</content>
