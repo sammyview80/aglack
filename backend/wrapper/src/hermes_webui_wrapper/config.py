@@ -24,12 +24,36 @@ def _parse_bool(value: str, *, default: bool) -> bool:
     return default
 
 
-def _default_upstream_root() -> Path:
+def _wrapper_project_root() -> Path:
     # This file lives at <wrapper>/src/hermes_webui_wrapper/config.py in an
     # installed source checkout, so the wrapper project root is three
-    # parents up, and the umbrella's sibling `upstream/` is next to it.
-    wrapper_root = Path(__file__).resolve().parents[2]
-    return (wrapper_root.parent / "upstream").resolve()
+    # parents up. The ONE place this path arithmetic exists — every
+    # sibling-directory default (upstream/, seeder/) derives from here
+    # rather than re-counting parents from its own file location.
+    return Path(__file__).resolve().parents[2]
+
+
+def _default_upstream_root() -> Path:
+    return (_wrapper_project_root().parent / "upstream").resolve()
+
+
+def resolve_seeder_root() -> Path:
+    """The seeder CONTENT tree (`backend/seeder/` — see its README.md).
+
+    `HERMES_SEEDER_ROOT` overrides; the default is the umbrella's sibling
+    `seeder/` directory next to `upstream/` (the exact layout both the
+    source checkout and the workspace Docker image use — see
+    `backend/workspace-image/Dockerfile`). A module-level function rather
+    than a `Settings` field because its one consumer
+    (`features/agent_seeder/service.py`) resolves it lazily per request —
+    `Settings.from_env()` requires `HERMES_FRONTEND_ORIGIN` and constructing
+    a full Settings just to get one path would couple seeding to unrelated
+    required config.
+    """
+    override = os.environ.get("HERMES_SEEDER_ROOT")
+    if override:
+        return Path(override).resolve()
+    return (_wrapper_project_root().parent / "seeder").resolve()
 
 
 @dataclass(frozen=True)

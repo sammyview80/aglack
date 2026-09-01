@@ -29,21 +29,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_webui_wrapper.features.errors import FeatureError
 
-class OnboardingError(Exception):
-    """Raised for any onboarding failure this feature's routes must map to
-    an HTTP error. `status_code` mirrors upstream `routes.py`'s own mapping
-    for these exact endpoints (ValueError -> 400, RuntimeError -> 500,
+
+class OnboardingError(FeatureError):
+    """This feature's `FeatureError` — see `features/errors.py`.
+    `status_code` mirrors upstream `routes.py`'s own mapping for these
+    exact endpoints (ValueError -> 400, RuntimeError -> 500,
     KeyError -> 404) rather than inventing a new one, so behavior stays
     identical to what the proxied catch-all route already did for these
-    paths.
-    """
-
-    def __init__(self, code: str, message: str, status_code: int):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.status_code = status_code
+    paths."""
 
 
 def _wrap(code: str, fn, *args, **kwargs):
