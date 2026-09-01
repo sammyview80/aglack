@@ -51,8 +51,8 @@ Docker (only needed later, for real workspace containers — not for the
 dev run below).
 
 ```bash
-git clone git@github.com:sammyview80/aglack.git
-cd aglack
+git clone git@github.com:sammyview80/aglack.git hermano
+cd hermano
 ```
 
 ## How to use — one line
