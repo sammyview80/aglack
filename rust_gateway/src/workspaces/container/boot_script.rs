@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::docker_cli::run_docker;
 
 /// The `/custom-cont-init.d/` hook that starts the wrapper (which runs
@@ -87,21 +89,58 @@ use super::docker_cli::run_docker;
 /// `DockerCliLauncher::workspace_default_path`'s doc comment.
 ///
 /// `mkdir -p <workspace_default_path> && chown -R abc:abc
-/// <workspace_default_path>` runs as ROOT, before the `su -s /bin/sh abc
-/// -c '...'` block, for the same reason `/config/.hermes` does — verified
-/// live: `/` is not writable by `abc` (uid 911) in this base image, so
-/// `abc` itself cannot create a top-level directory like `/workspace`;
-/// only a pre-created, chowned directory is usable inside the `abc`-run
-/// block. `mkdir -p` creates every missing parent as root, so this works
-/// regardless of how deep the configured path is. Upstream's own
-/// `_ensure_workspace_dir()` also calls `mkdir(parents=True,
-/// exist_ok=True)` on every start, so this is belt-and-suspenders for the
-/// FIRST boot specifically, not a duplicate of logic upstream is missing.
+/// <parent-of-workspace_default_path>` runs as ROOT, before the
+/// `su -s /bin/sh abc -c '...'` block, for the same reason
+/// `/config/.hermes` does — verified live: `/` is not writable by `abc`
+/// (uid 911) in this base image, so `abc` itself cannot create a
+/// top-level directory like `/workspace`; only a pre-created, chowned
+/// directory is usable inside the `abc`-run block. `mkdir -p` creates
+/// every missing parent as root, so this works regardless of how deep
+/// the configured path is.
+///
+/// Chowns the PARENT of `workspace_default_path` (e.g. `/workspace`, not
+/// just `/workspace/default`), not merely the leaf directory itself —
+/// real bug found live via an actual end-to-end apply-mode call:
+/// `features/agent_seeder/service.py`'s `_ensure_agent_workspace` needs
+/// to `mkdir` a SIBLING directory per seeded agent (`/workspace/pm`,
+/// `/workspace/writer`, ...) at runtime, as `abc`; chowning only the leaf
+/// `default` directory left `/workspace` itself root-owned
+/// (`drwxr-xr-x root root`), so every such `mkdir` failed with
+/// `PermissionError: [Errno 13] Permission denied`. A test asserting
+/// `script.contains("chown -R abc:abc /workspace")` had passed the whole
+/// time WITHOUT catching this — that substring is also a prefix of
+/// `chown -R abc:abc /workspace/default`, so it never actually proved the
+/// PARENT got chowned; see this file's own tests for the exact-match fix.
+/// Falls back to chowning `workspace_default_path` itself (not its
+/// parent) only if that parent computes to the filesystem root `/` —
+/// chowning `/` itself would be both wrong and dangerous.
+///
+/// Upstream's own `_ensure_workspace_dir()` also calls
+/// `mkdir(parents=True, exist_ok=True)` on every start, so the `mkdir -p`
+/// here is belt-and-suspenders for the FIRST boot specifically, not a
+/// duplicate of logic upstream is missing.
+/// The directory the boot script should `chown -R abc:abc` so that `abc`
+/// can create SIBLING directories of `workspace_default_path` at runtime
+/// (see `wrapper_boot_script`'s own doc comment for the real bug this
+/// fixes) — the parent of `workspace_default_path`, unless that parent
+/// would be the filesystem root `/`, in which case `workspace_default_path`
+/// itself is returned instead (never chown `/`).
+fn workspace_chown_target(workspace_default_path: &str) -> String {
+    let parent = Path::new(workspace_default_path).parent();
+    match parent {
+        Some(p) if p != Path::new("/") && !p.as_os_str().is_empty() => {
+            p.to_string_lossy().into_owned()
+        }
+        _ => workspace_default_path.to_string(),
+    }
+}
+
 pub(crate) fn wrapper_boot_script(
     allowed_origins: &str,
     workspace_default_path: &str,
     frontend_origin: &str,
 ) -> String {
+    let workspace_chown_target = workspace_chown_target(workspace_default_path);
     format!(
         "#!/usr/bin/env sh\n\
      # hermes-webui-wrapper-boot — see DockerCliLauncher::launch\n\
@@ -109,7 +148,7 @@ pub(crate) fn wrapper_boot_script(
      mkdir -p /config/.hermes\n\
      chown -R abc:abc /config/.hermes 2>/dev/null || true\n\
      mkdir -p {workspace_default_path}\n\
-     chown -R abc:abc {workspace_default_path} 2>/dev/null || true\n\
+     chown -R abc:abc {workspace_chown_target} 2>/dev/null || true\n\
      setsid su -s /bin/sh abc -c '\n\
      export HOME=/config\n\
      export HERMES_HOME=/config/.hermes\n\
@@ -229,9 +268,15 @@ mod tests {
              so abc itself cannot create /workspace"
         );
         assert!(
-            script.contains("chown -R abc:abc /workspace"),
-            "without chowning /workspace to abc, the wrapper (running as abc) cannot write \
-             into its own default workspace directory — verified live"
+            script.lines().any(|line| line.trim() == "chown -R abc:abc /workspace 2>/dev/null || true"),
+            "without chowning /workspace (the PARENT of /workspace/default) to abc, agent-seeder \
+             cannot mkdir a per-agent sibling directory like /workspace/pm at runtime as abc — \
+             verified live via a real end-to-end apply-mode call: PermissionError: [Errno 13] \
+             Permission denied: '/workspace/pm'. Exact line match, NOT .contains(\"chown -R \
+             abc:abc /workspace\") — that substring is also a prefix of \
+             'chown -R abc:abc /workspace/default' and would pass even if only the LEAF got \
+             chowned, which is exactly the bug that shipped and was caught live, not by this \
+             test, the first time"
         );
     }
 
@@ -286,13 +331,35 @@ mod tests {
             "the mkdir target must match the configured path exactly"
         );
         assert!(
-            script.contains("chown -R abc:abc /data/agent-workspaces/main"),
-            "the chown target must match the configured path exactly"
+            script.lines().any(|line| {
+                line.trim() == "chown -R abc:abc /data/agent-workspaces 2>/dev/null || true"
+            }),
+            "the chown target must be the PARENT of the configured workspace_default_path \
+             (/data/agent-workspaces, not /data/agent-workspaces/main) — see \
+             workspace_chown_target's own doc comment for why: agent-seeder needs to mkdir \
+             per-agent SIBLING directories under this parent at runtime, as abc"
         );
         assert!(
             !script.contains("/workspace/default"),
             "no trace of the old hardcoded default should remain when a different path is \
              configured"
+        );
+    }
+
+    #[test]
+    fn workspace_chown_target_never_resolves_to_filesystem_root() {
+        // A pathologically shallow WORKSPACE_DEFAULT_PATH (e.g. "/workspace",
+        // one level deep) must never make this fall back to chowning "/" —
+        // that would be both wrong (way too broad) and dangerous.
+        assert_eq!(workspace_chown_target("/workspace"), "/workspace");
+    }
+
+    #[test]
+    fn workspace_chown_target_is_the_parent_for_a_normal_nested_path() {
+        assert_eq!(workspace_chown_target("/workspace/default"), "/workspace");
+        assert_eq!(
+            workspace_chown_target("/data/agent-workspaces/main"),
+            "/data/agent-workspaces"
         );
     }
 
