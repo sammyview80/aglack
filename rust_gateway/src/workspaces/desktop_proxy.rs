@@ -71,14 +71,18 @@ fn build_upstream_request(
     Ok(request)
 }
 
-/// Handles `/workspaces/:id/desktop/*path`.
+/// Handles `/workspaces/:id/desktop/*path`. The `path` segment itself is
+/// never read — see `desktop_proxy`'s own doc comment: every consumer of
+/// the target URL now reads the FULL original path straight off `req`,
+/// not a rebuilt one, so axum's own path-matching is all this route
+/// actually needs the wildcard for.
 pub async fn desktop_proxy_route_with_path(
     State(state): State<Arc<WorkspacesState>>,
-    Path((workspace_id, path)): Path<(String, String)>,
+    Path((workspace_id, _path)): Path<(String, String)>,
     ws: Option<WebSocketUpgrade>,
     req: Request,
 ) -> Response {
-    desktop_proxy(state, workspace_id, &path, ws, req).await
+    desktop_proxy(state, workspace_id, ws, req).await
 }
 
 /// Handles `/workspaces/:id/desktop/` (exact prefix, no further segments)
@@ -90,13 +94,16 @@ pub async fn desktop_proxy_route_root(
     ws: Option<WebSocketUpgrade>,
     req: Request,
 ) -> Response {
-    desktop_proxy(state, workspace_id, "", ws, req).await
+    desktop_proxy(state, workspace_id, ws, req).await
 }
 
+/// Both the plain-HTTP and WebSocket branches forward `req`'s own,
+/// UNSTRIPPED path — see each branch's own doc comment for the real,
+/// live-confirmed reasons neither one can strip this gateway's routing
+/// prefix the way the wrapper/onboarding proxies do.
 async fn desktop_proxy(
     state: Arc<WorkspacesState>,
     workspace_id: String,
-    path: &str,
     ws: Option<WebSocketUpgrade>,
     req: Request,
 ) -> Response {
@@ -105,10 +112,29 @@ async fn desktop_proxy(
         Err(response) => return response,
     };
 
-    let rewritten_path = format!("/{path}");
-
     if let Some(ws) = ws {
-        let target_ws_url = format!("ws://127.0.0.1:{}{rewritten_path}", ports.desktop_port);
+        // Real bug found live (a SECOND time, after the fix below this
+        // one landed): the outbound websocket URL must use the FULL,
+        // UNSTRIPPED path (`/workspaces/<id>/desktop/websockify`), not a
+        // bare `/websockify` — because the base image's nginx does not
+        // have a static `location /websockify { proxy_pass ...6901; }`.
+        // Confirmed live, across multiple real containers: nginx's own
+        // config is REGENERATED per container once `SUBFOLDER` is set,
+        // with a workspace-specific location block:
+        // `location /workspaces/<id>/desktop/websockify { proxy_pass
+        // http://127.0.0.1:6901; }` — a request for the bare, stripped
+        // `/websockify` path matches NOTHING that specific, falls through
+        // to nginx's generic `location /` (port 6900, the kclient app,
+        // not KasmVNC), and that connection is immediately closed
+        // ("upstream prematurely closed connection", confirmed in the
+        // container's own nginx error.log) — a real 502 on the gateway's
+        // outbound dial. This is the SAME class of mistake the plain-HTTP
+        // branch below was already fixed for; the websocket branch was
+        // missed at the time because the test fixture used a raw TCP
+        // echo server, not real nginx, and an earlier live check (against
+        // a container whose nginx behavior at that exact moment differed)
+        // did not catch it.
+        let target_ws_url = format!("ws://127.0.0.1:{}{}", ports.desktop_port, req.uri().path());
         // Real bug found live: negotiate the SAME `binary` subprotocol
         // the real KasmVNC backend always returns (confirmed live: its
         // nginx answers with `sec-websocket-protocol: binary` — see this
@@ -361,6 +387,15 @@ mod tests {
     /// "upstream" WebSocket echo server, over REAL sockets (not an
     /// in-process fake) — proves frames actually survive the relay in
     /// both directions.
+    ///
+    /// Real bug found live (see `desktop_proxy`'s own doc comment): the
+    /// upstream fixture below listens on the FULL, unstripped path
+    /// (`/workspaces/ws-1/desktop/websockify`), not a bare `/websockify`
+    /// — matching real nginx's own behavior, confirmed live across
+    /// multiple containers: once `SUBFOLDER` is set, nginx's
+    /// `/websockify` location is REGENERATED as a workspace-specific full
+    /// path, not left as the generic short one this test originally
+    /// assumed.
     #[tokio::test]
     async fn websocket_upgrade_is_relayed_bidirectionally_to_the_recorded_desktop_port() {
         // The fake "container desktop": a real WebSocket echo server.
@@ -369,7 +404,7 @@ mod tests {
             .expect("bind upstream ws echo");
         let desktop_port = upstream_listener.local_addr().unwrap().port();
         let upstream_app: Router = Router::new().route(
-            "/websockify",
+            "/workspaces/ws-1/desktop/websockify",
             get(|ws: WebSocketUpgrade| async move {
                 // Real KasmVNC requires (and itself sends back) a
                 // negotiated `Sec-WebSocket-Protocol` — `.protocols(...)`
