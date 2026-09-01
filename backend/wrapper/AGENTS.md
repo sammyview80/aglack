@@ -27,6 +27,32 @@ its logic — the wrapper must never duplicate upstream's business logic
 (config.yaml/.env writes, provider catalogs, OAuth flows, ...), only expose
 it faster.
 
+**`features/agent_seeder/` is a special case: mechanics vs. glue.** The
+actual MCP-tool-discovery, seeder-tree-parsing, and skill-copying logic
+lives in `../seeder_kit/` — a separate, framework-agnostic, independently
+installable/testable Python package with ZERO Hermes/upstream knowledge
+(see `../seeder_kit/README.md`). `features/agent_seeder/service.py` is
+only the thin Hermes-specific glue that calls `seeder_kit`'s functions and
+then calls `api.profiles`/`features.agent_config`. If you're adding
+mechanics that don't need to know what a Hermes profile is (a new
+discovery rule, a new tree-parsing field, a new skill-copy option), it
+belongs in `../seeder_kit/`, not here — keep the same split when extending
+this feature.
+
+## Runtime environment — this program runs in Docker
+
+**Never inspect, reference, or reason about any host-machine Hermes
+install** (e.g. a developer's local `~/.hermes`, a locally `pip install`-ed
+`hermes_cli`, or any other machine-specific checkout). This program's real
+runtime is a Docker container; the only legitimate source of truth for
+upstream's shape is the pinned, read-only checkout at `../upstream/` (see
+`../UPSTREAM.md`) and its own vendored `hermes_cli` dependency as declared
+in that checkout's own `requirements*.txt`/`pyproject.toml` — not whatever
+happens to be installed on the machine running the agent. If you need to
+confirm a `hermes_cli` function's exact signature or behavior and it is not
+vendored inside `../upstream/`, say so explicitly rather than reading it
+from the host machine.
+
 ## Rules
 
 1. **Never import upstream at module import time outside the bootstrap
@@ -97,24 +123,79 @@ src/hermes_webui_wrapper/
 ├── api/
 │   ├── router.py              mounts every api/v1/*.py router under /api/wrapper/v1
 │   ├── envelope.py            shared {ok,data}/{ok,error} JSON envelope (rule 5)
+│   │                           + service_call(): the ONE threadpool +
+│   │                           FeatureError->error-envelope helper every
+│   │                           native route handler uses — never re-declare
+│   │                           a per-feature copy of that try/except
 │   └── v1/
 │       ├── system.py          wrapper's own /health — no upstream call at all
-│       └── onboarding.py      NATIVE feature router — the reference example
+│       ├── onboarding.py      NATIVE feature router — the reference example
+│       ├── agent_config.py    NATIVE feature router — update a named profile's
+│       │                       SOUL.md + workspace AGENTS.md (GET/PUT
+│       │                       .../{name}/soul, .../{name}/agents-md)
+│       └── agent_seeder.py    NATIVE feature router — apply the ../../seeder/
+│                               tree, scoped by mode (GET .../modes,
+│                               POST .../{mode}/apply, .../{mode}/apply/{name})
 └── features/                  one subpackage per business capability, independent
     │                           of any api/ version — a future v2 or non-HTTP
     │                           transport reuses these without duplicating logic
-    └── onboarding/
-        ├── service.py          thin sync functions calling upstream api.onboarding/
-        │                       api.oauth directly; OnboardingError + status mapping
-        └── schemas.py          pydantic request/response models for this feature only
+    ├── errors.py               FeatureError — the shared code/message/status_code
+    │                           base every feature's service error subclasses
+    │                           (OnboardingError/AgentConfigError/AgentSeederError);
+    │                           api/envelope.py's service_call catches this base
+    ├── profile_yaml.py         load_profile_config/save_profile_config — the one
+    │                           read/write path for a profile's config.yaml
+    │                           (raises plain ValueError/OSError; each caller
+    │                           translates to its own feature error code)
+    ├── onboarding/
+    │   ├── service.py          thin sync functions calling upstream api.onboarding/
+    │   │                       api.oauth directly; OnboardingError + status mapping
+    │   └── schemas.py          pydantic request/response models for this feature only
+    ├── agent_config/
+    │   ├── service.py          get_soul/update_soul + get_agent_instructions/
+    │   │                       update_agent_instructions calling upstream
+    │   │                       api.profiles.get_hermes_home_for_profile directly;
+    │   │                       AgentConfigError + 404-on-unknown-profile mapping.
+    │   │                       See its own module docstring for why AGENTS.md is
+    │   │                       workspace-level here, not profile-level (no
+    │   │                       per-profile AGENTS.md or writable profile.yaml
+    │   │                       description exist in this pinned upstream checkout)
+    │   └── schemas.py          pydantic request models for this feature only
+    └── agent_seeder/           THIN GLUE ONLY — mechanics live in ../../../../seeder_kit/
+        ├── service.py          parses ../../../../seeder/ via seeder_kit.parse_tree
+        │                       (mode-scoped — see that module's own docstring for why
+        │                       per-agent content is mode-scoped but global tools/skills
+        │                       are not), then applies it via create_profile_api +
+        │                       features.agent_config + seeder_kit.copy_skill_dirs +
+        │                       seeder_kit.discover_tools_in_dirs +
+        │                       seeder_kit.build_mcp_server_entry (one mcp_servers
+        │                       config.yaml entry per agent). list_modes() wraps
+        │                       seeder_kit.available_modes()
+        └── schemas.py          no request body needed for any route
 
 tests/
 ├── conftest.py                 isolated tmp HERMES_HOME/state dirs, runtime disabled
 ├── test_app.py                 catch-all + wrapper-route-precedence behavior
 ├── test_transport.py, test_upstream.py
 └── v1/
-    └── test_onboarding.py       native onboarding route tests (real upstream, no mocks)
+    ├── test_onboarding.py       native onboarding route tests (real upstream, no mocks)
+    ├── test_agent_config.py     native agent-config route tests (real upstream, no mocks)
+    └── test_agent_seeder.py     native agent-seeder route tests (real upstream, synthetic
+                                  seeder/ tree — see that file's own docstring for why)
 ```
+
+`../seeder_kit/` (sibling of `upstream/` and this wrapper) is its own
+installable package with its own `tests/` — see
+`../seeder_kit/README.md` for its module map and design principles.
+
+New agent/tool/skill CONTENT -> `../seeder/` (see `../seeder/README.md`),
+never invented ad hoc inside `wrapper/`. New host-agnostic MECHANICS
+(discovery rules, tree-parsing fields, skill-copy options) -> `../seeder_kit/`.
+New WRAPPER capability the seeder or agent-config needs (e.g. a real
+per-profile `AGENTS.md` once a future upstream pin adds one) ->
+`features/agent_config/` or a new `features/<name>/`, following "Adding a
+native feature" below — the seeder's own `service.py` calls those, it does
+not reimplement them.
 
 New env var -> `config.py`. New PROXIED behavior change -> `transport/`
 (keep `dispatch()` a faithful mirror of upstream's `server.py` Handler; see
@@ -149,54 +230,80 @@ discussion for the storage-options tradeoff already considered once.
    proxied catch-all instead, not a native route.
 2. `features/<name>/service.py` — one thin function per upstream call,
    lazily importing the upstream symbol inside the function body (rule 1).
-   Define a `<Name>Error` exception carrying `code`/`message`/`status_code`,
-   and a `_wrap()`-style helper that maps upstream's plain exceptions to it
-   using the SAME status codes `api/routes.py` already used for that
-   endpoint (rule 4).
+   Define a `<Name>Error` subclassing `features/errors.py`'s `FeatureError`
+   (never a from-scratch exception — the shared base is what
+   `api/envelope.py`'s `service_call` catches), and a `_wrap()`-style
+   helper that maps upstream's plain exceptions to it using the SAME
+   status codes `api/routes.py` already used for that endpoint (rule 4).
+   Reading/writing a profile's config.yaml goes through
+   `features/profile_yaml.py`, translating its plain ValueError/OSError to
+   your feature's own error codes.
 3. `features/<name>/schemas.py` — pydantic models for the HTTP-facing
    request/response shapes. Prefer permissive `dict[str, Any]` for large
    nested payloads upstream owns the shape of (avoids re-duplicating a
    shape that changes independently of this wrapper) over re-typing every
    field.
 4. `api/v1/<name>.py` — `build_router()` returning an `APIRouter`; every
-   handler is `async def`, calls `service.*` via `run_in_threadpool` (rule
-   6), catches the feature's error type, and returns `envelope.success()` /
-   `envelope.error()` (rule 5).
+   handler is `async def` and returns
+   `await envelope.service_call(service.fn, args...)` (rules 5+6 in one
+   call — threadpool hop + FeatureError mapping; do NOT re-declare a
+   per-feature `_call` copy). Hand-write a handler only for a service
+   function that never raises and whose returned dict IS the result (see
+   onboarding's `probe`).
 5. Mount it in `api/router.py`.
 6. `tests/v1/test_<name>.py` — real upstream, isolated state (rule 3). At
    minimum: one success case, one upstream-`ValueError` case, one
    not-proxied-through-`dispatch()` case (mirrors
    `test_status_is_native_not_proxied_through_dispatch`).
 
-## Known current gap — no auth gate on native onboarding routes
+## Known current gap — no auth gate on native onboarding/agent-config/agent-seeder routes
 
 Upstream's own onboarding mutation endpoints (`setup`, `oauth/start`,
 `complete`, `probe`) are protected by `_onboarding_gate_allows` — allowed
 unauthenticated only from a local/private network origin (checked against
 the raw, unspoofable socket peer), or unconditionally once real auth is
-enabled. **The native routes in `api/v1/onboarding.py` have no equivalent
+enabled. **The native routes in `api/v1/onboarding.py`,
+`api/v1/agent_config.py`, and `api/v1/agent_seeder.py` have no equivalent
 gate today** — this wrapper has no session/login layer yet at all (see
 `rust_gateway`'s own "no auth... yet" checkpoint note), so porting
 upstream's local-network exception here would be a false sense of
 security, not a real one; and upstream's exact IP-based gate does not
 obviously translate to a tenant sitting behind this project's own Rust
-gateway/reverse proxy in the first place. Add real authentication in front
-of this service before this gap matters in anything but local dev — do not
-paper over it with IP-based logic that doesn't fit this project's actual
-deployment shape.
+gateway/reverse proxy in the first place. `agent-seeder` in particular can
+create profiles and rewrite `config.yaml`/`SOUL.md`/`AGENTS.md` for every
+agent in a mode's `seeder/modes/<mode>/agents/` in one call — treat it as
+at least as sensitive as onboarding's own mutation endpoints. It now has a
+real UI caller too: `frontend`'s `/mode/:workspaceId` screen (Simple mode,
+see `frontend/AGENTS.md`'s "Agent seeder" rule) calls
+`POST /workspaces/:id/agent-seeder/simple/apply` on `rust_gateway`
+(`agent_seeder_proxy.rs`), which forwards here — this is no longer a
+theoretical exposure. Add real authentication in front of this service
+before any of this matters in anything but local dev — do not paper over
+it with IP-based logic that doesn't fit this project's actual deployment
+shape.
 
 ## Testing
 
 ```bash
 cd backend/wrapper
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]"       # also installs seeder-kit from ../seeder_kit (pyproject.toml dependency)
 PYTHONPATH=src python -m pytest -q
 ```
 
 Requires a pinned `../upstream` checkout on disk (see `../UPSTREAM.md`) —
 tests bootstrap and exercise the REAL upstream `api.*` functions against an
 isolated tmp `HERMES_HOME` (`tests/conftest.py`), not mocks.
+
+`../seeder_kit/` has its own independent test suite (no upstream/wrapper
+dependency at all):
+
+```bash
+cd backend/seeder_kit
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+python -m pytest -q
+```
 
 ## Boundary
 
