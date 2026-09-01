@@ -161,13 +161,42 @@ RUN mkdir -p /custom-cont-init.d
 #   git, curl            - hermes-agent runtime needs (git tool, downloads)
 #   python3               - Alpine's python3 satisfies hermes-agent's
 #                            requires-python; uv is a static binary, no pip
-#                            needed.
+#                            needed. Also what patch_kasmvnc_lastactiveat.py
+#                            (right below) runs under.
 RUN apk add --no-cache \
     chromium \
     xdg-utils \
     git \
     curl \
     python3
+
+# Patch a real, confirmed bug in the BASE image's bundled KasmVNC client:
+# its idle-keepalive interval reads `UI.rfb.lastActiveAt` with no guard on
+# `UI.rfb` being defined, and crashes ("Uncaught TypeError: Cannot read
+# properties of undefined (reading 'lastActiveAt')") if the interval tick
+# lands after a disconnect clears UI.rfb — reproduced live on real
+# workspaces. See patch_kasmvnc_lastactiveat.py's own module doc for the
+# full research trail (exact upstream version confirmed, the real
+# unreleased upstream fix commit identified and read in full, why this is
+# a smaller surgical patch rather than porting that whole commit).
+#
+# This is a bug in `lscr.io/linuxserver/webtop`'s bundled KasmVNC
+# (kasmtech/noVNC v1.3.0), not in anything this repository owns — kasmtech
+# has not yet tagged a release containing their own fix (upstream commit
+# 402c0c59d62424ff110bad8f14682deec7d4c780, merged 2026-07-16, still
+# unreleased as of this writing). Once they do, delete this patch step and
+# `docker inspect --format='{{index .RepoDigests 0}}'` a fresh BASE_IMAGE
+# pin instead — re-verify the KasmVNC-vs-Selkies check in this file's own
+# top comment before trusting a new webtop digest either way.
+#
+# Fails the BUILD (not silently skips) if the base image's bundled
+# main.bundle.js no longer matches byte-for-byte what this patch expects —
+# see the script's own fail-closed reasoning. A failed build here means
+# "the base image changed this file since this patch was written, go
+# re-verify the crash and the exact block to match," not a bug to work
+# around by ignoring the exit code.
+COPY backend/workspace-image/patch_kasmvnc_lastactiveat.py /tmp/patch_kasmvnc_lastactiveat.py
+RUN python3 /tmp/patch_kasmvnc_lastactiveat.py && rm /tmp/patch_kasmvnc_lastactiveat.py
 
 # Pull in the fully-built hermes-agent tree (source + musl venv, now WITH
 # the wrapper installed into that same venv too — see the builder stage's
