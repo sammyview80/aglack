@@ -15,9 +15,9 @@ use tower_http::cors::CorsLayer;
 use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
     create_workspace_route, delete_workspace_route, desktop_proxy_route_root,
-    desktop_proxy_route_with_path, hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path,
-    list_workspaces_route, onboarding_proxy_route_root, onboarding_proxy_route_with_path,
-    WorkspacesState,
+    desktop_proxy_route_with_path, hermes_webui_proxy_route_root,
+    hermes_webui_proxy_route_with_path, list_workspaces_route, onboarding_proxy_route_root,
+    onboarding_proxy_route_with_path, WorkspacesState,
 };
 
 /// Register one per-workspace proxy feature's pair of routes: the exact
@@ -112,8 +112,8 @@ pub fn build_router(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::DockerCliLauncher;
     use crate::workspaces::test_support::{state_with_store, temp_store};
+    use crate::workspaces::DockerCliLauncher;
     use axum::{
         body::Body,
         http::{Request, StatusCode},

@@ -97,7 +97,10 @@ impl WorkspaceStore {
 
     /// Look up an idempotency key. `None` means this key has never been
     /// seen — the caller should proceed to `begin_creation`.
-    pub async fn find(&self, idempotency_key: &str) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
+    pub async fn find(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT workspace_id, status, container_name, host_port, desktop_port \
              FROM workspace_creations WHERE idempotency_key = ?",
@@ -146,7 +149,11 @@ impl WorkspaceStore {
     /// SQLite's implicit `rowid` increases monotonically with insertion
     /// order and needs no schema change, so it's used as a free, exact
     /// tie-breaker — newest-inserted-first even within the same second.
-    pub async fn list(&self, limit: i64, offset: i64) -> Result<Vec<WorkspaceListItem>, sqlx::Error> {
+    pub async fn list(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<WorkspaceListItem>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT workspace_id, idempotency_key, status, host_port, desktop_port, created_at \
              FROM workspace_creations \
@@ -219,11 +226,10 @@ impl WorkspaceStore {
             // (idempotency_key) already exists — exactly the race this
             // function exists to handle. Any other error is a real
             // failure and must propagate.
-            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-                self.find(idempotency_key)
-                    .await?
-                    .ok_or(sqlx::Error::RowNotFound)
-            }
+            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => self
+                .find(idempotency_key)
+                .await?
+                .ok_or(sqlx::Error::RowNotFound),
             Err(other) => Err(other),
         }
     }
@@ -412,13 +418,11 @@ mod list_tests {
             .await
             .expect("delete succeeds");
         assert!(deleted);
-        assert!(
-            store
-                .find_by_workspace_id("id-delete")
-                .await
-                .expect("lookup succeeds")
-                .is_none()
-        );
+        assert!(store
+            .find_by_workspace_id("id-delete")
+            .await
+            .expect("lookup succeeds")
+            .is_none());
     }
 
     #[tokio::test]

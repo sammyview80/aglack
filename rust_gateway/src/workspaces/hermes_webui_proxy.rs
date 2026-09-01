@@ -57,7 +57,11 @@ async fn hermes_webui_proxy(
     };
 
     let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
-    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     // No namespace restriction here (unlike onboarding_proxy.rs) — `path`
     // is forwarded to the wrapper's ROOT, since this route stands in for
     // the whole app, not one feature of it.
@@ -68,8 +72,8 @@ async fn hermes_webui_proxy(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_support::{body_json, temp_store};
+    use super::*;
     use crate::workspaces::container::FakeLauncher;
     use axum::{
         body::{to_bytes, Body},

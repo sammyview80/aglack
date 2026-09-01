@@ -21,7 +21,10 @@ pub async fn connect(path: &Path) -> Result<SqlitePool, sqlx::Error> {
         std::fs::create_dir_all(parent).map_err(|err| {
             sqlx::Error::Io(std::io::Error::new(
                 err.kind(),
-                format!("failed to create database directory {}: {err}", parent.display()),
+                format!(
+                    "failed to create database directory {}: {err}",
+                    parent.display()
+                ),
             ))
         })?;
     }

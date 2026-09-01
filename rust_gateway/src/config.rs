@@ -123,9 +123,7 @@ impl WorkspacesConfig {
         let database_path = database_url
             .strip_prefix("sqlite://")
             .ok_or_else(|| ConfigError {
-                message: format!(
-                    "DATABASE_URL must start with sqlite:// (got {database_url:?})"
-                ),
+                message: format!("DATABASE_URL must start with sqlite:// (got {database_url:?})"),
             })?
             .into();
         let workspace_image_tag = required_env("WORKSPACE_IMAGE_TAG")?;

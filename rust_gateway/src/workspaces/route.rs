@@ -81,7 +81,11 @@ pub async fn create_workspace_route(
 ) -> Response {
     let name = request.name.trim();
     if name.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "workspace_name_required", "name is required");
+        return error(
+            StatusCode::BAD_REQUEST,
+            "workspace_name_required",
+            "name is required",
+        );
     }
 
     // `password` is accepted (matching the existing frontend contract) but
@@ -277,18 +281,20 @@ async fn check_health_and_build_list_items(
 ) -> Vec<WorkspaceListItemData> {
     let mut checks = tokio::task::JoinSet::new();
     for (index, item) in items.iter().enumerate() {
-        match (&item.status, item.host_port) {
-            (WorkspaceStatus::Ready, Some(host_port)) => {
-                let client = client.clone();
-                let wrapper_port = host_port as u16;
-                checks.spawn(async move {
-                    (index, check_wrapper_health(&client, wrapper_port, HEALTH_CHECK_TIMEOUT).await)
-                });
-            }
-            // Nothing to check: not `Ready`, or (should be unreachable
-            // per `mark_ready`'s invariant, but handled anyway, failing
-            // closed) `Ready` with no recorded port.
-            _ => {}
+        // Every other combination (not `Ready`, or — should be
+        // unreachable per `mark_ready`'s invariant, but handled anyway,
+        // failing closed — `Ready` with no recorded port) has nothing to
+        // check, so no task is spawned for it; it keeps its `false`
+        // default in `healthy_by_index` below.
+        if let (WorkspaceStatus::Ready, Some(host_port)) = (&item.status, item.host_port) {
+            let client = client.clone();
+            let wrapper_port = host_port as u16;
+            checks.spawn(async move {
+                (
+                    index,
+                    check_wrapper_health(&client, wrapper_port, HEALTH_CHECK_TIMEOUT).await,
+                )
+            });
         }
     }
 
@@ -370,8 +376,8 @@ pub async fn delete_workspace_route(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_support::{body_json, state_with_store, temp_store};
+    use super::*;
     use crate::workspaces::container::FakeLauncher;
 
     async fn temp_state() -> Arc<WorkspacesState> {
@@ -470,9 +476,14 @@ mod tests {
     #[tokio::test]
     async fn list_workspaces_returns_empty_array_when_none_exist() {
         let state = temp_state().await;
-        let response =
-            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
-                .await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+            }),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert_eq!(body["ok"], true);
@@ -504,9 +515,14 @@ mod tests {
         )
         .await;
 
-        let response =
-            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
-                .await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+            }),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         let workspaces = body["data"]["workspaces"].as_array().unwrap();
@@ -524,7 +540,8 @@ mod tests {
     /// route's doc comment): `status` is the DB's last-written value,
     /// `healthy` is live, right now.
     #[tokio::test]
-    async fn list_workspaces_reports_healthy_false_for_a_ready_workspace_whose_wrapper_is_unreachable() {
+    async fn list_workspaces_reports_healthy_false_for_a_ready_workspace_whose_wrapper_is_unreachable(
+    ) {
         let store = temp_store().await;
         store
             .begin_creation("unreachable-ws", "id-unreachable")
@@ -537,9 +554,14 @@ mod tests {
             .expect("mark_ready succeeds");
         let state = state_with_store(store, Arc::new(FakeLauncher::default()));
 
-        let response =
-            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
-                .await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+            }),
+        )
+        .await;
         let body = body_json(response).await;
         let workspaces = body["data"]["workspaces"].as_array().unwrap();
         assert_eq!(workspaces.len(), 1);
@@ -556,7 +578,9 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
         let port = listener.local_addr().expect("read local addr").port();
         tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
@@ -579,9 +603,14 @@ mod tests {
             .expect("mark_ready succeeds");
         let state = state_with_store(store, Arc::new(FakeLauncher::default()));
 
-        let response =
-            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
-                .await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+            }),
+        )
+        .await;
         let body = body_json(response).await;
         let workspaces = body["data"]["workspaces"].as_array().unwrap();
         assert_eq!(workspaces.len(), 1);
@@ -607,9 +636,14 @@ mod tests {
         )
         .await;
 
-        let response =
-            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
-                .await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+            }),
+        )
+        .await;
         let body = body_json(response).await;
         let workspaces = body["data"]["workspaces"].as_array().unwrap();
         assert_eq!(workspaces.len(), 1);
@@ -622,7 +656,10 @@ mod tests {
         let state = temp_state().await;
         let response = list_workspaces_route(
             State(state),
-            Query(ListWorkspacesQuery { limit: Some(-1), offset: None }),
+            Query(ListWorkspacesQuery {
+                limit: Some(-1),
+                offset: None,
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -635,7 +672,10 @@ mod tests {
         let state = temp_state().await;
         let response = list_workspaces_route(
             State(state),
-            Query(ListWorkspacesQuery { limit: None, offset: Some(-1) }),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: Some(-1),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -652,7 +692,10 @@ mod tests {
         let state = temp_state().await;
         let response = list_workspaces_route(
             State(state),
-            Query(ListWorkspacesQuery { limit: Some(100_000), offset: None }),
+            Query(ListWorkspacesQuery {
+                limit: Some(100_000),
+                offset: None,
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -663,7 +706,8 @@ mod tests {
     #[tokio::test]
     async fn deleting_unknown_workspace_returns_404_not_found() {
         let state = temp_state().await;
-        let response = delete_workspace_route(State(state), Path("does-not-exist".to_string())).await;
+        let response =
+            delete_workspace_route(State(state), Path("does-not-exist".to_string())).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = body_json(response).await;
         assert_eq!(body["ok"], false);
@@ -683,17 +727,26 @@ mod tests {
         .await;
         assert_eq!(created.status(), StatusCode::OK);
         let created_body = body_json(created).await;
-        let workspace_id = created_body["data"]["workspace_id"].as_str().unwrap().to_string();
+        let workspace_id = created_body["data"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        let deleted = delete_workspace_route(State(state.clone()), Path(workspace_id.clone())).await;
+        let deleted =
+            delete_workspace_route(State(state.clone()), Path(workspace_id.clone())).await;
         assert_eq!(deleted.status(), StatusCode::OK);
         let deleted_body = body_json(deleted).await;
         assert_eq!(deleted_body["ok"], true);
         assert_eq!(deleted_body["data"]["workspace_id"], workspace_id);
 
-        let listed =
-            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
-                .await;
+        let listed = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery {
+                limit: None,
+                offset: None,
+            }),
+        )
+        .await;
         let listed_body = body_json(listed).await;
         assert_eq!(listed_body["data"]["workspaces"], serde_json::json!([]));
     }

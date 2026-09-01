@@ -11,6 +11,7 @@
 //! to Nomad/Kubernetes' later is an implementation swap, not a rewrite."
 
 use async_trait::async_trait;
+#[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -38,7 +39,10 @@ pub trait ContainerLauncher: Send + Sync {
     /// `DockerCliLauncher::launch`'s readiness wait. A `Ready` workspace
     /// record must mean "you can really reach this workspace's onboarding
     /// endpoints now", not merely "docker start succeeded".
-    async fn launch(&self, workspace_id: &str) -> Result<LaunchedContainer, super::CreateWorkspaceError>;
+    async fn launch(
+        &self,
+        workspace_id: &str,
+    ) -> Result<LaunchedContainer, super::CreateWorkspaceError>;
 
     /// Stop and remove a previously launched container. A missing
     /// container is success (already gone) — delete must still be able to
@@ -85,6 +89,7 @@ pub trait ContainerLauncher: Send + Sync {
 /// identity" section for the full remaining list:
 ///   - no named volumes for HERMES_HOME/`/workspace` (container state does
 ///     not survive `docker rm`)
+///
 /// None of this requires touching `create_workspace` or the HTTP route,
 /// since both only depend on the `ContainerLauncher` trait.
 pub struct DockerCliLauncher {
@@ -289,7 +294,10 @@ pub(crate) async fn check_wrapper_health(
 
 #[async_trait]
 impl ContainerLauncher for DockerCliLauncher {
-    async fn launch(&self, workspace_id: &str) -> Result<LaunchedContainer, super::CreateWorkspaceError> {
+    async fn launch(
+        &self,
+        workspace_id: &str,
+    ) -> Result<LaunchedContainer, super::CreateWorkspaceError> {
         let container_name = format!("hermes-ws-{workspace_id}");
         let wrapper_port = pick_free_port().await?;
         let desktop_port = pick_free_port().await?;
@@ -349,7 +357,10 @@ impl ContainerLauncher for DockerCliLauncher {
     }
 }
 
-async fn run_docker(container_name: &str, args: &[&str]) -> Result<(), super::CreateWorkspaceError> {
+async fn run_docker(
+    container_name: &str,
+    args: &[&str],
+) -> Result<(), super::CreateWorkspaceError> {
     let output = Command::new("docker")
         .args(args)
         .output()
@@ -400,22 +411,29 @@ async fn deliver_boot_script(container_name: &str) -> Result<(), super::CreateWo
     .await
 }
 
-/// Test double used by every test in `mod.rs`. Never touches Docker;
-/// returns a deterministic, unique container name + fixed fake ports per
-/// call, and counts how many times it was actually invoked, which is how
-/// the idempotency tests prove a retried key does NOT launch a second
-/// container.
+/// Test double used by every test in `mod.rs` (and every other
+/// `workspaces::*` test module that needs a `ContainerLauncher` without
+/// touching Docker). `#[cfg(test)]` on every item here (not just this
+/// doc comment) because nothing outside `cargo test` ever constructs one
+/// — without it, a release build correctly reports this as dead code.
+///
+/// Never touches Docker; returns a deterministic, unique container name +
+/// fixed fake ports per call, and counts how many times it was actually
+/// invoked, which is how the idempotency tests prove a retried key does
+/// NOT launch a second container.
 ///
 /// `fail_next_n_calls` lets a test simulate the first N launch attempts
 /// failing (e.g. a transient Docker error) before succeeding — this is how
 /// `create_workspace`'s "a failed attempt must be retriable" guarantee is
 /// tested without needing a real, flaky Docker daemon.
-pub struct FakeLauncher {
+#[cfg(test)]
+pub(crate) struct FakeLauncher {
     call_count: AtomicUsize,
     fail_next_n_calls: AtomicUsize,
     remove_count: AtomicUsize,
 }
 
+#[cfg(test)]
 impl Default for FakeLauncher {
     fn default() -> Self {
         Self {
@@ -426,12 +444,13 @@ impl Default for FakeLauncher {
     }
 }
 
+#[cfg(test)]
 impl FakeLauncher {
-    pub fn launch_count(&self) -> usize {
+    pub(crate) fn launch_count(&self) -> usize {
         self.call_count.load(Ordering::SeqCst)
     }
 
-    pub fn that_fails_first(n: usize) -> Self {
+    pub(crate) fn that_fails_first(n: usize) -> Self {
         Self {
             call_count: AtomicUsize::new(0),
             fail_next_n_calls: AtomicUsize::new(n),
@@ -439,14 +458,18 @@ impl FakeLauncher {
         }
     }
 
-    pub fn remove_count(&self) -> usize {
+    pub(crate) fn remove_count(&self) -> usize {
         self.remove_count.load(Ordering::SeqCst)
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl ContainerLauncher for FakeLauncher {
-    async fn launch(&self, workspace_id: &str) -> Result<LaunchedContainer, super::CreateWorkspaceError> {
+    async fn launch(
+        &self,
+        workspace_id: &str,
+    ) -> Result<LaunchedContainer, super::CreateWorkspaceError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
 
         let remaining_failures = self.fail_next_n_calls.load(Ordering::SeqCst);
@@ -550,7 +573,9 @@ mod tests {
     /// `reqwest::Response`.
     #[tokio::test]
     async fn check_wrapper_health_is_true_when_the_real_endpoint_answers_200() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
         let port = listener.local_addr().expect("read local addr").port();
         tokio::spawn(serve_one_health_ok(listener));
 
@@ -568,7 +593,9 @@ mod tests {
         // Bind then immediately drop the listener: frees the OS-assigned
         // port back up while guaranteeing nothing else grabbed it in the
         // meantime for the immediately-following connection attempt.
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
         let port = listener.local_addr().expect("read local addr").port();
         drop(listener);
 
@@ -584,7 +611,9 @@ mod tests {
     /// the connection and then never respond, not refuse it outright).
     #[tokio::test]
     async fn check_wrapper_health_is_false_when_the_response_never_comes() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
         let port = listener.local_addr().expect("read local addr").port();
         tokio::spawn(async move {
             // Accept and hold the connection open without ever writing a
@@ -595,8 +624,7 @@ mod tests {
         });
 
         let client = reqwest::Client::new();
-        let healthy =
-            check_wrapper_health(&client, port, Duration::from_millis(200)).await;
+        let healthy = check_wrapper_health(&client, port, Duration::from_millis(200)).await;
         assert!(!healthy);
     }
 

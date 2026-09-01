@@ -30,7 +30,9 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http, Message as TungsteniteMessage};
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest, http, Message as TungsteniteMessage,
+};
 
 use super::resolve::resolve_ready_workspace;
 use super::route::WorkspacesState;
@@ -51,7 +53,7 @@ use crate::proxy::forward_to;
 ///     subprotocol for the RFB byte stream).
 fn build_upstream_request(
     target_ws_url: &str,
-) -> Result<http::Request<()>, tokio_tungstenite::tungstenite::Error> {
+) -> Result<http::Request<()>, Box<tokio_tungstenite::tungstenite::Error>> {
     let mut request = target_ws_url.into_client_request()?;
     // A same-origin request is what a real browser-embedded noVNC client
     // would send when loaded from this same desktop proxy — matching that
@@ -111,10 +113,20 @@ async fn desktop_proxy(
     }
 
     let target_addr = format!("127.0.0.1:{}", ports.desktop_port);
-    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     let full_rewritten_path = format!("{rewritten_path}{query}");
 
-    forward_to(&state.http_client, &target_addr, req, Some(&full_rewritten_path)).await
+    forward_to(
+        &state.http_client,
+        &target_addr,
+        req,
+        Some(&full_rewritten_path),
+    )
+    .await
 }
 
 /// Relay frames bidirectionally between the browser's already-upgraded
@@ -191,8 +203,8 @@ async fn relay_websocket(socket: WebSocket, target_ws_url: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_support::{body_json, temp_store};
+    use super::*;
     use crate::workspaces::container::FakeLauncher;
     use axum::{
         body::{to_bytes, Body},
@@ -233,9 +245,7 @@ mod tests {
             .await
             .expect("bind echo desktop");
         let desktop_port = listener.local_addr().unwrap().port();
-        let echo_handler = |req: HttpRequest<Body>| async move {
-            req.uri().path().to_string()
-        };
+        let echo_handler = |req: HttpRequest<Body>| async move { req.uri().path().to_string() };
         let app: Router = Router::new()
             .route("/", any_method(echo_handler))
             .route("/*path", any_method(echo_handler));
@@ -292,16 +302,17 @@ mod tests {
                 // `Sec-WebSocket-Protocol: binary`, per the real fix)
                 // gets a compliant response instead of tungstenite's own
                 // strict client rejecting a server that names none.
-                ws.protocols(["binary"]).on_upgrade(|mut socket: WebSocket| async move {
-                    while let Some(Ok(msg)) = socket.next().await {
-                        if let AxumMessage::Close(_) = msg {
-                            break;
+                ws.protocols(["binary"])
+                    .on_upgrade(|mut socket: WebSocket| async move {
+                        while let Some(Ok(msg)) = socket.next().await {
+                            if let AxumMessage::Close(_) = msg {
+                                break;
+                            }
+                            if socket.send(msg).await.is_err() {
+                                break;
+                            }
                         }
-                        if socket.send(msg).await.is_err() {
-                            break;
-                        }
-                    }
-                })
+                    })
             }),
         );
         tokio::spawn(async move {

@@ -56,7 +56,9 @@ async fn main() {
         });
     let workspaces_state = Arc::new(WorkspacesState {
         store: WorkspaceStore::new(db_pool),
-        launcher: Arc::new(DockerCliLauncher::new(workspaces_config.workspace_image_tag)),
+        launcher: Arc::new(DockerCliLauncher::new(
+            workspaces_config.workspace_image_tag,
+        )),
         http_client: reqwest::Client::new(),
     });
 
@@ -68,7 +70,10 @@ async fn main() {
         .unwrap_or_else(|err| panic!("failed to bind {listen_addr}: {err}"));
 
     println!("rust_gateway listening on http://{listen_addr}");
-    println!("forwarding every request to http://{}", config.backend_addr());
+    println!(
+        "forwarding every request to http://{}",
+        config.backend_addr()
+    );
 
     axum::serve(listener, app)
         .await

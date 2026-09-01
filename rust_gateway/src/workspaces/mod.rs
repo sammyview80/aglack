@@ -21,7 +21,9 @@ pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};
 pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
 pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
 pub use onboarding_proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
-pub use route::{create_workspace_route, delete_workspace_route, list_workspaces_route, WorkspacesState};
+pub use route::{
+    create_workspace_route, delete_workspace_route, list_workspaces_route, WorkspacesState,
+};
 pub use store::{WorkspaceRecord, WorkspaceStatus, WorkspaceStore};
 
 /// One request to create a workspace, and the one place that decides
@@ -52,9 +54,7 @@ pub async fn create_workspace(
     }
 
     let workspace_id = uuid::Uuid::new_v4().to_string();
-    let record = store
-        .begin_creation(idempotency_key, &workspace_id)
-        .await?;
+    let record = store.begin_creation(idempotency_key, &workspace_id).await?;
 
     // A second caller racing in between `find` returning None and
     // `begin_creation` committing would hit this same path — `begin_creation`
@@ -143,8 +143,8 @@ impl std::error::Error for CreateWorkspaceError {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_support::temp_store;
+    use super::*;
     use container::FakeLauncher;
 
     #[tokio::test]
@@ -256,13 +256,11 @@ mod tests {
 
         assert_eq!(deleted.workspace_id, created.workspace_id);
         assert_eq!(launcher.remove_count(), 1);
-        assert!(
-            store
-                .find_by_workspace_id(&created.workspace_id)
-                .await
-                .expect("lookup succeeds")
-                .is_none()
-        );
+        assert!(store
+            .find_by_workspace_id(&created.workspace_id)
+            .await
+            .expect("lookup succeeds")
+            .is_none());
         assert!(store.list(50, 0).await.expect("list succeeds").is_empty());
     }
 
@@ -288,12 +286,10 @@ mod tests {
             0,
             "no container was launched, so remove must not be called"
         );
-        assert!(
-            store
-                .find_by_workspace_id(&failed.workspace_id)
-                .await
-                .expect("lookup succeeds")
-                .is_none()
-        );
+        assert!(store
+            .find_by_workspace_id(&failed.workspace_id)
+            .await
+            .expect("lookup succeeds")
+            .is_none());
     }
 }

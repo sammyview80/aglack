@@ -16,8 +16,8 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::route::WorkspacesState;
 use super::resolve::resolve_ready_workspace;
+use super::route::WorkspacesState;
 use crate::proxy::forward_to;
 
 /// Handles `/workspaces/:id/onboarding/*path` — axum captures both
@@ -59,7 +59,11 @@ async fn onboarding_proxy(
     // /oauth/poll?flow_id=... — see backend/wrapper's onboarding routes) —
     // only the PATH is being rewritten to strip this route's own
     // `/workspaces/:id/onboarding` prefix.
-    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     let rewritten_path = if path.is_empty() {
         format!("/api/wrapper/v1/onboarding{query}")
     } else {
@@ -71,8 +75,8 @@ async fn onboarding_proxy(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_support::{body_json, temp_store};
+    use super::*;
     use crate::workspaces::container::FakeLauncher;
     use crate::workspaces::WorkspaceStatus;
     use axum::{
@@ -170,7 +174,10 @@ mod tests {
             .begin_creation("my-workspace", "ws-1")
             .await
             .expect("begin_creation");
-        store.mark_failed("my-workspace").await.expect("mark_failed");
+        store
+            .mark_failed("my-workspace")
+            .await
+            .expect("mark_failed");
         let state = state_with_store(store);
 
         let response = onboarding_proxy_route_root(
@@ -295,6 +302,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let echoed_path = String::from_utf8(bytes.to_vec()).unwrap();
-        assert_eq!(echoed_path, "/api/wrapper/v1/onboarding/oauth/poll?flow_id=abc123");
+        assert_eq!(
+            echoed_path,
+            "/api/wrapper/v1/onboarding/oauth/poll?flow_id=abc123"
+        );
     }
 }
