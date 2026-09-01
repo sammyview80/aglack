@@ -57,6 +57,15 @@ pub struct WorkspaceRecord {
     pub workspace_id: String,
     pub status: WorkspaceStatus,
     pub container_name: Option<String>,
+    /// Host port this workspace's wrapper (Hermes WebUI) is published on
+    /// — `None` until the container has actually launched (set together
+    /// with `container_name` in `mark_ready`). See
+    /// `../../migrations/0002_add_host_port.sql`.
+    pub host_port: Option<i64>,
+    /// Host port this workspace's webtop desktop (nginx fronting KasmVNC)
+    /// is published on — same lifecycle as `host_port`, set together with
+    /// it. See `../../migrations/0003_add_desktop_port.sql`.
+    pub desktop_port: Option<i64>,
 }
 
 pub struct WorkspaceStore {
@@ -72,18 +81,46 @@ impl WorkspaceStore {
     /// seen — the caller should proceed to `begin_creation`.
     pub async fn find(&self, idempotency_key: &str) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT workspace_id, status, container_name \
+            "SELECT workspace_id, status, container_name, host_port, desktop_port \
              FROM workspace_creations WHERE idempotency_key = ?",
         )
         .bind(idempotency_key)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|row| WorkspaceRecord {
+        Ok(row.map(Self::record_from_row))
+    }
+
+    /// Look up a workspace by its `workspace_id` (NOT the idempotency
+    /// key/name — see `mod.rs`, these are different values). Used by the
+    /// onboarding/hermes-webui/desktop proxy routes to validate a
+    /// caller-supplied id and find which host port to forward to.
+    /// `workspace_id` is not the table's primary key (`idempotency_key`
+    /// is), but is unique in practice: it is a freshly generated UUID per
+    /// row (see `mod.rs::create_workspace`) and never reused.
+    pub async fn find_by_workspace_id(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT workspace_id, status, container_name, host_port, desktop_port \
+             FROM workspace_creations WHERE workspace_id = ?",
+        )
+        .bind(workspace_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(Self::record_from_row))
+    }
+
+    fn record_from_row(row: sqlx::sqlite::SqliteRow) -> WorkspaceRecord {
+        WorkspaceRecord {
             workspace_id: row.get("workspace_id"),
             status: WorkspaceStatus::from_db_str(row.get("status")),
             container_name: row.get("container_name"),
-        }))
+            host_port: row.get::<Option<i64>, _>("host_port"),
+            desktop_port: row.get::<Option<i64>, _>("desktop_port"),
+        }
     }
 
     /// Claim `idempotency_key` for `workspace_id`, or — if another request
@@ -117,6 +154,8 @@ impl WorkspaceStore {
                 workspace_id: workspace_id.to_string(),
                 status: WorkspaceStatus::Creating,
                 container_name: None,
+                host_port: None,
+                desktop_port: None,
             }),
             // SQLite raises this specific error when the PRIMARY KEY
             // (idempotency_key) already exists — exactly the race this
@@ -131,19 +170,30 @@ impl WorkspaceStore {
         }
     }
 
-    /// Record that `idempotency_key`'s container has finished launching.
+    /// Record that `idempotency_key`'s container has finished launching,
+    /// including both host ports its wrapper and desktop were published
+    /// on (needed by the onboarding/hermes-webui/desktop proxy routes to
+    /// forward to this specific workspace). Always set together in one
+    /// UPDATE — a `Ready` row's `host_port` and `desktop_port` are both
+    /// `Some` or both `None`, never a mix; every reader relies on that
+    /// invariant (see e.g. `resolve.rs`) rather than re-checking it.
     pub async fn mark_ready(
         &self,
         idempotency_key: &str,
         container_name: &str,
+        host_port: u16,
+        desktop_port: u16,
     ) -> Result<WorkspaceRecord, sqlx::Error> {
         let status = WorkspaceStatus::Ready.as_db_str();
         sqlx::query(
-            "UPDATE workspace_creations SET status = ?, container_name = ? \
+            "UPDATE workspace_creations \
+             SET status = ?, container_name = ?, host_port = ?, desktop_port = ? \
              WHERE idempotency_key = ?",
         )
         .bind(status)
         .bind(container_name)
+        .bind(i64::from(host_port))
+        .bind(i64::from(desktop_port))
         .bind(idempotency_key)
         .execute(&self.pool)
         .await?;

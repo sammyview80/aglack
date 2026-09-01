@@ -1,7 +1,11 @@
 # Workspace container image: a full Linux desktop (webtop, Alpine/musl) with
 # Hermes Agent's Python source rebuilt fresh for musl, plus our own untouched
 # Hermes WebUI (backend/upstream) and wrapper (backend/wrapper) copied in and
-# run instead of upstream's own server.py.
+# run instead of upstream's own server.py. The wrapper is INSTALLED INTO the
+# agent's own venv (/opt/hermes/.venv), not a separate one — see the
+# "Install the wrapper INTO the agent's own venv" comment below for why
+# (a separate venv can never `from run_agent import AIAgent`, which is what
+# caused a real "AIAgent not available" failure this fixes).
 #
 # THIS IMAGE HAS NO IDENTITY OF ITS OWN. It is a template every workspace
 # container is built from; nothing here is unique per tenant/container. All
@@ -100,6 +104,37 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv sync --locked --no-dev --python 
 RUN chmod +x /opt/hermes/native/fts5_cjk/build.sh
 RUN /opt/hermes/native/fts5_cjk/build.sh /opt/hermes/native/fts5_cjk/dist
 
+# ── Our own Hermes WebUI (untouched upstream) + wrapper ─────────────────────
+# Copied HERE (builder stage), not just Stage 3, because installing the
+# wrapper (below) needs `uv` — only present in this stage, deliberately
+# never copied into the final image (Stage 3 has no compiler toolchain and
+# no package installer at all: confirmed live, `find / -iname uv` in a
+# running container finds nothing). This same `/opt/hermes-webui` tree is
+# copied verbatim into Stage 3 below — source only; no separate venv is
+# built for it there anymore (see the wrapper install right below).
+#
+# backend/upstream/ is NEVER modified — see revamp/backend/UPSTREAM.md.
+RUN mkdir -p /opt/hermes-webui
+COPY backend/upstream /opt/hermes-webui/upstream
+COPY backend/wrapper /opt/hermes-webui/wrapper
+
+# Install the wrapper INTO the agent's own venv — NOT a separate
+# `/opt/hermes-webui/.venv` (the previous design; see git history) — so a
+# single interpreter can both `from run_agent import AIAgent` (needs the
+# agent's own compiled deps, e.g. pydantic-core — a separate WebUI-only
+# venv can never see these; this was the real root cause of a live
+# "AIAgent not available" failure) AND serve the wrapper's FastAPI app.
+# Verified live in a running container: fastapi/uvicorn/pyyaml/cryptography
+# (the wrapper's own runtime deps) are ALREADY present in /opt/hermes/.venv
+# as hermes-agent's own transitive dependencies — this install only adds
+# the wrapper package itself, not a second copy of its dependency tree.
+# `_default_upstream_root()` in the wrapper's own config.py resolves
+# `<wrapper-package-root>/../upstream` — installing FROM
+# `/opt/hermes-webui/wrapper` (sibling of `/opt/hermes-webui/upstream`,
+# the exact layout already in this tree) keeps that default resolution
+# correct with zero extra config.
+RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/wrapper
+
 # ---- Stage 3: the final image — webtop desktop + built hermes venv + our own WebUI ----
 FROM ${BASE_IMAGE}
 
@@ -134,45 +169,35 @@ RUN apk add --no-cache \
     curl \
     python3
 
-# Pull in the fully-built hermes-agent tree (source + musl venv + fts5_cjk
-# .so) from the builder stage. No compiler toolchain, no uv install script.
+# Pull in the fully-built hermes-agent tree (source + musl venv, now WITH
+# the wrapper installed into that same venv too — see the builder stage's
+# `uv pip install -e /opt/hermes-webui/wrapper` above — + fts5_cjk .so)
+# from the builder stage. No compiler toolchain, no uv install script.
 COPY --from=builder /opt/hermes /opt/hermes
 
-# hermes-agent runs as the webtop runtime user (`abc`, PUID/PGID-remapped at
-# boot). abc never needs to WRITE under /opt/hermes at runtime (venv is
-# fully prebuilt), only read+execute — world-readable perms below cover
-# that for any PUID/PGID, avoiding an expensive recursive chown at every
-# container boot.
+# hermes-agent (and now the wrapper, installed into the same venv) runs as
+# the webtop runtime user (`abc`, PUID/PGID-remapped at boot). abc never
+# needs to WRITE under /opt/hermes at runtime (venv is fully prebuilt),
+# only read+execute — world-readable perms below cover that for any
+# PUID/PGID, avoiding an expensive recursive chown at every container boot.
 RUN chmod -R a+rX /opt/hermes
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PATH="/opt/hermes/.venv/bin:${PATH}"
 
-# ── Our own Hermes WebUI (untouched upstream) + wrapper ─────────────────────
-# Copied in at build time (unlike the runtime-file docker-cp pattern the
-# original reference project uses for its own single-process server.py app
-# — that pattern exists there so the WebUI could be updated independently
-# of rebuilding the base image; we bake ours in directly for simplicity
-# now, since this is a from-scratch image with no existing update-in-place
-# workflow to preserve. Revisit if independent WebUI updates without a
-# full image rebuild become a real requirement).
+# ── Our own Hermes WebUI (untouched upstream) + wrapper — SOURCE only ───────
+# The actual installed package + all its runtime deps now live in
+# /opt/hermes/.venv (copied above) — this is just the source tree the
+# wrapper's own `HERMES_WEBUI_UPSTREAM` default resolution and editable
+# install point at (`_default_upstream_root()` in config.py resolves
+# `<wrapper-root>/../upstream`, i.e. this exact sibling layout). Copied
+# from the BUILDER stage (already has it from the wrapper-install step
+# above) rather than a fresh `COPY backend/...` here, so there is exactly
+# one place in this Dockerfile that names those two host paths, not two.
 #
 # backend/upstream/ is NEVER modified — see revamp/backend/UPSTREAM.md.
-# Its own Python dependencies (requirements.txt) are installed into a
-# SEPARATE venv from hermes-agent's /opt/hermes/.venv above: upstream and
-# the wrapper are FastAPI/uvicorn-based and have their own, different
-# dependency set (PyYAML, cryptography, FastAPI, uvicorn) that must not be
-# mixed into hermes-agent's musl venv or vice versa.
-RUN mkdir -p /opt/hermes-webui
-COPY backend/upstream /opt/hermes-webui/upstream
-COPY backend/wrapper /opt/hermes-webui/wrapper
+COPY --from=builder /opt/hermes-webui /opt/hermes-webui
 
-RUN python3 -m venv /opt/hermes-webui/.venv \
-    && /opt/hermes-webui/.venv/bin/pip install --no-cache-dir -r /opt/hermes-webui/upstream/requirements.txt \
-    && /opt/hermes-webui/.venv/bin/pip install --no-cache-dir -e /opt/hermes-webui/wrapper
-
-# hermes-webui's own venv/source is also read-only at runtime from abc's
-# perspective (no build-time write dependency), same reasoning as
-# /opt/hermes above.
+# Also read+execute only at runtime — same reasoning as /opt/hermes above.
 RUN chmod -R a+rX /opt/hermes-webui
 
 # ── Unique per-container identity ───────────────────────────────────────────

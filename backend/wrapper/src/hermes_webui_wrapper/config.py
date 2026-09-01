@@ -36,6 +36,7 @@ def _default_upstream_root() -> Path:
 class Settings:
     upstream_root: Path
     runtime_enabled: bool
+    frontend_origin: str
     service_name: str = "hermes-webui-wrapper"
     upstream_owner: str = "hermes-webui"
     expected_upstream_revision: str = _DEFAULT_EXPECTED_UPSTREAM_REVISION
@@ -55,8 +56,15 @@ class Settings:
         expected_upstream_revision = os.environ.get(
             "HERMES_WEBUI_UPSTREAM_REVISION", _DEFAULT_EXPECTED_UPSTREAM_REVISION
         ).strip()
+        frontend_origin = os.environ.get("HERMES_FRONTEND_ORIGIN", "").strip()
+        if not frontend_origin:
+            raise RuntimeError(
+                "HERMES_FRONTEND_ORIGIN is not set — copy backend/wrapper/.env.example "
+                "to .env (must match the Vite origin, e.g. http://localhost:5173)"
+            )
         return cls(
             upstream_root=upstream_root,
             runtime_enabled=runtime_enabled,
+            frontend_origin=frontend_origin,
             expected_upstream_revision=expected_upstream_revision,
         )

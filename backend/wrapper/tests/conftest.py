@@ -21,6 +21,7 @@ os.environ["HERMES_WEBUI_STATE_DIR"] = str(_TMP_HOME / "state")
 os.environ["HERMES_WEBUI_SESSION_DIR"] = str(_TMP_HOME / "state" / "sessions")
 os.environ["HERMES_WEBUI_DEFAULT_WORKSPACE"] = str(_TMP_HOME / "workspace")
 os.environ["HERMES_WRAPPER_RUNTIME_ENABLED"] = "false"
+os.environ.setdefault("HERMES_FRONTEND_ORIGIN", "http://localhost:5173")
 
 import pytest  # noqa: E402
 

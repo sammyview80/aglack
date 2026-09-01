@@ -25,7 +25,16 @@ path = "src/bin/test_backend.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "process"] }
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
+# WebSocket CLIENT half of the desktop (KasmVNC `/websockify`) proxy — see
+# workspaces/desktop_proxy.rs. `axum`'s own `ws` feature (above) only
+# provides the SERVER half (accepting a browser's upgrade); relaying that
+# connection onward to the container's own `/websockify` needs a client,
+# and this is the standard, well-maintained crate for that.
+tokio-tungstenite = "0.24"
+# SinkExt/StreamExt for splitting and relaying both WebSocket halves in
+# desktop_proxy.rs's relay_websocket.
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,9 +60,12 @@ async-trait = "0.1"
 # is env-configured (FRONTEND_ORIGIN, config.rs), never hardcoded, per
 # AGENTS.md rule #2.
 tower-http = { version = "0.6", default-features = false, features = ["cors"] }
+# Real dependency now (not just dev/test): DockerCliLauncher::launch
+# writes the generated boot script to a real temp file before `docker cp`
+# delivers it into a container — see container.rs's `deliver_boot_script`.
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 # "util" enables ServiceExt::oneshot, used to exercise build_router's
 # response headers (CORS) directly in a test without binding a real port.
 tower = { version = "0.5", features = ["util"] }

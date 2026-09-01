@@ -14,6 +14,9 @@ dependencies = [
     "uvicorn>=0.29",
     "pyyaml>=6.0",
     "cryptography>=42.0",
+    # Already a transitive dependency of fastapi; declared directly here
+    # since features/*/schemas.py defines its own BaseModel subclasses.
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -6,6 +6,9 @@
 //!   proxy       — request-forwarding logic + the state it needs
 //!   db          — SQLite connection setup (schema-aware, feature-unaware)
 //!   workspaces  — create-workspace feature: idempotency + container launch
+//!   response    — shared JSON success/error envelope for routes this
+//!                 gateway itself produces a body for (NOT `proxy::forward`,
+//!                 which relays an upstream backend's response verbatim)
 //!   app         — route registration (builds the axum Router)
 //!
 //! See AGENTS.md and docs/ in this directory before changing any of these.
@@ -14,4 +17,5 @@ pub mod app;
 pub mod config;
 pub mod db;
 pub mod proxy;
+pub mod response;
 pub mod workspaces;

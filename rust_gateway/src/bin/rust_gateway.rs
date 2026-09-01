@@ -57,6 +57,7 @@ async fn main() {
     let workspaces_state = Arc::new(WorkspacesState {
         store: WorkspaceStore::new(db_pool),
         launcher: Arc::new(DockerCliLauncher::new(workspaces_config.workspace_image_tag)),
+        http_client: reqwest::Client::new(),
     });
 
     let app = build_router(proxy_state, workspaces_state, &config.frontend_origin);

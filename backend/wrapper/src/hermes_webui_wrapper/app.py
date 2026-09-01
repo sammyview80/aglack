@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 
 from hermes_webui_wrapper.api.router import build_api_router
@@ -51,6 +52,13 @@ def create_app(settings: Settings | None = None, runtime_enabled: bool | None = 
                 stop_runtime()
 
     app = FastAPI(lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[resolved_settings.frontend_origin],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+    )
     app.include_router(build_api_router(bindings.info, resolved_settings.service_name))
 
     @app.api_route("/{full_path:path}", methods=_CATCH_ALL_METHODS)

@@ -8,10 +8,19 @@
 //! entry point that the HTTP route calls.
 
 pub(crate) mod container;
-mod route;
+mod desktop_proxy;
+mod hermes_webui_proxy;
+mod onboarding_proxy;
+pub(crate) mod resolve;
+pub(crate) mod route;
 mod store;
+#[cfg(test)]
+pub(crate) mod test_support;
 
-pub use container::{ContainerLauncher, DockerCliLauncher};
+pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};
+pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
+pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
+pub use onboarding_proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
 pub use route::{create_workspace_route, WorkspacesState};
 pub use store::{WorkspaceRecord, WorkspaceStatus, WorkspaceStore};
 
@@ -71,7 +80,14 @@ async fn launch_and_record(
     workspace_id: &str,
 ) -> Result<WorkspaceRecord, CreateWorkspaceError> {
     match launcher.launch(workspace_id).await {
-        Ok(container_name) => Ok(store.mark_ready(idempotency_key, &container_name).await?),
+        Ok(launched) => Ok(store
+            .mark_ready(
+                idempotency_key,
+                &launched.container_name,
+                launched.wrapper_port,
+                launched.desktop_port,
+            )
+            .await?),
         Err(launch_err) => {
             // Best-effort: if marking the failure itself fails, the row
             // stays at `Creating` and a future retry will attempt the
@@ -109,19 +125,8 @@ impl std::error::Error for CreateWorkspaceError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_support::temp_store;
     use container::FakeLauncher;
-
-    async fn temp_store() -> WorkspaceStore {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("test.db");
-        // Leak the tempdir so it isn't deleted while the pool is still
-        // open — acceptable in a test process that exits right after.
-        std::mem::forget(dir);
-        let pool = crate::db::connect(&db_path)
-            .await
-            .expect("connect to fresh sqlite db");
-        WorkspaceStore::new(pool)
-    }
 
     #[tokio::test]
     async fn same_key_twice_returns_same_workspace_and_launches_once() {

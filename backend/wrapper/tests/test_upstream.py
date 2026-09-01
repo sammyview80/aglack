@@ -70,7 +70,11 @@ def test_check_for_conflicting_modules_allows_module_inside_root(upstream_root: 
 def test_bootstrap_upstream_disables_bytecode_writes(upstream_root: Path) -> None:
     # Re-bootstrapping against the same root the app already used is a no-op
     # (idempotent path); never point this at a different root, which raises.
-    settings = Settings(upstream_root=upstream_root, runtime_enabled=False)
+    settings = Settings(
+        upstream_root=upstream_root,
+        runtime_enabled=False,
+        frontend_origin="http://localhost:5173",
+    )
     bootstrap_upstream(settings)
 
     assert sys.dont_write_bytecode is True
@@ -93,12 +97,17 @@ def test_validate_revision_raises_on_mismatch() -> None:
 def test_bootstrap_upstream_idempotent_call_revalidates_revision(upstream_root: Path) -> None:
     # Same-root re-bootstrap must still call _validate_revision, not just
     # re-resolve and skip validation entirely.
-    settings = Settings(upstream_root=upstream_root, runtime_enabled=False)
+    settings = Settings(
+        upstream_root=upstream_root,
+        runtime_enabled=False,
+        frontend_origin="http://localhost:5173",
+    )
     bootstrap_upstream(settings)
 
     bad_settings = Settings(
         upstream_root=upstream_root,
         runtime_enabled=False,
+        frontend_origin="http://localhost:5173",
         expected_upstream_revision="0" * 40,
     )
     with pytest.raises(RuntimeError, match="revision mismatch"):

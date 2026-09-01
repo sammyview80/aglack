@@ -14,7 +14,40 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 use crate::proxy::{forward, ProxyState};
-use crate::workspaces::{create_workspace_route, WorkspacesState};
+use crate::workspaces::{
+    create_workspace_route, desktop_proxy_route_root, desktop_proxy_route_with_path,
+    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, onboarding_proxy_route_root,
+    onboarding_proxy_route_with_path, WorkspacesState,
+};
+
+/// Register one per-workspace proxy feature's pair of routes: the exact
+/// prefix (`/workspaces/:id/<feature>/`, no further segments) and its
+/// `*path` wildcard sibling. Every proxy feature under `workspaces/`
+/// (onboarding, hermes-webui, desktop) needs exactly this same pair —
+/// axum's `*path` wildcard does not match a bare trailing-slash request,
+/// so the root case needs its own route+handler (see e.g.
+/// `onboarding_proxy.rs`'s module doc for the full explanation of why).
+/// Collapsing the two `.route(...)` calls into one here means a route
+/// registered inconsistently (e.g. one feature's root and wildcard
+/// pointing at prefixes that don't match) is a compile-time-obvious single
+/// call, not something to eyeball-diff across 6 separate `.route(...)`
+/// lines.
+fn register_workspace_proxy_pair<H1, H2, T1, T2>(
+    router: Router<Arc<WorkspacesState>>,
+    prefix: &str,
+    root_handler: H1,
+    path_handler: H2,
+) -> Router<Arc<WorkspacesState>>
+where
+    H1: axum::handler::Handler<T1, Arc<WorkspacesState>>,
+    H2: axum::handler::Handler<T2, Arc<WorkspacesState>>,
+    T1: 'static,
+    T2: 'static,
+{
+    router
+        .route(&format!("{prefix}/"), any(root_handler))
+        .route(&format!("{prefix}/*path"), any(path_handler))
+}
 
 /// Build the full router for this gateway.
 ///
@@ -42,9 +75,27 @@ pub fn build_router(
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
-    let workspaces_router = Router::new()
-        .route("/workspaces", post(create_workspace_route))
-        .with_state(workspaces_state);
+    let mut workspaces_router =
+        Router::new().route("/workspaces", post(create_workspace_route));
+    workspaces_router = register_workspace_proxy_pair(
+        workspaces_router,
+        "/workspaces/:id/onboarding",
+        onboarding_proxy_route_root,
+        onboarding_proxy_route_with_path,
+    );
+    workspaces_router = register_workspace_proxy_pair(
+        workspaces_router,
+        "/workspaces/:id/hermes-webui",
+        hermes_webui_proxy_route_root,
+        hermes_webui_proxy_route_with_path,
+    );
+    workspaces_router = register_workspace_proxy_pair(
+        workspaces_router,
+        "/workspaces/:id/desktop",
+        desktop_proxy_route_root,
+        desktop_proxy_route_with_path,
+    );
+    let workspaces_router = workspaces_router.with_state(workspaces_state);
 
     let proxy_router = Router::new()
         .route("/", any(forward))
@@ -57,7 +108,8 @@ pub fn build_router(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::{DockerCliLauncher, WorkspaceStore};
+    use crate::workspaces::DockerCliLauncher;
+    use crate::workspaces::test_support::{state_with_store, temp_store};
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -65,16 +117,10 @@ mod tests {
     use tower::ServiceExt;
 
     async fn temp_workspaces_state() -> Arc<WorkspacesState> {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("test.db");
-        std::mem::forget(dir);
-        let pool = crate::db::connect(&db_path)
-            .await
-            .expect("connect to fresh sqlite db");
-        Arc::new(WorkspacesState {
-            store: WorkspaceStore::new(pool),
-            launcher: Arc::new(DockerCliLauncher::new("unused:tag".to_string())),
-        })
+        state_with_store(
+            temp_store().await,
+            Arc::new(DockerCliLauncher::new("unused:tag".to_string())),
+        )
     }
 
     fn unused_proxy_state() -> Arc<ProxyState> {
@@ -150,5 +196,46 @@ mod tests {
             .to_str()
             .unwrap();
         assert_eq!(allow_origin, "http://127.0.0.1:5173");
+    }
+
+    /// Proves `register_workspace_proxy_pair` actually wired all THREE
+    /// proxy features' root+wildcard routes into the real router — every
+    /// existing proxy-route test elsewhere (`onboarding_proxy.rs` etc.)
+    /// calls the handler function directly, never through `build_router`
+    /// itself, so a route-registration mistake (wrong prefix, swapped
+    /// root/wildcard handler, a feature silently dropped) would NOT have
+    /// been caught before this test existed. An unknown workspace id is
+    /// used so every prefix below reaches its real handler and returns a
+    /// real (404) response — proving actual dispatch, not just "some
+    /// route exists that returns 200".
+    #[tokio::test]
+    async fn every_proxy_feature_prefix_is_reachable_through_the_real_router() {
+        let app = build_router(
+            unused_proxy_state(),
+            temp_workspaces_state().await,
+            "http://127.0.0.1:5173",
+        );
+
+        for uri in [
+            "/workspaces/does-not-exist/onboarding/",
+            "/workspaces/does-not-exist/onboarding/status",
+            "/workspaces/does-not-exist/hermes-webui/",
+            "/workspaces/does-not-exist/hermes-webui/api/sessions",
+            "/workspaces/does-not-exist/desktop/",
+            "/workspaces/does-not-exist/desktop/index.html",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "expected {uri} to reach its proxy handler and report the unknown \
+                 workspace id (workspace_not_found), not axum's own \"no route matched\""
+            );
+        }
     }
 }

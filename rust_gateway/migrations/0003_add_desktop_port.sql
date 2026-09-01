@@ -1,0 +1,11 @@
+-- Adds the host port a workspace's webtop desktop (nginx fronting
+-- KasmVNC — see workspaces/desktop_proxy.rs) is published on, alongside
+-- the existing `host_port` column (the WRAPPER's port — see
+-- 0002_add_host_port.sql). Two separate ports because they are two
+-- separate services inside the same container (wrapper on 8787, desktop
+-- nginx on 3000), each needing its own host-side mapping.
+--
+-- Nullable and set at the same moment as `host_port` (see store.rs's
+-- mark_ready) — a Ready row always has both set together, never one
+-- without the other.
+ALTER TABLE workspace_creations ADD COLUMN desktop_port INTEGER;

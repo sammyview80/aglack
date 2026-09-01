@@ -32,6 +32,14 @@ through a `FakeHandler` adapter that imitates the parts of
 - `api/v1/system.py`, `api/router.py` — the wrapper's own
   `/api/wrapper/v1/health` endpoint, reporting wrapper status, service name,
   and pinned upstream owner/revision only. No upstream request state.
+- `api/v1/onboarding.py` + `features/onboarding/` — a NATIVE feature: calls
+  upstream's `api.onboarding`/`api.oauth` plain functions directly (no
+  `FakeHandler`, no per-request thread), instead of the proxied catch-all
+  path. See `AGENTS.md` for the full native-vs-proxied split and the
+  pattern to follow for a new feature.
+- `api/envelope.py` — the shared `{ok, data}` / `{ok, error: {code,
+  message}}` JSON envelope every native route (not the proxied catch-all)
+  responds with.
 - `app.py` — `create_app(settings=None, runtime_enabled=None)`. Resolves
   settings, loads bindings once, registers the wrapper's own router, then a
   catch-all route (`GET POST PUT PATCH DELETE OPTIONS` on `/{full_path:path}`)

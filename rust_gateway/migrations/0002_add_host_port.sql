@@ -1,0 +1,12 @@
+-- Adds the host port a workspace's wrapper container is published on, so
+-- the gateway can forward a request to a SPECIFIC workspace instead of
+-- one fixed backend_addr (see proxy/onboarding.rs). Chosen once, at
+-- launch time, by the gateway itself (an ephemeral port the OS handed
+-- back before `docker run -p <port>:8787`) — never guessed or hardcoded.
+--
+-- Nullable: a row starts 'creating' with no port yet; it is set the same
+-- moment the row transitions to 'ready' (see store.rs's mark_ready).
+-- Never edit 0001_workspace_creations.sql's already-applied schema
+-- directly — additive migrations only, per sqlx's migrate() convention
+-- (see db/mod.rs).
+ALTER TABLE workspace_creations ADD COLUMN host_port INTEGER;
