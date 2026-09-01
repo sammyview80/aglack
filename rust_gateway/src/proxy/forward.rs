@@ -96,16 +96,41 @@ pub async fn forward_to(
     match upstream_result {
         Ok(upstream_response) => {
             let status = upstream_response.status();
+            // Real bug found live (see CHECKPOINT.md): every upstream
+            // response header used to be dropped here — only `status` and
+            // `body` were ever copied onto the outgoing response. A
+            // browser refuses to apply a stylesheet served with no
+            // `Content-Type` (the exact symptom reported), and every
+            // other header (caching, CSP, ETag, ...) was silently lost
+            // the same way for every route that shares this function
+            // (hermes-webui, desktop, onboarding proxies).
+            //
+            // `Content-Length` and `Transfer-Encoding` are skipped —
+            // recomputed by axum itself from the real outgoing `Body`;
+            // forwarding the upstream's original values for either would
+            // describe a body that doesn't match what's actually sent
+            // (mirrors the SAME skip-list reasoning already applied to
+            // the outgoing REQUEST's headers above).
+            let mut response_headers = axum::http::HeaderMap::new();
+            for (name, value) in upstream_response.headers() {
+                if name == axum::http::header::CONTENT_LENGTH
+                    || name == axum::http::header::TRANSFER_ENCODING
+                {
+                    continue;
+                }
+                response_headers.insert(name.clone(), value.clone());
+            }
             let body_bytes = upstream_response
                 .bytes()
                 .await
                 .unwrap_or_else(|_| axum::body::Bytes::new());
-            Response::builder()
-                .status(status)
-                .body(Body::from(body_bytes))
-                .unwrap_or_else(|_| {
-                    (StatusCode::BAD_GATEWAY, "failed to build response").into_response()
-                })
+            let mut builder = Response::builder().status(status);
+            if let Some(headers) = builder.headers_mut() {
+                *headers = response_headers;
+            }
+            builder.body(Body::from(body_bytes)).unwrap_or_else(|_| {
+                (StatusCode::BAD_GATEWAY, "failed to build response").into_response()
+            })
         }
         Err(err) => {
             eprintln!("rust_gateway: failed to reach backend {target_addr}: {err}");
@@ -175,6 +200,68 @@ mod tests {
         assert_eq!(
             String::from_utf8(bytes.to_vec()).unwrap(),
             "application/json"
+        );
+    }
+
+    /// Real bug found live (see CHECKPOINT.md): a stylesheet served
+    /// through `forward_to` lost its `Content-Type`, so browsers refused
+    /// to apply it — `forward_to` only ever copied `status` + `body` from
+    /// the upstream response, never `headers()`. A response header (any
+    /// of them — `Content-Type` here, but the bug affected all of them)
+    /// must survive the relay back to the caller exactly as the real
+    /// backend sent it.
+    async fn spawn_fixed_header_backend() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind header-serving backend");
+        let port = listener.local_addr().unwrap().port();
+        let app: Router = Router::new().route(
+            "/*path",
+            any_method(|| async move {
+                (
+                    [
+                        (axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                        (axum::http::header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    "body { color: red }",
+                )
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn forward_to_preserves_upstream_response_headers() {
+        let backend_port = spawn_fixed_header_backend().await;
+        let target_addr = format!("127.0.0.1:{backend_port}");
+
+        let request = HttpRequest::builder()
+            .uri("/static/style.css")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = forward_to(&reqwest::Client::new(), &target_addr, request, None).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/css; charset=utf-8"),
+            "a browser refuses to apply a stylesheet served with no Content-Type — this is \
+             the exact live bug (see CHECKPOINT.md's hermes-webui CSS report)"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache"),
+            "every upstream response header must survive, not just Content-Type specifically"
         );
     }
 }
