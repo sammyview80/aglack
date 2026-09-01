@@ -1,8 +1,8 @@
 import { useCallback, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
-import { OnboardingWizard } from '@/features/onboarding/components/onboarding-wizard'
+import { ModeSelect } from '@/features/agent-seeder/components/mode-select'
 
-export function OnboardingPage() {
+export function ModeSelectPage() {
   const { workspaceId } = useParams<{ workspaceId: string }>()
   const navigate = useNavigate()
   const [invalidWorkspace, setInvalidWorkspace] = useState(false)
@@ -13,9 +13,9 @@ export function OnboardingPage() {
   }
 
   return (
-    <OnboardingWizard
+    <ModeSelect
       workspaceId={workspaceId}
-      onFinished={() => navigate(`/mode/${workspaceId}`)}
+      onFinished={() => navigate('/')}
       onInvalidWorkspace={onInvalidWorkspace}
     />
   )

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { createWorkspace } from '@/features/workspace/api'
 import { CreatingStatus } from '@/features/workspace/components/creating-status'
@@ -18,6 +18,12 @@ export function CreatingWorkspacePage() {
   const [result, setResult] = useState<CreateWorkspaceResult | null>(state?.result ?? null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (result?.status !== 'ready') return
+    clearCreateDraft()
+    navigate(`/onboarding/${result.workspaceId}`, { replace: true })
+  }, [result?.status, result?.workspaceId, navigate])
 
   async function retry() {
     if (!state) return
@@ -41,10 +47,7 @@ export function CreatingWorkspacePage() {
     }
   }
 
-  function finish() {
-    clearCreateDraft()
-    navigate('/')
-  }
+  if (result?.status === 'ready') return null
 
   return (
     <CreatingStatus
@@ -56,7 +59,10 @@ export function CreatingWorkspacePage() {
       onContinue={() => {
         if (result) navigate(`/onboarding/${result.workspaceId}`)
       }}
-      onDone={finish}
+      onDone={() => {
+        clearCreateDraft()
+        navigate('/')
+      }}
       onBack={() => navigate('/create')}
     />
   )

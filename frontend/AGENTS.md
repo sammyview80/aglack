@@ -1,9 +1,23 @@
 # AGENTS.md — frontend
 
 Vite + React 19 + TypeScript. One HTTP backend from the browser:
-`rust_gateway` (workspaces + per-workspace onboarding proxy). Envelope
-parser is `lib/api.ts`. Screens: `/` (workspace list), `/create`, `/creating`,
-`/onboarding/:workspaceId`.
+`rust_gateway` (workspaces + per-workspace onboarding/agent-seeder proxies).
+Envelope parser is `lib/api.ts`. Screens: `/` (workspace list), `/create`,
+`/creating`, `/onboarding/:workspaceId`, `/mode/:workspaceId`.
+
+**New-workspace flow is fixed — every "workspace became ready" exit MUST
+land on onboarding, never straight to `/`:**
+`/create` (ready sync) → `/onboarding/:id`; `/create` (async) → `/creating`
+→ (becomes ready) → `/onboarding/:id`; onboarding finish → `/mode/:id`;
+mode-select finish/skip → `/`. A workspace is not actually usable until a
+model provider is configured (onboarding) — routing a freshly-created
+workspace to the dashboard instead skips that entirely and was a real bug
+fixed once already (`create-workspace-page.tsx`,
+`creating-workspace-page.tsx`, `mode-select-page.tsx` all navigate off a
+`CreateWorkspaceResult`/mode-finish event — grep for `navigate(` in those
+three files before changing any of them, and confirm every ready/finish
+exit still points one step further into this chain, not back to `/` or
+`/create` prematurely).
 
 Read this before editing. Do not invent a parallel tree.
 
@@ -54,16 +68,39 @@ Read this before editing. Do not invent a parallel tree.
    base URL — go through
    `${gatewayUrl()}/workspaces/:id/onboarding/...`. The gateway is the
    enforcement point (`workspace_not_found` / `workspace_not_ready`).
+7. **Agent seeder:** after onboarding's model setup completes
+   (`OnboardingWizard`'s `onFinished`), the user lands on `/mode/:workspaceId`
+   (`ModeSelectPage` → `features/agent-seeder/components/mode-select.tsx`) to
+   pick Simple / Creator / Company. **`mode-select.tsx` has NO per-mode
+   branching** — every mode is one entry in the `MODES` table
+   (`features/agent-seeder/modes.ts`); the component only knows "does this
+   mode have a `run`" (clickable) or not (disabled, "Coming soon"). Only
+   `simple` has a `run` today — it calls
+   `POST ${gatewayUrl()}/workspaces/:id/agent-seeder/simple/apply`
+   (`features/agent-seeder/api.ts`'s `applySeeder(workspaceId, 'simple')`),
+   which forwards to the wrapper's
+   `POST /api/wrapper/v1/agent-seeder/{mode}/apply` (applies
+   `backend/seeder/modes/{mode}/agents/*` — see that folder's own README).
+   **Adding a real Creator or Company mode is additive, not a rewrite:**
+   populate `backend/seeder/modes/<mode>/`, then add
+   `run: (workspaceId) => applySeeder(workspaceId, '<mode>')` to that
+   mode's entry in `MODES` — no changes to `mode-select.tsx` itself. Same
+   rule as onboarding: never call the wrapper's own base URL, only the
+   gateway proxy.
 
 ## Structure
 
 ```
 src/
   app/          providers, error-boundary, toaster, router
-  pages/        workspaces-page, onboarding-page, create-workspace-page, creating-workspace-page, not-found-page
+  pages/        workspaces-page, onboarding-page, mode-select-page,
+                create-workspace-page, creating-workspace-page, not-found-page
   features/
-    workspace/  rust_gateway GET+POST+DELETE /workspaces (camelCase DTOs)
-    onboarding/ rust_gateway /workspaces/:id/onboarding/* (camelCase DTOs)
+    workspace/     rust_gateway GET+POST+DELETE /workspaces (camelCase DTOs)
+    onboarding/    rust_gateway /workspaces/:id/onboarding/* (camelCase DTOs)
+    agent-seeder/  rust_gateway /workspaces/:id/agent-seeder/* (camelCase DTOs);
+                   modes.ts is the mode catalog (id/label/description/run) —
+                   add a mode here, not as a branch in mode-select.tsx
     theme/
   lib/
     env.ts      gatewayUrl
@@ -94,6 +131,30 @@ forward: `onboarding_setup_failed`, `oauth_start_failed`,
 started yet returns a non-envelope 502 from `forward_to` — `apiFetch`
 maps that to `invalid_response`; treat as a normal `handleError`
 failure (retry), not a crash.
+
+## Agent Seeder API
+
+Base: `${VITE_GATEWAY_URL}/workspaces/:workspaceId/agent-seeder`
+
+| Call | Notes |
+| --- | --- |
+| POST `/:mode/apply` | Applies every agent in `backend/seeder/modes/:mode/agents/*` to this workspace. Returns `{ applied: AppliedAgent[] }` — see `features/agent-seeder/types.ts`. Idempotent: safe to call more than once. An unknown/empty `:mode` returns `{ applied: [] }`, not an error. |
+| GET `/modes` | Lists mode names that actually exist under `backend/seeder/modes/`. Not currently called from the frontend (`MODES` in `modes.ts` is the UI's own list) — use this if `mode-select.tsx` ever needs to hide a mode the backend genuinely has no content for, instead of relying solely on the hardcoded `run` presence. |
+
+`applySeeder(workspaceId, mode)` in `features/agent-seeder/api.ts` takes
+`mode` as its second argument — every caller (i.e. `modes.ts`'s `run`
+functions) must pass the exact mode id `MODES` declares, since that's what
+becomes the URL path segment.
+
+Same gateway error codes as onboarding (`workspace_not_found` 404,
+`workspace_not_ready` 409) before any wrapper hop. Wrapper codes after a
+successful forward: `agent_seeder_profile_create_failed`,
+`agent_seeder_agent_md_failed`, `agent_seeder_tool_discovery_failed`,
+`agent_seeder_config_unreadable`, `agent_seeder_config_write_failed` (see
+`backend/wrapper/src/hermes_webui_wrapper/features/agent_seeder/service.py`
+for what each means). None of these have friendly per-code messages in
+`mode-select.tsx` yet beyond the two gateway ones — add to `MODE_ERRORS`
+there if a specific one needs a better message than the raw server text.
 
 ## Errors / toasts / fallbacks
 

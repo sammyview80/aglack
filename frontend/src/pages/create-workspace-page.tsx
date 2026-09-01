@@ -3,7 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { createWorkspace } from '@/features/workspace/api'
 import { CreateWorkspaceForm } from '@/features/workspace/components/create-workspace-form'
-import { loadCreateDraft, loadOwnerName, saveCreateDraft } from '@/features/workspace/draft-storage'
+import {
+  clearCreateDraft,
+  loadCreateDraft,
+  loadOwnerName,
+  saveCreateDraft,
+} from '@/features/workspace/draft-storage'
 import type { CreateWorkspaceInput } from '@/features/workspace/types'
 import { handleError } from '@/lib/handle-error'
 
@@ -33,6 +38,11 @@ export function CreateWorkspacePage() {
       toast.success(
         result.status === 'ready' ? 'Workspace is ready.' : 'Workspace request accepted.',
       )
+      if (result.status === 'ready') {
+        clearCreateDraft()
+        navigate(`/onboarding/${result.workspaceId}`)
+        return
+      }
       navigate('/creating', { state: { result, workspaceName: input.workspaceName } })
     } catch (err) {
       setBusy(false)
