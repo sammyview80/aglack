@@ -136,11 +136,29 @@ pub trait ContainerLauncher: Send + Sync {
 /// since both only depend on the `ContainerLauncher` trait.
 pub struct DockerCliLauncher {
     image_tag: String,
+    /// Comma-separated origins a browser may legitimately present when
+    /// talking to a workspace's wrapper THROUGH this gateway — passed
+    /// straight into the container's `HERMES_WEBUI_ALLOWED_ORIGINS` (see
+    /// `wrapper_boot_script`'s doc comment for why this exists at all).
+    /// Real bug found live: hardcoding only the Vite dev-server origin
+    /// here missed the equally real "browser hits the gateway's own
+    /// published address directly" deployment shape (confirmed live via
+    /// a captured real browser request with `Origin:
+    /// http://127.0.0.1:8080` — the gateway's own listen address, not
+    /// Vite's) — every 403 for that shape happened because that address
+    /// was never in the allowlist. Built by the caller (see
+    /// `bin/rust_gateway.rs`) from `GatewayConfig::frontend_origin` +
+    /// `http://{GatewayConfig::listen_addr()}`, so both shapes are
+    /// covered without a second hardcoded guess added here.
+    allowed_origins: String,
 }
 
 impl DockerCliLauncher {
-    pub fn new(image_tag: String) -> Self {
-        Self { image_tag }
+    pub fn new(image_tag: String, allowed_origins: String) -> Self {
+        Self {
+            image_tag,
+            allowed_origins,
+        }
     }
 }
 
@@ -206,7 +224,7 @@ async fn pick_free_port() -> Result<u16, super::CreateWorkspaceError> {
 /// crash-looping silently with no obvious cause from outside the
 /// container. (`/opt/hermes` itself has no `.git` dir at all — confirmed
 /// live — so no equivalent line is needed for it.)
-fn wrapper_boot_script() -> String {
+fn wrapper_boot_script(allowed_origins: &str) -> String {
     // HERMES_FRONTEND_ORIGIN: the wrapper's CORS allow-origin — required
     // at startup (config.py's Settings.from_env fails closed without it),
     // even though this container's wrapper is normally reached SERVER-TO-
@@ -218,7 +236,31 @@ fn wrapper_boot_script() -> String {
     // backend/wrapper/.env.example) — verified live: omitting this line
     // crashes uvicorn before it binds a port, exactly like the missing
     // safe.directory fix did.
-    "#!/usr/bin/env sh\n\
+    //
+    // HERMES_WEBUI_ALLOWED_ORIGINS: a DIFFERENT var from the CORS one
+    // above — read by transport/handler.py's align_loopback_proxy_host()
+    // to decide whether to rewrite an inbound Host header to match a
+    // loopback browser Origin before upstream's CSRF check runs. Real bug
+    // found live: rust_gateway's forward_to() strips Host (correctly —
+    // reqwest sets the real target) but forwards Origin unchanged, so the
+    // wrapper sees the BROWSER's real Origin against a Host that names
+    // this container's own published port — upstream's
+    // api/routes.py:_check_same_origin_browser_request treats that as a
+    // cross-origin request and rejects onboarding setup/complete/settings
+    // POSTs with 403 "Cross-origin mismatch - check reverse proxy
+    // headers", even for a legitimate same-machine browser session.
+    // align_loopback_proxy_host() exists specifically to fix this, but
+    // was permanently inert without this var ever being set. Takes the
+    // FULL set of legitimate browser origins as a parameter (comma-
+    // separated, passed straight through) rather than hardcoding one —
+    // real bug found live a SECOND time: hardcoding only the Vite
+    // dev-server origin here missed a browser hitting the gateway's own
+    // published address directly (confirmed live via a captured real
+    // request with `Origin: http://127.0.0.1:8080`, the gateway's own
+    // listen address). See `DockerCliLauncher::allowed_origins`'s doc
+    // comment for how the caller builds this value.
+    format!(
+        "#!/usr/bin/env sh\n\
      # hermes-webui-wrapper-boot — see DockerCliLauncher::launch\n\
      set -e\n\
      mkdir -p /config/.hermes\n\
@@ -230,13 +272,14 @@ fn wrapper_boot_script() -> String {
      export HERMES_WRAPPER_HOST=0.0.0.0\n\
      export HERMES_WRAPPER_PORT=8787\n\
      export HERMES_FRONTEND_ORIGIN=http://localhost:5173\n\
+     export HERMES_WEBUI_ALLOWED_ORIGINS={allowed_origins}\n\
      git config --global --add safe.directory /opt/hermes-webui/upstream \
        || echo \"hermes-webui-wrapper-boot: safe.directory config failed\" >&2\n\
      cd /opt/hermes-webui/wrapper\n\
      exec /opt/hermes/.venv/bin/hermes-webui-wrapper\n\
      ' >/config/hermes-webui-wrapper.log 2>&1 &\n\
      exit 0\n"
-        .to_string()
+    )
 }
 
 /// Poll `http://127.0.0.1:<port>/api/wrapper/v1/health` until it returns a
@@ -452,7 +495,7 @@ impl ContainerLauncher for DockerCliLauncher {
         )
         .await?;
 
-        deliver_boot_script(&container_name).await?;
+        deliver_boot_script(&container_name, &self.allowed_origins).await?;
 
         run_docker(&container_name, &["start", &container_name]).await?;
 
@@ -641,12 +684,15 @@ async fn run_docker(
     Ok(())
 }
 
-/// Writes `wrapper_boot_script()` to a real temp file and `docker cp`'s it
+/// Writes `wrapper_boot_script(allowed_origins)` to a real temp file and `docker cp`'s it
 /// into the (created-but-not-yet-started) container's
 /// `/custom-cont-init.d/` — see `DockerCliLauncher`'s own doc comment for
 /// why this must happen between `create` and `start`, not after.
-async fn deliver_boot_script(container_name: &str) -> Result<(), super::CreateWorkspaceError> {
-    let script = wrapper_boot_script();
+async fn deliver_boot_script(
+    container_name: &str,
+    allowed_origins: &str,
+) -> Result<(), super::CreateWorkspaceError> {
+    let script = wrapper_boot_script(allowed_origins);
     let tmp_file = tempfile::Builder::new()
         .prefix("hermes-webui-wrapper-boot-")
         .suffix(".sh")
@@ -901,7 +947,7 @@ mod tests {
     /// `cargo test`.
     #[test]
     fn boot_script_sets_safe_directory_before_starting_wrapper() {
-        let script = wrapper_boot_script();
+        let script = wrapper_boot_script("http://localhost:5173");
         assert!(
             script.contains("git config --global --add safe.directory /opt/hermes-webui/upstream"),
             "missing the safe.directory fix — without it abc's git rev-parse fails with \
@@ -911,13 +957,13 @@ mod tests {
 
     #[test]
     fn boot_script_runs_wrapper_as_abc_not_root() {
-        let script = wrapper_boot_script();
+        let script = wrapper_boot_script("http://localhost:5173");
         assert!(script.contains("su -s /bin/sh abc -c"));
     }
 
     #[test]
     fn boot_script_sets_required_wrapper_env_vars() {
-        let script = wrapper_boot_script();
+        let script = wrapper_boot_script("http://localhost:5173");
         assert!(script.contains("export HERMES_HOME=/config/.hermes"));
         assert!(script.contains("export HERMES_WRAPPER_HOST=0.0.0.0"));
         assert!(script.contains("export HERMES_WRAPPER_PORT=8787"));
@@ -933,11 +979,43 @@ mod tests {
              this image's actual /opt/hermes path), and every chat request fails with \
              'AIAgent not available' (verified live)"
         );
+        assert!(
+            script.contains("export HERMES_WEBUI_ALLOWED_ORIGINS="),
+            "missing HERMES_WEBUI_ALLOWED_ORIGINS — without it, transport/handler.py's \
+             align_loopback_proxy_host() never rewrites Host to match a loopback browser \
+             Origin, so upstream's CSRF check rejects onboarding setup/complete with 403 \
+             'Cross-origin mismatch - check reverse proxy headers' (verified live)"
+        );
+    }
+
+    /// Real bug found live a SECOND time (after the first
+    /// HERMES_WEBUI_ALLOWED_ORIGINS fix): a real browser session captured
+    /// hitting the gateway's own published address directly
+    /// (`Origin: http://127.0.0.1:8080`) still got the same 403 — that
+    /// origin was never in the allowlist because it was hardcoded to only
+    /// the Vite dev-server origin. `wrapper_boot_script` must actually
+    /// use the CALLER-SUPPLIED value, not a baked-in constant, so every
+    /// legitimate origin (Vite dev server AND the gateway's own real
+    /// listen address) can be threaded through from `GatewayConfig` (see
+    /// `bin/rust_gateway.rs`).
+    #[test]
+    fn boot_script_uses_the_caller_supplied_allowed_origins_value_verbatim() {
+        let script = wrapper_boot_script("http://localhost:5173,http://127.0.0.1:8080");
+        assert!(
+            script.contains(
+                "export HERMES_WEBUI_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:8080"
+            ),
+            "wrapper_boot_script must pass its allowed_origins parameter straight through, \
+             not silently fall back to a hardcoded single origin — a hardcoded single origin \
+             is the exact live bug this parameterization fixes (a browser hitting the \
+             gateway's own address directly was rejected because that origin was never in \
+             the old hardcoded list)"
+        );
     }
 
     #[test]
     fn boot_script_runs_wrapper_under_the_agents_venv_not_a_separate_one() {
-        let script = wrapper_boot_script();
+        let script = wrapper_boot_script("http://localhost:5173");
         assert!(
             script.contains("exec /opt/hermes/.venv/bin/hermes-webui-wrapper"),
             "the wrapper must run under the AGENT's venv (/opt/hermes/.venv), not a \
@@ -949,7 +1027,7 @@ mod tests {
 
     #[test]
     fn boot_script_runs_detached_and_exits_zero_quickly() {
-        let script = wrapper_boot_script();
+        let script = wrapper_boot_script("http://localhost:5173");
         // custom-cont-init.d hooks must exit 0 quickly (they run before
         // s6's long-running services start) — the wrapper is started
         // detached (setsid ... &) rather than this script waiting on it.

@@ -124,7 +124,10 @@ mod tests {
     async fn temp_workspaces_state() -> Arc<WorkspacesState> {
         state_with_store(
             temp_store().await,
-            Arc::new(DockerCliLauncher::new("unused:tag".to_string())),
+            Arc::new(DockerCliLauncher::new(
+                "unused:tag".to_string(),
+                "http://localhost:5173".to_string(),
+            )),
         )
     }
 

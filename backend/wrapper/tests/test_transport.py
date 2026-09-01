@@ -12,6 +12,7 @@ import pytest
 from hermes_webui_wrapper.transport.dispatcher import UpstreamBindings, dispatch
 from hermes_webui_wrapper.transport.handler import (
     FakeHandler,
+    align_loopback_proxy_host,
     drain,
     headers_from_raw,
     normalize_buffered_body_headers,
@@ -232,3 +233,61 @@ def test_wfile_close_unblocks_drain() -> None:
 
     assert collected == []
     assert handler.wfile.closed is True
+
+
+# -- align_loopback_proxy_host ------------------------------------------
+#
+# Real live bug this guards against: rust_gateway's forward_to() strips the
+# incoming Host header (reqwest sets the real target) but forwards Origin
+# unchanged, so a request reaching this wrapper through the gateway/a
+# container's published port carries Origin=http://localhost:5173 (the
+# browser's real origin) against a Host naming the actual target address.
+# Upstream's CSRF check (api/routes.py:_check_same_origin_browser_request)
+# then rejects a legitimate same-machine browser session with 403
+# "Cross-origin mismatch - check reverse proxy headers".
+# align_loopback_proxy_host() exists to align Host with Origin before that
+# check runs — but only when explicitly allowlisted via
+# HERMES_WEBUI_ALLOWED_ORIGINS, and only for loopback-to-loopback requests.
+# Before this test existed, only the always-empty-allowlist (early-return)
+# path had any coverage at all — the actual rewrite this function exists
+# for had never been exercised by a test.
+
+
+def _headers_msg(pairs: dict[str, str]):
+    return headers_from_raw([(k.encode(), v.encode()) for k, pairs_v in pairs.items() for v in [pairs_v]])
+
+
+def test_align_loopback_proxy_host_rewrites_when_origin_allowlisted(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_WEBUI_ALLOWED_ORIGINS", "http://localhost:5173")
+    headers = _headers_msg({"Origin": "http://localhost:5173", "Host": "127.0.0.1:8787"})
+
+    align_loopback_proxy_host(headers)
+
+    assert headers["Host"] == "localhost:5173"
+
+
+def test_align_loopback_proxy_host_leaves_host_when_origin_not_allowlisted(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_WEBUI_ALLOWED_ORIGINS", raising=False)
+    headers = _headers_msg({"Origin": "http://localhost:5173", "Host": "127.0.0.1:8787"})
+
+    align_loopback_proxy_host(headers)
+
+    assert headers["Host"] == "127.0.0.1:8787"
+
+
+def test_align_loopback_proxy_host_never_rewrites_for_public_host(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_WEBUI_ALLOWED_ORIGINS", "https://example.com")
+    headers = _headers_msg({"Origin": "https://example.com", "Host": "tenant.example.com"})
+
+    align_loopback_proxy_host(headers)
+
+    assert headers["Host"] == "tenant.example.com"
+
+
+def test_align_loopback_proxy_host_noop_when_host_already_matches_origin(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_WEBUI_ALLOWED_ORIGINS", "http://localhost:5173")
+    headers = _headers_msg({"Origin": "http://localhost:5173", "Host": "localhost:5173"})
+
+    align_loopback_proxy_host(headers)
+
+    assert headers["Host"] == "localhost:5173"

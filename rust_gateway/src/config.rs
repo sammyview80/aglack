@@ -92,6 +92,38 @@ impl GatewayConfig {
     pub fn backend_addr(&self) -> String {
         format!("{}:{}", self.backend_host, self.backend_port)
     }
+
+    /// The full set of origins a browser may legitimately present when
+    /// talking to a workspace's wrapper THROUGH this gateway, as a
+    /// comma-separated string ready for a workspace container's
+    /// `HERMES_WEBUI_ALLOWED_ORIGINS` (see
+    /// `workspaces::container::DockerCliLauncher::allowed_origins`'s doc
+    /// comment for the full mechanism this feeds).
+    ///
+    /// Two real, independently-confirmed-live deployment shapes both need
+    /// to be in this list, not just one:
+    ///   1. `frontend_origin` — a browser talking to the Vite dev server,
+    ///      which forwards to this gateway (`Origin: http://localhost:5173`
+    ///      while `Host` names the gateway/backend it forwards to).
+    ///   2. `http://{listen_addr}` — a browser talking to THIS GATEWAY'S
+    ///      OWN published address directly (no Vite dev server in front
+    ///      at all). Real bug found live: a captured real browser request
+    ///      with `Origin: http://127.0.0.1:8080` (this gateway's own
+    ///      listen address) still got rejected with the "Cross-origin
+    ///      mismatch" 403 when only `frontend_origin` was in the
+    ///      allowlist — that origin was simply never a member.
+    ///
+    /// Always includes both, deduplicated — a deployment where
+    /// `frontend_origin` and this gateway's own address happen to be the
+    /// same value must not produce a duplicate entry.
+    pub fn wrapper_allowed_origins(&self) -> String {
+        let gateway_origin = format!("http://{}", self.listen_addr());
+        let mut origins = vec![self.frontend_origin.clone()];
+        if gateway_origin != self.frontend_origin {
+            origins.push(gateway_origin);
+        }
+        origins.join(",")
+    }
 }
 
 fn parse_port(raw: &str, key: &str) -> Result<u16, ConfigError> {
@@ -132,5 +164,50 @@ impl WorkspacesConfig {
             database_path,
             workspace_image_tag,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(host: &str, port: u16, frontend_origin: &str) -> GatewayConfig {
+        GatewayConfig {
+            host: host.to_string(),
+            port,
+            backend_host: "127.0.0.1".to_string(),
+            backend_port: 9999,
+            frontend_origin: frontend_origin.to_string(),
+        }
+    }
+
+    /// The common local-dev shape: Vite dev server in front, gateway on
+    /// its own separate port — both are real, distinct origins a browser
+    /// might use, so both must be present.
+    #[test]
+    fn wrapper_allowed_origins_includes_both_frontend_and_gateway_when_different() {
+        let cfg = config("127.0.0.1", 8080, "http://localhost:5173");
+        let origins = cfg.wrapper_allowed_origins();
+        assert!(
+            origins.split(',').any(|o| o == "http://localhost:5173"),
+            "must include the Vite dev-server origin, got {origins:?}"
+        );
+        assert!(
+            origins.split(',').any(|o| o == "http://127.0.0.1:8080"),
+            "must include the gateway's own listen address as an origin — real bug found \
+             live: a browser hitting the gateway directly (Origin: http://127.0.0.1:8080) \
+             was rejected with a 403 'Cross-origin mismatch' because this exact origin was \
+             never in the allowlist, got {origins:?}"
+        );
+    }
+
+    /// A deployment where the gateway's own address IS the configured
+    /// frontend origin (e.g. no separate Vite dev server) must not
+    /// produce a duplicate comma-separated entry.
+    #[test]
+    fn wrapper_allowed_origins_deduplicates_when_frontend_origin_equals_gateway_origin() {
+        let cfg = config("127.0.0.1", 8080, "http://127.0.0.1:8080");
+        let origins = cfg.wrapper_allowed_origins();
+        assert_eq!(origins, "http://127.0.0.1:8080");
     }
 }

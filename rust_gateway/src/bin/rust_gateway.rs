@@ -58,6 +58,7 @@ async fn main() {
         store: WorkspaceStore::new(db_pool),
         launcher: Arc::new(DockerCliLauncher::new(
             workspaces_config.workspace_image_tag,
+            config.wrapper_allowed_origins(),
         )),
         http_client: reqwest::Client::new(),
     });
