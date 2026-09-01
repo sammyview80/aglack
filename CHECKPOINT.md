@@ -90,7 +90,7 @@ revamp/
 
 ## rust_gateway — what's built and verified
 
-**`cargo test`: 31/31 passing.** Run from `rust_gateway/`:
+**`cargo test`: 42/42 passing.** Run from `rust_gateway/`:
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"   # cargo not on default PATH on this machine
 cargo test
@@ -120,6 +120,34 @@ which relays an upstream body verbatim):
 success: { "ok": true, "data": <T> }
 error:   { "ok": false, "error": { "code": "...", "message": "..." } }
 ```
+
+### `GET /workspaces` — list, optimized (pure DB projection)
+
+Plan doc: `docs/list-workspaces-plan.md`. Response:
+`{ ok: true, data: { workspaces: [{ workspace_id, name, status, host_port,
+desktop_port, created_at }], limit, offset } }`.
+
+"Optimized" here means the same thing it means for the wrapper's native
+onboarding routes: no N+1, no container/network calls. `WorkspaceStore::list`
+is exactly one `SELECT ... ORDER BY created_at DESC, rowid DESC LIMIT ?
+OFFSET ?` — `rowid` is the tie-break because `created_at` (unix seconds as a
+string, see `store.rs`'s `chrono_now`) only has second resolution and rows
+created within the same second would otherwise have no defined order.
+Ports/status are exactly whatever the last `mark_ready`/`mark_failed` wrote
+— a stale-but-cheap read; a caller needing live confirmation still goes
+through the existing per-workspace proxy routes' `resolve.rs` check.
+
+`name` is `idempotency_key` renamed at the type boundary
+(`WorkspaceListItem`, a type distinct from `WorkspaceRecord`) — the raw
+column name is an internal retry-mechanism detail, not something a caller
+should see.
+
+Pagination: `?limit=&offset=`, both optional. `offset` default 0; `limit`
+default 50, silently clamped (not rejected) to a 200 max if a caller asks
+for more — the response echoes back the `limit` actually used. A negative
+`limit` or `offset` is rejected with `400 invalid_pagination` (a caller
+bug, not a "too much" request). Registered on the same `/workspaces` path
+as `POST /workspaces`, distinguished by HTTP method.
 
 ### Container launch (`DockerCliLauncher` in `container.rs`)
 

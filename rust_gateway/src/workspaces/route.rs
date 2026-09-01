@@ -26,11 +26,18 @@
 //! `{ ok: false, error: { code, message } }` — so the frontend has one
 //! generic parser for both outcomes instead of a bespoke shape per route.
 
-use axum::{extract::State, http::StatusCode, response::Response, Json};
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    response::Response,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::{create_workspace, ContainerLauncher, CreateWorkspaceError, WorkspaceStatus, WorkspaceStore};
+use super::{
+    create_workspace, ContainerLauncher, CreateWorkspaceError, WorkspaceStatus, WorkspaceStore,
+};
 use crate::response::{error, success};
 
 pub struct WorkspacesState {
@@ -141,6 +148,112 @@ pub async fn create_workspace_route(
     }
 }
 
+/// Default page size for `GET /workspaces` when `limit` is omitted.
+const DEFAULT_LIST_LIMIT: i64 = 50;
+
+/// Upper bound on `limit`, enforced regardless of what a caller requests —
+/// see `../../docs/list-workspaces-plan.md`: without this, `?limit=100000`
+/// could force one query to scan/return the entire table.
+const MAX_LIST_LIMIT: i64 = 200;
+
+#[derive(Deserialize)]
+pub struct ListWorkspacesQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct WorkspaceListItemData {
+    workspace_id: String,
+    name: String,
+    status: &'static str,
+    host_port: Option<i64>,
+    desktop_port: Option<i64>,
+    created_at: String,
+}
+
+#[derive(Serialize)]
+struct ListWorkspacesData {
+    workspaces: Vec<WorkspaceListItemData>,
+    limit: i64,
+    offset: i64,
+}
+
+/// GET /workspaces
+///
+/// Optional `?limit=<n>&offset=<n>` query params. `limit` defaults to
+/// `DEFAULT_LIST_LIMIT` and is capped at `MAX_LIST_LIMIT`; `offset`
+/// defaults to 0. Both must be non-negative — a negative value is a
+/// caller bug, rejected with `400 invalid_pagination` rather than
+/// silently clamped (see module/plan doc for why silent clamping is
+/// worse). A `limit` above the cap is NOT rejected — it's silently
+/// clamped down to `MAX_LIST_LIMIT`, since "you asked for more than we
+/// allow" is a normal, expected case, not a caller bug the way a
+/// negative number is; the response's echoed `limit` tells the caller
+/// what was actually used.
+///
+/// Pure DB projection — no container/network calls, one SQL query. See
+/// `../../docs/list-workspaces-plan.md`.
+pub async fn list_workspaces_route(
+    State(state): State<Arc<WorkspacesState>>,
+    Query(query): Query<ListWorkspacesQuery>,
+) -> Response {
+    let offset = query.offset.unwrap_or(0);
+    if offset < 0 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_pagination",
+            "offset must not be negative",
+        );
+    }
+
+    let requested_limit = query.limit.unwrap_or(DEFAULT_LIST_LIMIT);
+    if requested_limit < 0 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_pagination",
+            "limit must not be negative",
+        );
+    }
+    let limit = requested_limit.min(MAX_LIST_LIMIT);
+
+    match state.store.list(limit, offset).await {
+        Ok(items) => {
+            let workspaces = items
+                .into_iter()
+                .map(|item| WorkspaceListItemData {
+                    workspace_id: item.workspace_id,
+                    name: item.name,
+                    status: match item.status {
+                        WorkspaceStatus::Creating => "creating",
+                        WorkspaceStatus::Ready => "ready",
+                        WorkspaceStatus::Failed => "failed",
+                    },
+                    host_port: item.host_port,
+                    desktop_port: item.desktop_port,
+                    created_at: item.created_at,
+                })
+                .collect();
+            success(
+                StatusCode::OK,
+                ListWorkspacesData {
+                    workspaces,
+                    limit,
+                    offset,
+                },
+            )
+        }
+        Err(err) => {
+            eprintln!("rust_gateway: list_workspaces store error: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "workspace_list_failed",
+                "failed to list workspaces",
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +351,90 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["ok"], false);
         assert_eq!(body["error"]["code"], "workspace_name_required");
+    }
+
+    #[tokio::test]
+    async fn list_workspaces_returns_empty_array_when_none_exist() {
+        let state = temp_state().await;
+        let response =
+            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
+                .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["data"]["workspaces"], serde_json::json!([]));
+        assert_eq!(body["data"]["limit"], DEFAULT_LIST_LIMIT);
+        assert_eq!(body["data"]["offset"], 0);
+    }
+
+    /// The `idempotency_key`/name distinction must survive all the way out
+    /// through the HTTP response, not just in the store layer — see
+    /// `store.rs`'s `list_surfaces_idempotency_key_as_name`.
+    #[tokio::test]
+    async fn list_workspaces_includes_created_workspace_with_name() {
+        let state = temp_state().await;
+        create_workspace_route(
+            State(state.clone()),
+            Json(CreateWorkspaceRequest {
+                name: "listed-workspace".to_string(),
+                password: None,
+            }),
+        )
+        .await;
+
+        let response =
+            list_workspaces_route(State(state), Query(ListWorkspacesQuery { limit: None, offset: None }))
+                .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        let workspaces = body["data"]["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0]["name"], "listed-workspace");
+        assert_eq!(workspaces[0]["status"], "ready");
+        assert!(workspaces[0]["host_port"].is_number());
+        assert!(workspaces[0]["desktop_port"].is_number());
+    }
+
+    #[tokio::test]
+    async fn list_workspaces_rejects_negative_limit() {
+        let state = temp_state().await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery { limit: Some(-1), offset: None }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "invalid_pagination");
+    }
+
+    #[tokio::test]
+    async fn list_workspaces_rejects_negative_offset() {
+        let state = temp_state().await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery { limit: None, offset: Some(-1) }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "invalid_pagination");
+    }
+
+    /// A `limit` above `MAX_LIST_LIMIT` is clamped, not rejected — the
+    /// response's echoed `limit` must reflect what was actually used, not
+    /// what was requested (see the route's doc comment for why this case
+    /// differs from a negative value).
+    #[tokio::test]
+    async fn list_workspaces_clamps_limit_above_max() {
+        let state = temp_state().await;
+        let response = list_workspaces_route(
+            State(state),
+            Query(ListWorkspacesQuery { limit: Some(100_000), offset: None }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["data"]["limit"], MAX_LIST_LIMIT);
     }
 }

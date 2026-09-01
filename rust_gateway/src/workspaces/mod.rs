@@ -21,7 +21,7 @@ pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};
 pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
 pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
 pub use onboarding_proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
-pub use route::{create_workspace_route, WorkspacesState};
+pub use route::{create_workspace_route, list_workspaces_route, WorkspacesState};
 pub use store::{WorkspaceRecord, WorkspaceStatus, WorkspaceStore};
 
 /// One request to create a workspace, and the one place that decides

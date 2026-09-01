@@ -16,8 +16,8 @@ use tower_http::cors::CorsLayer;
 use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
     create_workspace_route, desktop_proxy_route_root, desktop_proxy_route_with_path,
-    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, onboarding_proxy_route_root,
-    onboarding_proxy_route_with_path, WorkspacesState,
+    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, list_workspaces_route,
+    onboarding_proxy_route_root, onboarding_proxy_route_with_path, WorkspacesState,
 };
 
 /// Register one per-workspace proxy feature's pair of routes: the exact
@@ -75,8 +75,10 @@ pub fn build_router(
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
-    let mut workspaces_router =
-        Router::new().route("/workspaces", post(create_workspace_route));
+    let mut workspaces_router = Router::new().route(
+        "/workspaces",
+        post(create_workspace_route).get(list_workspaces_route),
+    );
     workspaces_router = register_workspace_proxy_pair(
         workspaces_router,
         "/workspaces/:id/onboarding",
@@ -237,5 +239,31 @@ mod tests {
                  workspace id (workspace_not_found), not axum's own \"no route matched\""
             );
         }
+    }
+
+    /// `GET /workspaces` must dispatch to `list_workspaces_route`, not
+    /// `create_workspace_route` (both share the `/workspaces` path,
+    /// distinguished only by HTTP method) — proven through the real
+    /// router, not just by calling the handler function directly.
+    #[tokio::test]
+    async fn get_workspaces_is_reachable_through_the_real_router() {
+        let app = build_router(
+            unused_proxy_state(),
+            temp_workspaces_state().await,
+            "http://127.0.0.1:5173",
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/workspaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
