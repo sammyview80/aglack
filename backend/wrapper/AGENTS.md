@@ -84,7 +84,15 @@ src/hermes_webui_wrapper/
 ├── upstream.py               bootstrap_upstream(): validates + imports pinned upstream `api`
 ├── runtime.py                 best-effort start_runtime()/stop_runtime() parity layer
 ├── transport/                 FakeHandler + dispatch() — the PROXIED path only
-│   ├── handler.py
+│   ├── handler.py               FakeHandler + drain() only; re-exports the
+│   │                             three files below so app.py/tests keep one
+│   │                             import line — do not import those three
+│   │                             directly from outside transport/
+│   ├── headers.py                headers_from_raw / normalize_buffered_body_headers
+│   ├── origin_alignment.py       align_loopback_proxy_host (loopback reverse-
+│   │                             proxy Origin/Host CSRF fix — see its own
+│   │                             docstring before touching)
+│   ├── stdlib_stubs.py           TLSStub / NullConnection / AsyncBridgeWriter
 │   └── dispatcher.py
 ├── api/
 │   ├── router.py              mounts every api/v1/*.py router under /api/wrapper/v1
@@ -110,7 +118,11 @@ tests/
 
 New env var -> `config.py`. New PROXIED behavior change -> `transport/`
 (keep `dispatch()` a faithful mirror of upstream's `server.py` Handler; see
-`README.md`'s "Extension rules"). New NATIVE feature -> a new
+`README.md`'s "Extension rules") — put it in the file matching its concern
+(header handling -> `headers.py`, Origin/Host/CSRF -> `origin_alignment.py`,
+a new stdlib-shape stub -> `stdlib_stubs.py`, FakeHandler's own request/
+response lifecycle -> `handler.py`), not inline in `handler.py` regardless
+of concern. New NATIVE feature -> a new
 `features/<name>/` package + a new `api/v1/<name>.py` router mounted from
 `api/router.py`, following the steps below. No empty placeholder folders —
 `features/` gets a new subpackage only once a feature actually needs one.

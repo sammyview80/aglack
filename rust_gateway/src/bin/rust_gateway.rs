@@ -59,6 +59,8 @@ async fn main() {
         launcher: Arc::new(DockerCliLauncher::new(
             workspaces_config.workspace_image_tag,
             config.wrapper_allowed_origins(),
+            config.workspace_default_path.clone(),
+            config.frontend_origin.clone(),
         )),
         http_client: reqwest::Client::new(),
     });

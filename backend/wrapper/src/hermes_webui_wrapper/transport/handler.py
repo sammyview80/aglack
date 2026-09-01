@@ -30,182 +30,38 @@ import time -- bootstrap_upstream() (see ``transport/dispatcher.py`` and
 ``runtime.py``) must run first to put the pinned upstream checkout on
 sys.path. `_build_csp_report_only_policy` is therefore imported lazily,
 inside `end_headers()`, after bootstrap has already happened.
+
+Header utilities live in `headers.py`, the loopback-proxy Origin/Host
+alignment fix lives in `origin_alignment.py`, and the stdlib-shape stubs
+(`TLSStub`/`NullConnection`/`AsyncBridgeWriter`) live in `stdlib_stubs.py`
+-- all re-exported here so `app.py` and every existing test keep importing
+from this one module.
 """
 from __future__ import annotations
 
 import asyncio
 import email.message
 import io
-import os
 import threading
 import time
 from typing import Optional
 
+from .headers import headers_from_raw, normalize_buffered_body_headers
+from .origin_alignment import align_loopback_proxy_host
+from .stdlib_stubs import EOF as _EOF
+from .stdlib_stubs import AsyncBridgeWriter as _AsyncBridgeWriter
+from .stdlib_stubs import NullConnection as _NullConnection
+from .stdlib_stubs import TLSStub as _TLSStub
+
+__all__ = [
+    "FakeHandler",
+    "align_loopback_proxy_host",
+    "drain",
+    "headers_from_raw",
+    "normalize_buffered_body_headers",
+]
+
 _CSP_REPORT_TO = '{"group":"csp-endpoint","max_age":10886400,"endpoints":[{"url":"/api/csp-report"}]}'
-
-# Sentinel pushed into the chunk queue to signal "no more body bytes".
-_EOF = object()
-
-
-def headers_from_raw(raw_headers) -> email.message.Message:
-    """Build a case-insensitive header container matching http.client.HTTPMessage.
-
-    `raw_headers` is Starlette's `Headers.raw`: a list[tuple[bytes, bytes]].
-    email.message.Message (the base class of http.client.HTTPMessage) performs
-    case-insensitive lookups, exactly like the real handler.headers object.
-    """
-    msg = email.message.Message()
-    for k, v in raw_headers:
-        msg[k.decode("latin-1")] = v.decode("latin-1")
-    return msg
-
-
-def normalize_buffered_body_headers(headers_msg, body: bytes) -> None:
-    """Reconcile transfer-framing headers with the fully-buffered body.
-
-    Starlette's `Request.body()` already de-chunks and fully buffers the
-    request body, but the original `Transfer-Encoding: chunked` and/or a
-    stale `Content-Length` header may still be present in `headers_msg`.
-    Upstream's handler reads exactly `Content-Length` bytes from `.rfile`
-    and never de-chunks, so a leftover `Transfer-Encoding` (or a
-    `Content-Length` that no longer matches the buffered body) makes it read
-    zero/wrong bytes despite the body being fully available. Delete both
-    headers case-insensitively, then set exactly one `Content-Length`
-    matching the buffered body.
-    """
-    for name in ("Transfer-Encoding", "Content-Length"):
-        while name in headers_msg:
-            del headers_msg[name]
-    headers_msg["Content-Length"] = str(len(body))
-
-
-def _is_loopback_host(host: str) -> bool:
-    name = (host or "").strip().lower()
-    if not name:
-        return False
-    if name.startswith("["):
-        return name.startswith("[::1]")
-    hostname = name.rsplit("@", 1)[-1]
-    if ":" in hostname and not hostname.count(":") > 1:
-        hostname = hostname.rsplit(":", 1)[0]
-    return hostname in {"127.0.0.1", "localhost", "::1"}
-
-
-def align_loopback_proxy_host(headers_msg) -> None:
-    """When a local reverse proxy rewrites Host, align it with browser Origin.
-
-    Vite/webpack often forward ``Origin: http://127.0.0.1:5173`` but set
-    ``Host: 127.0.0.1:8787``. CSRF then fails with "Cross-origin mismatch".
-    Only rewrite when both sides are loopback -- never for public hosts.
-    Fully self-contained: reads only the given headers_msg and the
-    HERMES_WEBUI_ALLOWED_ORIGINS env var, mutates only headers_msg.
-    """
-    import re
-
-    origin = (headers_msg.get("Origin") or "").strip()
-    host = (headers_msg.get("Host") or "").strip()
-    if not origin or not host:
-        return
-    m = re.match(r"^(https?)://([^/]+)", origin, re.I)
-    if not m:
-        return
-    origin_host = m.group(2).strip()
-    if not origin_host or origin_host.lower() == host.lower():
-        return
-    if not (_is_loopback_host(origin_host) and _is_loopback_host(host)):
-        return
-    allowed_origins = {
-        value.strip().rstrip("/").lower()
-        for value in os.getenv("HERMES_WEBUI_ALLOWED_ORIGINS", "").split(",")
-        if value.strip()
-    }
-    if origin.rstrip("/").lower() not in allowed_origins:
-        return
-    try:
-        del headers_msg["Host"]
-    except KeyError:
-        pass
-    headers_msg["Host"] = origin_host
-
-
-class _TLSStub:
-    """Minimal stand-in for an ssl.SSLSocket, used only so
-    `getattr(handler.request, 'getpeercert', None)` in api/auth.py's
-    _is_secure_context() resolves truthy when the ASGI server terminated
-    TLS itself."""
-
-    def getpeercert(self, *_a, **_kw):
-        return {}
-
-
-class _NullConnection:
-    """Stub for handler.connection. Only .settimeout() is ever called on the
-    write path we exercise (SSE write-deadline); everything else no-ops."""
-
-    def settimeout(self, *_a, **_kw):
-        return None
-
-    def __getattr__(self, _name):
-        def _noop(*_a, **_kw):
-            return None
-        return _noop
-
-
-class _AsyncBridgeWriter:
-    """Drop-in replacement for handler.wfile.
-
-    write()/flush() are called synchronously from the worker thread; each
-    write schedules a thread-safe put onto the asyncio.Queue that the ASGI
-    StreamingResponse generator drains on the event loop.
-
-    `closed_event` is shared with the owning FakeHandler: once the ASGI side
-    tears down the transport (client disconnect, generator cancellation),
-    further writes must fail fast instead of queuing forever into an
-    unbounded queue nobody is draining.
-    """
-
-    def __init__(
-        self,
-        loop: asyncio.AbstractEventLoop,
-        queue: "asyncio.Queue",
-        closed_event: threading.Event,
-    ):
-        self._loop = loop
-        self._queue = queue
-        self._closed_event = closed_event
-
-    @property
-    def closed(self) -> bool:
-        return self._closed_event.is_set()
-
-    def write(self, data) -> int:
-        if self._closed_event.is_set():
-            raise BrokenPipeError("transport closed")
-        if not data:
-            return 0
-        payload = bytes(data)
-        try:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, payload)
-        except RuntimeError as exc:
-            raise BrokenPipeError("transport closed") from exc
-        return len(payload)
-
-    def flush(self) -> None:
-        pass
-
-    def close(self) -> None:
-        # Some SSE code paths wrap/replace handler.wfile and call this close()
-        # directly (e.g. upstream closing its own wfile handle) without ever
-        # reaching FakeHandler.finish()/close_transport(). Best-effort enqueue
-        # the EOF sentinel so an in-progress drain() is never left waiting
-        # forever on a queue nobody else will push to.
-        if self._closed_event.is_set():
-            return
-        self._closed_event.set()
-        try:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, _EOF)
-        except RuntimeError:
-            pass
 
 
 class FakeHandler:

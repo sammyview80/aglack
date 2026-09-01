@@ -59,6 +59,14 @@ pub struct GatewayConfig {
     /// file: no hardcoded fallback (AGENTS.md rule #2). See app.rs for
     /// where this is applied.
     pub frontend_origin: String,
+    /// The default agent's workspace directory INSIDE a workspace
+    /// container, e.g. `/workspace/default` — passed to the container as
+    /// `HERMES_WEBUI_DEFAULT_WORKSPACE` (see
+    /// `workspaces::container::boot_script`). Required, like every other
+    /// path in this file (AGENTS.md rule #2) — previously hardcoded
+    /// directly in the boot script, which is exactly the thing this rule
+    /// exists to prevent.
+    pub workspace_default_path: String,
 }
 
 impl GatewayConfig {
@@ -75,6 +83,7 @@ impl GatewayConfig {
             "GATEWAY_BACKEND_PORT",
         )?;
         let frontend_origin = required_env("FRONTEND_ORIGIN")?;
+        let workspace_default_path = required_env("WORKSPACE_DEFAULT_PATH")?;
 
         Ok(Self {
             host,
@@ -82,6 +91,7 @@ impl GatewayConfig {
             backend_host,
             backend_port,
             frontend_origin,
+            workspace_default_path,
         })
     }
 
@@ -178,6 +188,7 @@ mod tests {
             backend_host: "127.0.0.1".to_string(),
             backend_port: 9999,
             frontend_origin: frontend_origin.to_string(),
+            workspace_default_path: "/workspace/default".to_string(),
         }
     }
 

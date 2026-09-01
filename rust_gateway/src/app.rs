@@ -127,6 +127,8 @@ mod tests {
             Arc::new(DockerCliLauncher::new(
                 "unused:tag".to_string(),
                 "http://localhost:5173".to_string(),
+                "/workspace/default".to_string(),
+                "http://localhost:5173".to_string(),
             )),
         )
     }

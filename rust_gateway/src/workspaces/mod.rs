@@ -1,11 +1,15 @@
-//! Create-workspace feature: the idempotency record and the route handler.
+//! Create-workspace feature: the idempotency record and the route handlers.
 //! See `../../docs/create-workspace-plan.md` before changing anything here.
 //!
 //! `store` owns the SQLite-backed idempotency record (safe to call
-//! repeatedly with the same key; never creates a duplicate). `container`
-//! owns turning a workspace record into a real Docker container. `mod.rs`
-//! (this file) wires the two together behind the public `create_workspace`
-//! entry point that the HTTP route calls.
+//! repeatedly with the same key; never creates a duplicate). `container/`
+//! owns turning a workspace record into a real Docker container (its own
+//! submodules split by responsibility — see its `mod.rs`). `route/` holds
+//! one HTTP handler per submodule (create/list/delete/diagnose), each
+//! translating a request into a call to this file's `create_workspace`/
+//! `delete_workspace` or `diagnosis::diagnose_workspace`. `mod.rs` (this
+//! file) wires store + container together behind the public
+//! `create_workspace` entry point the HTTP route calls.
 
 pub(crate) mod container;
 mod desktop_proxy;
