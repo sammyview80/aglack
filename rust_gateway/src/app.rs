@@ -10,7 +10,7 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
@@ -52,6 +52,61 @@ where
         .route(&format!("{prefix}/*path"), any(path_handler))
 }
 
+/// Expands one configured `FRONTEND_ORIGIN` into the exact set of origins
+/// the CORS layer accepts. Always includes the configured origin itself,
+/// plus — when its host is exactly `localhost` or `127.0.0.1` — the SAME
+/// scheme and port with the other of those two spellings substituted.
+///
+/// Why this exists: `localhost` and `127.0.0.1` are different origins to
+/// a browser even though they resolve to the same machine, but a human
+/// (or a browser's own autocomplete/history) switching between the two is
+/// not a real misconfiguration — it is the same frontend, the same port,
+/// the same developer. Rejecting one spelling while accepting the other
+/// produces a confusing "Cross-origin mismatch" CORS error that has
+/// recurred multiple times in this project's history for exactly this
+/// reason (see `docs/troubleshooting.md`'s "Cross-origin mismatch" entry).
+///
+/// Deliberately NOT a wildcard host match and NOT `AllowOrigin::any()`:
+/// this returns a small, exact, finite list — never `*` — so it stays
+/// compatible with `allow_credentials(true)` (see `build_router`), which
+/// a real wildcard is not. Any host OTHER than `localhost`/`127.0.0.1`
+/// (e.g. a real deployed domain) gets no sibling added — only these two
+/// well-known local-dev aliases are ever substituted.
+pub fn browser_allowed_origins(frontend_origin: &str) -> Vec<HeaderValue> {
+    let mut origins = vec![HeaderValue::from_str(frontend_origin).unwrap_or_else(|err| {
+        panic!("invalid FRONTEND_ORIGIN {frontend_origin:?}: {err}")
+    })];
+
+    // `rest` must start with `:` (the port separator) or be empty (no port
+    // at all) — otherwise "http://127.0.0.1" would also match the host
+    // "127.0.0.11" (a real, different machine) via plain prefix-stripping,
+    // and "http://localhost" would match "localhost.evil.com". Requiring
+    // the boundary is what makes this an exact host match, not a prefix
+    // match.
+    fn host_boundary(rest: &str) -> bool {
+        rest.is_empty() || rest.starts_with(':')
+    }
+    let sibling = if let Some(rest) = frontend_origin.strip_prefix("http://localhost") {
+        host_boundary(rest).then(|| format!("http://127.0.0.1{rest}"))
+    } else if let Some(rest) = frontend_origin.strip_prefix("http://127.0.0.1") {
+        host_boundary(rest).then(|| format!("http://localhost{rest}"))
+    } else if let Some(rest) = frontend_origin.strip_prefix("https://localhost") {
+        host_boundary(rest).then(|| format!("https://127.0.0.1{rest}"))
+    } else if let Some(rest) = frontend_origin.strip_prefix("https://127.0.0.1") {
+        host_boundary(rest).then(|| format!("https://localhost{rest}"))
+    } else {
+        None
+    };
+
+    if let Some(sibling) = sibling {
+        origins.push(HeaderValue::from_str(&sibling).unwrap_or_else(|err| {
+            panic!("invalid derived sibling origin {sibling:?}: {err}")
+        }));
+    }
+
+    origins
+}
+
 /// Build the full router for this gateway.
 ///
 /// Route order matters here: `/workspaces` is registered before the
@@ -59,10 +114,11 @@ where
 /// backend instead of being handled by `create_workspace_route`.
 ///
 /// `frontend_origin` (e.g. `http://127.0.0.1:5173`, see
-/// `config::GatewayConfig::frontend_origin`) is the only origin allowed to
-/// make browser (CORS) requests here — required, not hardcoded, matching
-/// AGENTS.md rule #2. Without this, a browser's own fetch/XHR to
-/// `/workspaces` from the frontend's origin is blocked before this
+/// `config::GatewayConfig::frontend_origin`) is the primary origin allowed
+/// to make browser (CORS) requests here — required, not hardcoded,
+/// matching AGENTS.md rule #2 — plus its `localhost`/`127.0.0.1` sibling,
+/// see `browser_allowed_origins`. Without this, a browser's own fetch/XHR
+/// to `/workspaces` from the frontend's origin is blocked before this
 /// process ever sees the request (curl/server-to-server calls are
 /// unaffected either way — CORS is enforced by the browser, not this
 /// server, so this layer only matters for browser callers).
@@ -70,19 +126,22 @@ pub fn build_router(
     proxy_state: Arc<ProxyState>,
     workspaces_state: Arc<WorkspacesState>,
     frontend_origin: &str,
+    cors_enabled: bool,
 ) -> Router {
-    let origin = HeaderValue::from_str(frontend_origin)
-        .unwrap_or_else(|err| panic!("invalid FRONTEND_ORIGIN {frontend_origin:?}: {err}"));
+    let allowed_origins = browser_allowed_origins(frontend_origin);
     let cors = CorsLayer::new()
-        .allow_origin(origin)
+        .allow_origin(AllowOrigin::list(allowed_origins))
         .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_headers([axum::http::header::CONTENT_TYPE])
         // The chat proxy's browser client sends `credentials: 'include'`
         // (see frontend/src/features/chat/api.ts's own doc comment — the
         // gateway translates `?agent=` into a `hermes_profile` cookie the
-        // container requires). tower_http rejects pairing this with a
-        // wildcard origin, which is fine: `allow_origin` above is always
-        // one exact configured origin, never `*`.
+        // container requires). tower_http REFUSES to pair a wildcard
+        // origin with allow_credentials(true) (a browser would reject
+        // that combination outright per the CORS spec) — which is
+        // exactly why `browser_allowed_origins` below returns an EXACT,
+        // finite allow-list (never `*`), even though it can list more
+        // than one entry.
         .allow_credentials(true);
 
     let mut workspaces_router = Router::new()
@@ -135,7 +194,12 @@ pub fn build_router(
         .route("/*path", any(forward))
         .with_state(proxy_state);
 
-    workspaces_router.merge(proxy_router).layer(cors)
+    let router = workspaces_router.merge(proxy_router);
+    if cors_enabled {
+        router.layer(cors)
+    } else {
+        router
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +212,59 @@ mod tests {
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
+
+    /// `browser_allowed_origins` must add the `localhost`/`127.0.0.1`
+    /// sibling for the well-known local-dev pair, but must NEVER treat a
+    /// plain string prefix as a host match — "127.0.0.1" is a literal
+    /// prefix of "127.0.0.11" (a different, real host) and "localhost" is
+    /// a literal prefix of "localhost.evil.com" (an attacker-controlled
+    /// domain); naively using `strip_prefix` without a boundary check
+    /// would silently add a wrong, unintended origin to the allow-list for
+    /// both of these.
+    #[test]
+    fn browser_allowed_origins_adds_the_localhost_127_sibling_only() {
+        let origins: Vec<String> = browser_allowed_origins("http://127.0.0.1:5173")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(origins, vec!["http://127.0.0.1:5173", "http://localhost:5173"]);
+
+        let origins: Vec<String> = browser_allowed_origins("http://localhost:5173")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(origins, vec!["http://localhost:5173", "http://127.0.0.1:5173"]);
+    }
+
+    #[test]
+    fn browser_allowed_origins_never_matches_a_similar_but_different_host() {
+        // "127.0.0.11" is a real, different host that happens to start
+        // with the literal string "127.0.0.1" — must NOT get a spurious
+        // "localhost:..." sibling from a naive prefix strip.
+        let origins: Vec<String> = browser_allowed_origins("http://127.0.0.11:5173")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(origins, vec!["http://127.0.0.11:5173"]);
+
+        // "localhost.evil.com" starts with the literal string "localhost"
+        // but is an entirely different, attacker-controlled domain — must
+        // NOT get a spurious "127.0.0.1:..." sibling either.
+        let origins: Vec<String> = browser_allowed_origins("http://localhost.evil.com:5173")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(origins, vec!["http://localhost.evil.com:5173"]);
+    }
+
+    #[test]
+    fn browser_allowed_origins_leaves_a_real_deployed_domain_untouched() {
+        let origins: Vec<String> = browser_allowed_origins("https://app.example.com")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(origins, vec!["https://app.example.com"]);
+    }
 
     async fn temp_workspaces_state() -> Arc<WorkspacesState> {
         state_with_store(
@@ -178,6 +295,7 @@ mod tests {
             unused_proxy_state(),
             temp_workspaces_state().await,
             "http://127.0.0.1:5173",
+            true,
         );
 
         let response = app
@@ -212,6 +330,7 @@ mod tests {
             unused_proxy_state(),
             temp_workspaces_state().await,
             "http://127.0.0.1:5173",
+            true,
         );
 
         let response = app
@@ -255,6 +374,7 @@ mod tests {
             unused_proxy_state(),
             temp_workspaces_state().await,
             "http://127.0.0.1:5173",
+            true,
         );
 
         let response = app
@@ -281,6 +401,60 @@ mod tests {
         assert_eq!(allow_credentials, "true");
     }
 
+    /// `localhost` and `127.0.0.1` are DIFFERENT origins to a browser even
+    /// though they resolve to the same machine — a real, repeatedly-hit
+    /// failure (see docs/troubleshooting.md's "Cross-origin mismatch"
+    /// entry): FRONTEND_ORIGIN is configured as one exact string, so if the
+    /// browser tab happens to be open at the other spelling of the exact
+    /// same port, every request is rejected even though nothing is
+    /// actually misconfigured from the operator's point of view. The
+    /// gateway now accepts BOTH spellings automatically for whichever
+    /// port FRONTEND_ORIGIN names — configuring `127.0.0.1:5173` (as this
+    /// test does) must also accept a browser at `localhost:5173`, and
+    /// vice versa. This is deliberately NOT a wildcard origin (which
+    /// tower_http/every browser refuses to pair with
+    /// Access-Control-Allow-Credentials: true, see the credentials test
+    /// above) — it is an exact two-item allow-list, still never `*`.
+    #[tokio::test]
+    async fn preflight_accepts_the_sibling_host_spelling_on_the_same_port() {
+        let app = build_router(
+            unused_proxy_state(),
+            temp_workspaces_state().await,
+            "http://127.0.0.1:5173",
+            true,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/workspaces/some-id/chat/api/session/new")
+                    .header("Origin", "http://localhost:5173")
+                    .header("Access-Control-Request-Method", "POST")
+                    .header("Access-Control-Request-Headers", "content-type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let allow_origin = response
+            .headers()
+            .get("access-control-allow-origin")
+            .expect("preflight response must include Access-Control-Allow-Origin for the sibling host spelling too")
+            .to_str()
+            .unwrap();
+        assert_eq!(allow_origin, "http://localhost:5173");
+        let allow_credentials = response
+            .headers()
+            .get("access-control-allow-credentials")
+            .expect("sibling-host preflight response must also include Access-Control-Allow-Credentials: true")
+            .to_str()
+            .unwrap();
+        assert_eq!(allow_credentials, "true");
+    }
+
     /// Proves `register_workspace_proxy_pair` actually wired all FOUR
     /// proxy features' root+wildcard routes into the real router — every
     /// existing proxy-route test elsewhere (`onboarding_proxy.rs` etc.)
@@ -297,6 +471,7 @@ mod tests {
             unused_proxy_state(),
             temp_workspaces_state().await,
             "http://127.0.0.1:5173",
+            true,
         );
 
         for uri in [
@@ -338,6 +513,7 @@ mod tests {
             unused_proxy_state(),
             temp_workspaces_state().await,
             "http://127.0.0.1:5173",
+            true,
         );
 
         let response = app
@@ -364,6 +540,7 @@ mod tests {
             unused_proxy_state(),
             temp_workspaces_state().await,
             "http://127.0.0.1:5173",
+            true,
         );
 
         let response = app
@@ -389,6 +566,7 @@ mod tests {
             unused_proxy_state(),
             temp_workspaces_state().await,
             "http://127.0.0.1:5173",
+            true,
         );
 
         let response = app
@@ -414,6 +592,46 @@ mod tests {
         assert_eq!(allow_origin, "http://127.0.0.1:5173");
     }
 
+    /// `cors_enabled: false` must mean no `CorsLayer` is applied at all —
+    /// a preflight OPTIONS request gets no
+    /// `Access-Control-Allow-Origin` header, which is what makes a
+    /// browser block the cross-origin request itself (the standard "CORS
+    /// disabled" meaning, not "allow everything"). This only proves the
+    /// ROUTER-built response (this OPTIONS preflight) carries no CORS
+    /// header — see `GatewayConfig::cors_enabled`'s doc comment for why a
+    /// PROXIED backend response is a separate case this flag does not
+    /// touch.
+    #[tokio::test]
+    async fn preflight_gets_no_allow_origin_header_when_cors_disabled() {
+        let app = build_router(
+            unused_proxy_state(),
+            temp_workspaces_state().await,
+            "http://127.0.0.1:5173",
+            false,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/workspaces/does-not-exist")
+                    .header("Origin", "http://127.0.0.1:5173")
+                    .header("Access-Control-Request-Method", "DELETE")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none(),
+            "no Access-Control-Allow-Origin header must be sent when CORS is disabled"
+        );
+    }
+
     /// `POST /workspaces/:id/diagnose` must dispatch to
     /// `diagnose_workspace_route` through the real router — an unknown id
     /// is used so the handler itself runs and returns
@@ -427,6 +645,7 @@ mod tests {
             unused_proxy_state(),
             temp_workspaces_state().await,
             "http://127.0.0.1:5173",
+            true,
         );
 
         let response = app

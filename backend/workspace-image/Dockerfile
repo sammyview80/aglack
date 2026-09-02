@@ -238,6 +238,76 @@ RUN apk add --no-cache \
 COPY backend/workspace-image/patch_kasmvnc_lastactiveat.py /tmp/patch_kasmvnc_lastactiveat.py
 RUN python3 /tmp/patch_kasmvnc_lastactiveat.py && rm /tmp/patch_kasmvnc_lastactiveat.py
 
+# Patch the BASE image's `kclient` shell (the EJS template
+# `/workspaces/:id/desktop/` actually serves — NOT raw KasmVNC directly)
+# so its embedded KasmVNC iframe defaults to a HIDDEN control bar instead
+# of always-open. See patch_kasmvnc_hide_control_bar.py's own module doc
+# for the full trail, INCLUDING a real regression this repo shipped once:
+# an earlier version of this patch set the literal string
+# `show_control_bar=false`, which is TRUTHY once read by KasmVNC's own
+# `WebUtil.getConfigVar()` (raw string, not boolean-parsed) — the correct
+# value is an EMPTY string. `desktopUrl()`'s own `show_control_bar` param
+# (frontend/src/features/workspace/api.ts) has no effect through this
+# gateway path either way — this Dockerfile-time patch on the value
+# actually baked into the template is the only lever that works.
+#
+# Same third-party-base-image reasoning as the patch above: not a bug in
+# this repository's own code, applied at image-build time so it survives
+# container recreation (a live `docker exec` + `sed` edit does not — see
+# this script's own module doc), and fails the BUILD loudly rather than
+# silently if the base image's template ever changes this exact line.
+COPY backend/workspace-image/patch_kasmvnc_hide_control_bar.py /tmp/patch_kasmvnc_hide_control_bar.py
+RUN python3 /tmp/patch_kasmvnc_hide_control_bar.py && rm /tmp/patch_kasmvnc_hide_control_bar.py
+
+# Patch the same `kclient` shell's own client script so its separate
+# File-Manager/Enable-Audio/Enable-Microphone bar (`#lsbar`) never
+# auto-opens either. See patch_kasmvnc_hide_lsbar.py's own module doc for
+# the full trail: `#lsbar` is `display:none` by default (not a hover
+# trigger, an earlier wrong assumption) — the real trigger is KasmVNC's
+# own `ui.js` unconditionally postMessage-ing `{action:'control_open'}`
+# to its parent frame (this exact shell) on every connect, which
+# `kclient.js`'s own listener responds to by opening it. No query
+# parameter gates the SENDER side of that message, so the only fix is
+# making the RECEIVER's handler a no-op.
+COPY backend/workspace-image/patch_kasmvnc_hide_lsbar.py /tmp/patch_kasmvnc_hide_lsbar.py
+RUN python3 /tmp/patch_kasmvnc_hide_lsbar.py && rm /tmp/patch_kasmvnc_hide_lsbar.py
+
+# ── Default desktop wallpaper (IceWM) ───────────────────────────────────────
+# Baked in via `/etc/icewm/prefoverride`, NOT the base image's own
+# `/usr/share/icewm/preferences` — verified live against the real
+# `icewm` binary (`icewm --directories` inside a built container):
+#
+#   PrivConfDir=/config/.icewm   (highest priority — per-workspace user
+#                                 override; a workspace that already has
+#                                 its own /config/.icewm/prefoverride
+#                                 keeps whatever wallpaper IT set, this
+#                                 default never overrides a real user
+#                                 choice)
+#   CFGDIR=/etc/icewm            (this file — system default)
+#   LIBDIR=/usr/share/icewm      (base image's own bundled defaults,
+#                                 confirmed via its `preferences` file:
+#                                 DesktopBackgroundImage="" by default)
+#
+# `prefoverride` specifically (not `preferences`) because IceWM's loader
+# reads `preferences`, then a selected THEME's own prefs (which can set
+# its own background), then `prefoverride` LAST — confirmed via `strings
+# /usr/bin/icewm` containing the literal token `prefoverride` distinct
+# from `preferences`/`postpreferences`. Only `prefoverride` is guaranteed
+# to win over whatever theme a workspace ends up using.
+#
+# DesktopBackgroundScaled=1 + DesktopBackgroundCenter=0: fills the
+# desktop preserving aspect ratio, per IceWM's own preferences template
+# comments for these exact keys.
+RUN mkdir -p /usr/share/backgrounds
+COPY backend/workspace-image/assets/wallpaper.png /usr/share/backgrounds/hermes-wallpaper.png
+RUN mkdir -p /etc/icewm && \
+    printf '%s\n' \
+        'DesktopBackgroundImage="/usr/share/backgrounds/hermes-wallpaper.png"' \
+        'DesktopBackgroundScaled=1' \
+        'DesktopBackgroundCenter=0' \
+        > /etc/icewm/prefoverride && \
+    chmod a+r /usr/share/backgrounds/hermes-wallpaper.png /etc/icewm/prefoverride
+
 # Pull in the fully-built hermes-agent tree (source + musl venv, now WITH
 # the wrapper installed into that same venv too — see the builder stage's
 # `uv pip install -e /opt/hermes-webui/wrapper` above — + fts5_cjk .so)

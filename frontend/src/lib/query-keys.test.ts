@@ -32,6 +32,20 @@ describe('queryKeys.agentHistory', () => {
   })
 })
 
+describe('queryKeys.chat', () => {
+  it('gives different sessions of the same agent different sessionStatus keys', () => {
+    const a = queryKeys.chat.sessionStatus('ws-1', 'agent-a', 'sess-1')
+    const b = queryKeys.chat.sessionStatus('ws-1', 'agent-a', 'sess-2')
+    expect(a).not.toEqual(b)
+  })
+
+  it('gives different agents in the same workspace different sessionStatus keys', () => {
+    const a = queryKeys.chat.sessionStatus('ws-1', 'agent-a', 'sess-1')
+    const b = queryKeys.chat.sessionStatus('ws-1', 'agent-b', 'sess-1')
+    expect(a).not.toEqual(b)
+  })
+})
+
 describe('queryKeys.workspaces', () => {
   it('nests list() under the all root', () => {
     expect(queryKeys.workspaces.list().slice(0, queryKeys.workspaces.all.length)).toEqual(

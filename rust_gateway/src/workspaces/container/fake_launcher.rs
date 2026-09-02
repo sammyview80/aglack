@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{ContainerLauncher, ContainerState, LaunchedContainer};
 
@@ -33,6 +33,11 @@ pub(crate) struct FakeLauncher {
     /// briefly inside an async fn here is not a real contention risk.
     inspect_result: std::sync::Mutex<ContainerState>,
     recovers_after_start: bool,
+    /// What `daemon_reachable` reports — see `set_daemon_reachable` for
+    /// how a `daemon_watch.rs` test flips this mid-test to simulate a
+    /// real down→up Docker Desktop transition without ever running
+    /// `docker info`.
+    daemon_reachable: AtomicBool,
 }
 
 impl Default for FakeLauncher {
@@ -49,6 +54,7 @@ impl Default for FakeLauncher {
                 oom_killed: false,
             }),
             recovers_after_start: false,
+            daemon_reachable: AtomicBool::new(true),
         }
     }
 }
@@ -99,6 +105,13 @@ impl FakeLauncher {
 
     pub(crate) fn start_existing_count(&self) -> usize {
         self.start_existing_count.load(Ordering::SeqCst)
+    }
+
+    /// Flip what `daemon_reachable` reports — lets a `daemon_watch.rs`
+    /// test simulate a real Docker Desktop kill-then-reopen (down→up)
+    /// without ever running a real `docker info` command.
+    pub(crate) fn set_daemon_reachable(&self, reachable: bool) {
+        self.daemon_reachable.store(reachable, Ordering::SeqCst);
     }
 }
 
@@ -160,5 +173,9 @@ impl ContainerLauncher for FakeLauncher {
             };
         }
         Ok(())
+    }
+
+    async fn daemon_reachable(&self) -> bool {
+        self.daemon_reachable.load(Ordering::SeqCst)
     }
 }

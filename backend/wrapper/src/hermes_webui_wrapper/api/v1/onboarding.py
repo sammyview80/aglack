@@ -7,14 +7,13 @@ Every upstream call is synchronous and potentially blocking (file I/O, a
 live HTTP probe) — routed through `run_in_threadpool` so a slow call never
 blocks the event loop for other requests/tenants.
 
-Security note (deliberate, current scope — see `docs/onboarding.md`): these
-routes have NO auth gate today, unlike upstream's own
+Security note (deliberate, current scope — see `docs/onboarding.md`): see
+`features/errors.py`'s `NO_AUTH_GATE_NOTE`, unlike upstream's own
 `_onboarding_gate_allows` (which restricts unauthenticated setup/oauth/
-complete/probe calls to local/private network origins). This wrapper has no
-session/login layer yet at all (see rust_gateway's own "no auth yet"
-checkpoint note) — adding a gate here ahead of that would be a false sense
-of security, not a real one. Revisit this the moment any auth layer exists
-in front of this service.
+complete/probe calls to local/private network origins) (see rust_gateway's
+own "no auth yet" checkpoint note) — adding a gate here ahead of that would
+be a false sense of security, not a real one. Revisit this the moment any
+auth layer exists in front of this service.
 """
 from __future__ import annotations
 

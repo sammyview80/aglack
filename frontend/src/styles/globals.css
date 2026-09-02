@@ -3,6 +3,125 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* Threads design tokens (--th-*). Layout = Tailwind in threads-ui.ts / chat-ui.ts */
+.threads-app {
+  --th-backdrop: radial-gradient(circle at 50% 42%, #4e1971, #2f1050 52%, #170c2c);
+  --th-window: #f8f8f9;
+  --th-sidebar: #f7f7f8;
+  --th-sidebar-2: #f2f2f4;
+  --th-sidebar-line: #dedee2;
+  --th-content: #fafafb;
+  --th-card: #fff;
+  --th-text: #25252d;
+  --th-muted: #77777e;
+  --th-icon: #3d3d45;
+  --th-hover: #e7e7eb;
+  --th-icon-hover: #e8e8eb;
+  --th-selected: #e4e4e8;
+  --th-search: #e9e9eb;
+  --th-line: #e3e3e5;
+  --th-header-line: #e2e2e4;
+  --th-compose: #6743ed;
+  --th-compose-hover: #7652ed;
+  --th-post: #bdabff;
+  --th-badge-bg: #f0ebff;
+  --th-badge-fg: #6947df;
+  --th-menu: #fff;
+  --th-menu-hover: #f1f1f4;
+  --th-emoji: #f3f3f6;
+  --th-modal-scrim: #11081f80;
+  --th-window-border: rgba(34, 25, 49, 0.18);
+  --th-online-border: #f3f3f5;
+  --th-assistant-bubble: var(--th-sidebar);
+  --th-assistant-bubble-border: var(--th-sidebar-line);
+  --th-assistant-bubble-shadow: 0 1px 2px #1f1f2814, 0 2px 8px #1f1f280d;
+  --th-assistant-code: var(--th-sidebar-2);
+  color: var(--th-text);
+  font-size: 14px;
+  --motion-duration: 220ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+html[data-theme='dark'] .threads-app,
+.dark .threads-app {
+  --th-backdrop: radial-gradient(circle at 50% 42%, #2a1040, #12081c 52%, #09050f);
+  --th-window: #1c1c22;
+  --th-sidebar: #1f1f26;
+  --th-sidebar-2: #1a1a20;
+  --th-sidebar-line: #2e2e36;
+  --th-content: #16161c;
+  --th-card: #23232b;
+  --th-text: #ececef;
+  --th-muted: #9a9aa3;
+  --th-icon: #c5c5cc;
+  --th-hover: #2c2c34;
+  --th-icon-hover: #2c2c34;
+  --th-selected: #34343e;
+  --th-search: #2c2c34;
+  --th-line: #34343c;
+  --th-header-line: #2e2e36;
+  --th-compose: #7b5cff;
+  --th-compose-hover: #8f74ff;
+  --th-post: #8b74e8;
+  --th-badge-bg: #3a2d66;
+  --th-badge-fg: #cfc4ff;
+  --th-menu: #23232b;
+  --th-menu-hover: #2c2c34;
+  --th-emoji: #2c2c34;
+  --th-modal-scrim: #050208b3;
+  --th-window-border: rgba(255, 255, 255, 0.08);
+  --th-online-border: #1c1c22;
+  --th-assistant-bubble: var(--th-sidebar);
+  --th-assistant-bubble-border: var(--th-sidebar-line);
+  --th-assistant-bubble-shadow: 0 1px 3px #00000047, 0 2px 10px #0000002e;
+  --th-assistant-code: var(--th-sidebar-2);
+}
+.threads-app a { color: inherit; text-decoration: none; }
+.threads-app button { border: 0; cursor: pointer; font: inherit; transition: background-color var(--motion-duration) var(--motion-ease), color var(--motion-duration) var(--motion-ease), border-color var(--motion-duration) var(--motion-ease), box-shadow var(--motion-duration) var(--motion-ease), transform var(--motion-duration) var(--motion-ease), opacity var(--motion-duration) var(--motion-ease); }
+@media (prefers-reduced-motion: reduce) {
+  .threads-app button { transition: none; }
+}
+.threads-app input, .threads-app textarea { font: inherit; }
+.threads-app select { color: var(--th-text); background: var(--th-card); border-color: var(--th-line); }
+
+/* Chat transcript: 3px scrollbar; gutter lives on .chat-transcript-inner */
+.chat-transcript {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--th-muted) 32%, transparent) transparent;
+}
+.chat-transcript::-webkit-scrollbar {
+  width: 3px;
+}
+.chat-transcript::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-transcript::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--th-muted) 32%, transparent);
+  border-radius: 999px;
+}
+.chat-transcript::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--th-muted) 48%, transparent);
+}
+
+.chat-bubble {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--th-muted) 32%, transparent) transparent;
+}
+.chat-bubble::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+.chat-bubble::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-bubble::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--th-muted) 32%, transparent);
+  border-radius: 999px;
+}
+.chat-bubble::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--th-muted) 48%, transparent);
+}
+
 /* Match existing ThemeSwitch: html[data-theme] plus shadcn's .dark class. */
 @custom-variant dark (&:is(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
 

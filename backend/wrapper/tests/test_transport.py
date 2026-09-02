@@ -291,3 +291,73 @@ def test_align_loopback_proxy_host_noop_when_host_already_matches_origin(monkeyp
     align_loopback_proxy_host(headers)
 
     assert headers["Host"] == "localhost:5173"
+
+
+# -- align_loopback_proxy_host: Sec-Fetch-Site neutralization ------------
+#
+# Real live bug this guards against: a real browser reaching this wrapper
+# through a local reverse proxy hop (Vite on :5173 -> rust_gateway ->
+# wrapper) legitimately sends Sec-Fetch-Site: cross-site, because :5173 and
+# the wrapper's own port ARE different origins by browser rules — even
+# though this is a legitimate same-machine proxy hop. Upstream's CSRF check
+# (api/routes.py:_check_same_origin_browser_request) special-cases
+# Sec-Fetch-Site: cross-site and rejects the request UNCONDITIONALLY before
+# ever reaching the Origin/Host comparison align_loopback_proxy_host's own
+# Host-rewrite feeds into — so the Host rewrite above never gets a chance to
+# help. Only neutralize it under the exact same condition the Host rewrite
+# above already requires: both Origin and Host loopback, and Origin
+# allowlisted via HERMES_WEBUI_ALLOWED_ORIGINS.
+
+
+def test_align_loopback_proxy_host_neutralizes_cross_site_when_allowlisted(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_WEBUI_ALLOWED_ORIGINS", "http://localhost:5173")
+    headers = _headers_msg(
+        {
+            "Origin": "http://localhost:5173",
+            "Host": "127.0.0.1:8787",
+            "Sec-Fetch-Site": "cross-site",
+        }
+    )
+
+    align_loopback_proxy_host(headers)
+
+    assert headers["Sec-Fetch-Site"] == "same-origin"
+
+
+def test_align_loopback_proxy_host_leaves_sec_fetch_site_when_origin_not_allowlisted(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_WEBUI_ALLOWED_ORIGINS", raising=False)
+    headers = _headers_msg(
+        {
+            "Origin": "http://localhost:5173",
+            "Host": "127.0.0.1:8787",
+            "Sec-Fetch-Site": "cross-site",
+        }
+    )
+
+    align_loopback_proxy_host(headers)
+
+    assert headers["Sec-Fetch-Site"] == "cross-site"
+
+
+def test_align_loopback_proxy_host_leaves_sec_fetch_site_for_public_host(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_WEBUI_ALLOWED_ORIGINS", "https://example.com")
+    headers = _headers_msg(
+        {
+            "Origin": "https://example.com",
+            "Host": "tenant.example.com",
+            "Sec-Fetch-Site": "cross-site",
+        }
+    )
+
+    align_loopback_proxy_host(headers)
+
+    assert headers["Sec-Fetch-Site"] == "cross-site"
+
+
+def test_align_loopback_proxy_host_no_sec_fetch_site_header_unaffected(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_WEBUI_ALLOWED_ORIGINS", "http://localhost:5173")
+    headers = _headers_msg({"Origin": "http://localhost:5173", "Host": "127.0.0.1:8787"})
+
+    align_loopback_proxy_host(headers)
+
+    assert "Sec-Fetch-Site" not in headers

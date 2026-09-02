@@ -71,13 +71,19 @@ def _require_known_profile(name: str):
     and does not scan `~/.hermes/profiles/` for named profiles created via
     the fallback `_create_profile_fallback`, even though the directory is
     genuinely on disk. Directory existence is the real invariant this
-    feature needs; `get_hermes_home_for_profile` already validates the name
-    format and rejects path traversal before any filesystem check happens.
-    """
-    from api.profiles import _is_root_profile, get_hermes_home_for_profile
+    feature needs.
 
-    home = get_hermes_home_for_profile(name)
-    if not (_is_root_profile(name) or home.is_dir()):
+    Delegates to `features.profile_lookup.known_profile_home`, which
+    validates the name against upstream's own `_PROFILE_ID_RE` BEFORE any
+    home-directory lookup (see that module's docstring —
+    `get_hermes_home_for_profile()` falls back to the BASE Hermes home for
+    any name that isn't a valid profile id, so `home.is_dir()` alone would
+    incorrectly accept a malformed/traversal-shaped name as the root
+    profile)."""
+    from hermes_webui_wrapper.features.profile_lookup import known_profile_home
+
+    home = known_profile_home(name)
+    if home is None:
         raise AgentConfigError(
             "agent_config_profile_not_found", f"Profile '{name}' does not exist.", 404
         )

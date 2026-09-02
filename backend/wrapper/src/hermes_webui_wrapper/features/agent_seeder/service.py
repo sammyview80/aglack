@@ -89,7 +89,10 @@ from seeder_kit import (
 
 from hermes_webui_wrapper.config import resolve_seeder_root
 from hermes_webui_wrapper.features.errors import FeatureError
-from hermes_webui_wrapper.features.profile_yaml import load_profile_config, save_profile_config
+from hermes_webui_wrapper.features.profile_yaml import (
+    load_profile_config,
+    mutate_profile_config,
+)
 
 
 class AgentSeederError(FeatureError):
@@ -218,9 +221,13 @@ def _ensure_agent_workspace(agent: AgentSpec, profile_home: Path) -> str | None:
     except OSError as exc:
         raise AgentSeederError("agent_seeder_workspace_create_failed", str(exc), 500) from exc
 
-    config["workspace"] = str(workspace_dir)
+    def _set_workspace(cfg: dict) -> None:
+        cfg["workspace"] = str(workspace_dir)
+
     try:
-        save_profile_config(config_path, config)
+        mutate_profile_config(config_path, _set_workspace)
+    except ValueError as exc:
+        raise AgentSeederError("agent_seeder_config_unreadable", str(exc), 500) from exc
     except OSError as exc:
         raise AgentSeederError("agent_seeder_config_write_failed", str(exc), 500) from exc
 
@@ -293,18 +300,17 @@ def _apply_mcp_tools(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> 
         return {"tools_seeded": [], "mcp_server_configured": False}
 
     config_path = profile_home / "config.yaml"
+
+    def _set_mcp_server(cfg: dict) -> None:
+        mcp_servers = cfg.setdefault("mcp_servers", {})
+        mcp_servers[_MCP_SERVER_NAME] = build_mcp_server_entry(
+            tool_dirs, server_name=f"{_MCP_SERVER_NAME}-{agent.slug}"
+        )
+
     try:
-        config = load_profile_config(config_path)
+        mutate_profile_config(config_path, _set_mcp_server)
     except ValueError as exc:
         raise AgentSeederError("agent_seeder_config_unreadable", str(exc), 500) from exc
-
-    mcp_servers = config.setdefault("mcp_servers", {})
-    mcp_servers[_MCP_SERVER_NAME] = build_mcp_server_entry(
-        tool_dirs, server_name=f"{_MCP_SERVER_NAME}-{agent.slug}"
-    )
-
-    try:
-        save_profile_config(config_path, config)
     except OSError as exc:
         raise AgentSeederError("agent_seeder_config_write_failed", str(exc), 500) from exc
 

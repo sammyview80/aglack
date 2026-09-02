@@ -35,5 +35,19 @@ export const queryKeys = {
     all: ['chat'] as const,
     session: (workspaceId: string, agent: string) =>
       [...queryKeys.chat.all, workspaceId, 'agents', agent, 'session'] as const,
+    sessionStatus: (workspaceId: string, agent: string, sessionId: string) =>
+      [...queryKeys.chat.all, workspaceId, 'agents', agent, 'sessions', sessionId, 'status'] as const,
+  },
+  models: {
+    all: ['models'] as const,
+    // Not agent-scoped: the catalog itself is agent-agnostic (task item 1 —
+    // "the FULL catalog"), only the ticked SHORTLIST is per-agent (that
+    // lives in localStorage via selected-models-store.ts, not React Query).
+    catalog: (workspaceId: string) => [...queryKeys.models.all, workspaceId, 'catalog'] as const,
+    // Session-scoped (not agent-scoped): a session's own model can outlive
+    // the agent's default changing again later, so this must be keyed by
+    // the exact session id, not just the agent.
+    sessionModel: (workspaceId: string, sessionId: string) =>
+      [...queryKeys.models.all, workspaceId, 'sessions', sessionId, 'model'] as const,
   },
 } as const

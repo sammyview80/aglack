@@ -1,12 +1,16 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type RefObject } from 'react'
+import { ChatPromptCard } from '@/features/chat/components/chat-prompt-card'
+import { chatUi } from '@/features/chat/chat-ui'
 import type { ClarifyPrompt as ClarifyPromptType } from '@/features/chat/types'
 
 export function ClarifyPrompt({
   prompt,
   onRespond,
+  inputRef,
 }: {
   prompt: ClarifyPromptType
   onRespond: (response: string, clarifyId?: string) => void
+  inputRef?: RefObject<HTMLInputElement | null>
 }) {
   const [answer, setAnswer] = useState('')
 
@@ -19,14 +23,21 @@ export function ClarifyPrompt({
   }
 
   return (
-    <form className="chat-prompt chat-prompt-clarify" onSubmit={onSubmit}>
-      <p className="chat-prompt-title">{prompt.question}</p>
+    <ChatPromptCard
+      as="form"
+      onSubmit={onSubmit}
+      title={prompt.question}
+      role="region"
+      ariaLabel="Clarification required"
+      ariaLive="polite"
+    >
       {prompt.choicesOffered.length > 0 ? (
-        <div className="chat-prompt-choices">
+        <div className={chatUi.promptChoices}>
           {prompt.choicesOffered.map((choice) => (
             <button
               key={choice}
               type="button"
+              className={chatUi.promptChoice}
               onClick={() => onRespond(choice, prompt.clarifyId)}
             >
               {choice}
@@ -34,17 +45,19 @@ export function ClarifyPrompt({
           ))}
         </div>
       ) : null}
-      <div className="chat-prompt-answer">
+      <div className={chatUi.promptAnswer}>
         <input
+          ref={inputRef}
+          className={chatUi.promptInput}
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
           placeholder="Type your answer"
           aria-label="Clarify answer"
         />
-        <button type="submit" disabled={!answer.trim()}>
+        <button type="submit" className={chatUi.promptSend} disabled={!answer.trim()}>
           Send
         </button>
       </div>
-    </form>
+    </ChatPromptCard>
   )
 }

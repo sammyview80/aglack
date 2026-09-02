@@ -12,13 +12,14 @@ import { apiFetch } from '@/lib/api'
 import { gatewayUrl } from '@/lib/env'
 import type {
   AgentMessage,
+  AgentMessageAttachment,
   AgentSession,
   ListAgentMessagesResult,
   ListAgentSessionsResult,
   ListAgentsResult,
 } from '@/features/agent-history/types'
 
-type WireAgent = { name: string }
+type WireAgent = { name: string; is_working?: boolean }
 
 type WireListAgentsResult = { agents: WireAgent[] }
 
@@ -36,10 +37,19 @@ type WireListAgentSessionsResult = {
   offset: number
 }
 
+type WireAgentMessageAttachment = {
+  name: string
+  path: string
+  mime: string
+  size?: number
+  is_image?: boolean
+}
+
 type WireAgentMessage = {
   role: string
   content: string
   timestamp: number
+  attachments?: WireAgentMessageAttachment[]
 }
 
 type WireListAgentMessagesResult = {
@@ -77,11 +87,22 @@ function mapSession(row: WireAgentSession): AgentSession {
   }
 }
 
+function mapAttachment(row: WireAgentMessageAttachment): AgentMessageAttachment {
+  return {
+    name: row.name,
+    path: row.path,
+    mime: row.mime,
+    size: row.size,
+    isImage: row.is_image,
+  }
+}
+
 function mapMessage(row: WireAgentMessage): AgentMessage {
   return {
     role: row.role,
     content: row.content,
     timestamp: row.timestamp,
+    attachments: row.attachments?.map(mapAttachment),
   }
 }
 
@@ -91,7 +112,7 @@ export async function listAgents(workspaceId: string): Promise<ListAgentsResult>
     gatewayUrl(),
     agentHistoryPath(workspaceId, 'agents'),
   )
-  return { agents: data.agents.map((row) => ({ name: row.name })) }
+  return { agents: data.agents.map((row) => ({ name: row.name, isWorking: row.is_working === true })) }
 }
 
 export async function listAgentSessions(

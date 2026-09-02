@@ -60,22 +60,21 @@ def _require_known_profile(name: str) -> None:
     profile's home, which always exists, and incorrectly accept the name.
     Same filesystem-existence check `features/agent_config/service.py`
     already uses for a *valid* name, so a not-yet-created agent behaves
-    identically across both features."""
-    from api.profiles import _is_root_profile, _PROFILE_ID_RE, get_hermes_home_for_profile
+    identically across both features. Delegates the actual lookup to
+    `features.profile_lookup.known_profile_home` (shared with
+    `agent_config`), which does this same name-shape-then-existence
+    check."""
+    from hermes_webui_wrapper.features.profile_lookup import known_profile_home
 
-    if _is_root_profile(name):
-        return
-    if not name or not _PROFILE_ID_RE.fullmatch(name):
-        raise AgentHistoryError(
-            "agent_history_profile_not_found", f"Profile '{name}' does not exist.", 404
-        )
-    home = get_hermes_home_for_profile(name)
-    if not home.is_dir():
+    if known_profile_home(name) is None:
         raise AgentHistoryError(
             "agent_history_profile_not_found", f"Profile '{name}' does not exist.", 404
         )
 
 
+# If a second feature needs pagination, move `_parse_int_param` and
+# `_validate_pagination` here (or to a shared module) instead of
+# reimplementing them — they have no agent-history-specific logic.
 def _parse_int_param(value: str | int | None, default: int, label: str) -> int:
     """Parse a raw query-string value into an int, raising this feature's
     400 error instead of letting FastAPI's own query-param typing produce a
@@ -120,8 +119,41 @@ def list_agents() -> dict[str, Any]:
                 names.add(entry.name)
 
     ordered = ["default"] + sorted(names - {"default"})
-    agents = [{"name": name} for name in ordered]
+    working = _profiles_with_a_streaming_session(ordered)
+    agents = [{"name": name, "is_working": name in working} for name in ordered]
     return {"agents": agents}
+
+
+def _profiles_with_a_streaming_session(names: list[str]) -> set[str]:
+    """Which of `names` currently own at least one actively-streaming
+    session — reuses the one place upstream computes `is_streaming`
+    (`all_sessions()` -> `_is_streaming_session()` against the live
+    `STREAMS`/`ACTIVE_RUNS` state in `api/models.py`) instead of a second,
+    possibly-drifting definition of "busy", and the same
+    `_profiles_match()` `list_sessions()` below already uses for
+    profile/session attribution. One `all_sessions()` scan covers every
+    profile — `list_agents()` is on the sidebar-refresh path, and profile
+    count and session count are both unbounded here, so this must not be
+    one upstream call per profile.
+    """
+    from api.models import all_sessions
+    from api.profiles import _profiles_match
+
+    working: set[str] = set()
+    remaining = set(names)
+    if not remaining:
+        return working
+    for row in all_sessions():
+        if not row.get("is_streaming"):
+            continue
+        row_profile = row.get("profile")
+        for name in list(remaining):
+            if _profiles_match(row_profile, name):
+                working.add(name)
+                remaining.discard(name)
+        if not remaining:
+            break
+    return working
 
 
 _SESSION_PROJECTION_KEYS = (
@@ -176,6 +208,39 @@ def _project_content(content: Any) -> str:
     return ""
 
 
+_ATTACHMENT_PROJECTION_KEYS = ("name", "path", "mime", "size", "is_image")
+
+
+def _project_attachments(raw_attachments: Any) -> list[dict[str, Any]] | None:
+    """Project a message's `attachments` list (written by upstream's own
+    `_checkpoint_user_message_for_eager_session_save` -> `user_msg["attachments"]
+    = list(attachments)`, `backend/upstream/api/routes.py:22499`, using the
+    normalized shape `_normalize_chat_attachments` builds at
+    `backend/upstream/api/routes.py:24368` — exactly `{name,path,mime,size?,
+    is_image?}` per item) down to only the keys the frontend needs to render
+    a chip/thumbnail.
+
+    Returns `None` (not `[]`) when the source message has no attachments at
+    all, so the frontend can distinguish "no attachments" from "empty list"
+    the same way `list_messages` already treats `total`/pagination absence
+    as meaningful — an empty list is a valid (if unusual) value upstream
+    could theoretically write, whereas `None` means the key was never
+    present on the raw message. A non-list value (defensive: never trust
+    upstream's raw dict shape blindly) also projects to `None` rather than
+    raising, matching `_project_content`'s own "never raise on unexpected
+    shape" rule."""
+    if not isinstance(raw_attachments, list):
+        return None
+    projected = []
+    for item in raw_attachments:
+        if not isinstance(item, dict):
+            continue
+        entry = {key: item[key] for key in _ATTACHMENT_PROJECTION_KEYS if key in item}
+        if entry:
+            projected.append(entry)
+    return projected or None
+
+
 def list_messages(
     name: str,
     session_id: str,
@@ -183,6 +248,7 @@ def list_messages(
     offset: str | int | None = None,
 ) -> dict[str, Any]:
     _require_known_profile(name)
+    offset_unset = offset is None
     limit, offset = _validate_pagination(limit, offset)
 
     from api.models import Session
@@ -197,16 +263,26 @@ def list_messages(
         )
 
     all_messages = session.messages or []
+    if offset_unset:
+        # No caller ever passes offset today (grepped frontend/src) — default
+        # to the newest page (the live tail) instead of offset=0's oldest
+        # page. An explicit offset (even "0") keeps the from-the-start
+        # contract for a future "load older messages" page.
+        offset = max(0, len(all_messages) - limit)
     page = all_messages[offset : offset + limit]
-    messages = [
-        {
+    messages = []
+    for message in page:
+        if not isinstance(message, dict):
+            continue
+        projected = {
             "role": message.get("role"),
             "content": _project_content(message.get("content")),
             "timestamp": message.get("timestamp"),
         }
-        for message in page
-        if isinstance(message, dict)
-    ]
+        attachments = _project_attachments(message.get("attachments"))
+        if attachments is not None:
+            projected["attachments"] = attachments
+        messages.append(projected)
     return {
         "messages": messages,
         "limit": limit,

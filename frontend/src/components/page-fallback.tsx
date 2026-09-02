@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
+import { threadsUi } from '@/components/threads-ui'
 import { Button } from '@/components/ui/button'
 
 type PageFallbackProps = {
@@ -30,7 +31,7 @@ function FallbackBody({
     <>
       <h2>{title}</h2>
       <div className="divider" />
-      <p className="post-copy">{description}</p>
+      <p className={threadsUi.postCopy}>{description}</p>
       {(onAction && actionLabel) || extra || !hideBack ? (
         <div className="mt-6 flex flex-col gap-3">
           {extra}

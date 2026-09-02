@@ -136,7 +136,10 @@ mod tests {
     async fn diagnosing_a_workspace_with_no_container_returns_409() {
         let state = state_with_store(
             temp_store().await,
-            Arc::new(FakeLauncher::that_fails_first(1)),
+            // Exceeds LaunchRetryPolicy::production()'s 3 in-call attempts so
+            // the launch genuinely never succeeds, matching this test's
+            // "no container ever existed" premise.
+            Arc::new(FakeLauncher::that_fails_first(3)),
         );
         let created = create_workspace_route(
             State(state.clone()),

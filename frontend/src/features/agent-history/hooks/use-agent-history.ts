@@ -1,12 +1,18 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { listAgentMessages, listAgentSessions, listAgents } from '@/features/agent-history/api'
 import { queryKeys } from '@/lib/query-keys'
+import type { ListAgentsResult } from '@/features/agent-history/types'
 
-export function useAgents(workspaceId: string | undefined, panelOpen: boolean) {
+export function useAgents<TData = ListAgentsResult>(
+  workspaceId: string | undefined,
+  panelOpen: boolean,
+  select?: (data: ListAgentsResult) => TData,
+) {
   return useQuery({
     queryKey: queryKeys.agentHistory.agents(workspaceId ?? ''),
     queryFn: () => listAgents(workspaceId as string),
     enabled: Boolean(workspaceId) && panelOpen,
+    select,
   })
 }
 
@@ -19,19 +25,6 @@ export function useAgentSessions(
     queryKey: queryKeys.agentHistory.sessions(workspaceId ?? '', agentName ?? ''),
     queryFn: () => listAgentSessions(workspaceId as string, agentName as string),
     enabled: Boolean(workspaceId && agentName) && panelOpen,
-  })
-}
-
-export function useAgentMessages(
-  workspaceId: string | undefined,
-  agentName: string | null,
-  sessionId: string | null,
-  panelOpen: boolean,
-) {
-  return useQuery({
-    queryKey: queryKeys.agentHistory.messages(workspaceId ?? '', agentName ?? '', sessionId ?? ''),
-    queryFn: () => listAgentMessages(workspaceId as string, agentName as string, sessionId as string),
-    enabled: Boolean(workspaceId && agentName && sessionId) && panelOpen,
   })
 }
 

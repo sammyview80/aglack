@@ -67,6 +67,24 @@ pub struct GatewayConfig {
     /// directly in the boot script, which is exactly the thing this rule
     /// exists to prevent.
     pub workspace_default_path: String,
+    /// Whether this gateway applies its own browser-facing `CorsLayer`
+    /// (see `app::build_router`). Optional — unset means `true`, which
+    /// preserves the exact current behavior for every existing
+    /// deployment/test. Set to `false` only when something in front of
+    /// this gateway (e.g. a reverse proxy) already enforces origin
+    /// checks, so this gateway does not need to also do it. Unrelated to
+    /// `wrapper_allowed_origins`/`HERMES_WEBUI_ALLOWED_ORIGINS`, which is
+    /// a separate, container-side CORS concern.
+    ///
+    /// SCOPE: this only controls headers `CorsLayer` itself would add to
+    /// a response this router builds directly (e.g. an OPTIONS preflight,
+    /// or an error response). It does NOT strip `Access-Control-*`
+    /// headers a real upstream backend/wrapper response already carries
+    /// — `proxy::forward::forward_to` copies every non-hop-by-hop
+    /// response header through verbatim, `false` here included. If a
+    /// proxied backend sends its own CORS headers, they still reach the
+    /// browser regardless of this setting.
+    pub cors_enabled: bool,
 }
 
 impl GatewayConfig {
@@ -84,6 +102,9 @@ impl GatewayConfig {
         )?;
         let frontend_origin = required_env("FRONTEND_ORIGIN")?;
         let workspace_default_path = required_env("WORKSPACE_DEFAULT_PATH")?;
+        let cors_enabled = parse_cors_enabled(cors_enabled_env_value(env::var(
+            "CORS_ENABLED",
+        ))?)?;
 
         Ok(Self {
             host,
@@ -92,6 +113,7 @@ impl GatewayConfig {
             backend_port,
             frontend_origin,
             workspace_default_path,
+            cors_enabled,
         })
     }
 
@@ -142,6 +164,40 @@ fn parse_port(raw: &str, key: &str) -> Result<u16, ConfigError> {
     })
 }
 
+/// Turns `env::var("CORS_ENABLED")`'s `Result` into the `Option<String>`
+/// `parse_cors_enabled` expects: `NotPresent` (the var is simply unset) is
+/// a normal `None`, but `NotUnicode` (the var IS set, to something that
+/// isn't valid UTF-8) is a real config error, not a silent default —
+/// `.ok()` alone would collapse both cases into `None` and silently pick
+/// `true` for a value someone actually set.
+fn cors_enabled_env_value(raw: Result<String, env::VarError>) -> Result<Option<String>, ConfigError> {
+    match raw {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError {
+            message: "CORS_ENABLED is set but not valid UTF-8".to_string(),
+        }),
+    }
+}
+
+/// `CORS_ENABLED` is optional — absent means `true` (preserves current
+/// behavior for every existing deployment/test). Present, it must be
+/// `"true"`/`"false"` case-insensitively; any other value is a hard
+/// config error at startup (fail closed), matching `parse_port`'s
+/// required-value convention.
+fn parse_cors_enabled(raw: Option<String>) -> Result<bool, ConfigError> {
+    match raw {
+        None => Ok(true),
+        Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(ConfigError {
+                message: format!("CORS_ENABLED must be \"true\" or \"false\", got {value:?}"),
+            }),
+        },
+    }
+}
+
 /// Config for the create-workspace feature (`crate::workspaces`). See
 /// docs/create-workspace-plan.md.
 pub struct WorkspacesConfig {
@@ -180,6 +236,7 @@ impl WorkspacesConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::ffi::OsStringExt;
 
     fn config(host: &str, port: u16, frontend_origin: &str) -> GatewayConfig {
         GatewayConfig {
@@ -189,6 +246,7 @@ mod tests {
             backend_port: 9999,
             frontend_origin: frontend_origin.to_string(),
             workspace_default_path: "/workspace/default".to_string(),
+            cors_enabled: true,
         }
     }
 
@@ -220,5 +278,49 @@ mod tests {
         let cfg = config("127.0.0.1", 8080, "http://127.0.0.1:8080");
         let origins = cfg.wrapper_allowed_origins();
         assert_eq!(origins, "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn cors_enabled_env_value_maps_not_present_to_none() {
+        let value = cors_enabled_env_value(Err(env::VarError::NotPresent)).unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn cors_enabled_env_value_maps_ok_to_some() {
+        let value = cors_enabled_env_value(Ok("false".to_string())).unwrap();
+        assert_eq!(value, Some("false".to_string()));
+    }
+
+    #[test]
+    fn cors_enabled_env_value_fails_closed_on_non_unicode() {
+        // A real, present-but-invalid CORS_ENABLED must be a config error,
+        // not silently treated the same as "unset" (which would default
+        // to true) — this is exactly what plain `.ok()` would get wrong.
+        let bad = std::ffi::OsString::from_vec(vec![0x66, 0xff, 0x6f]);
+        let err = cors_enabled_env_value(Err(env::VarError::NotUnicode(bad))).unwrap_err();
+        assert!(err.to_string().contains("CORS_ENABLED"));
+    }
+
+    #[test]
+    fn parse_cors_enabled_defaults_to_true_when_unset() {
+        assert_eq!(parse_cors_enabled(None).unwrap(), true);
+    }
+
+    #[test]
+    fn parse_cors_enabled_parses_false() {
+        assert_eq!(parse_cors_enabled(Some("false".to_string())).unwrap(), false);
+    }
+
+    #[test]
+    fn parse_cors_enabled_is_case_insensitive() {
+        assert_eq!(parse_cors_enabled(Some("TRUE".to_string())).unwrap(), true);
+        assert_eq!(parse_cors_enabled(Some("False".to_string())).unwrap(), false);
+    }
+
+    #[test]
+    fn parse_cors_enabled_rejects_invalid_value() {
+        let err = parse_cors_enabled(Some("bogus".to_string())).unwrap_err();
+        assert!(err.to_string().contains("CORS_ENABLED"));
     }
 }

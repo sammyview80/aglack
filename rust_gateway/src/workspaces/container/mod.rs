@@ -115,4 +115,12 @@ pub trait ContainerLauncher: Send + Sync {
     /// mappings across a stop/start cycle).
     async fn start_existing(&self, container_name: &str)
         -> Result<(), super::CreateWorkspaceError>;
+
+    /// Cheap, real liveness check for the Docker daemon itself (not any
+    /// one container) — used by `daemon_watch.rs` to detect a down→up
+    /// transition (e.g. Docker Desktop was killed, then reopened) and
+    /// trigger starting workspace containers back up. On the trait (not a
+    /// free function) so `FakeLauncher` can simulate a daemon outage in
+    /// tests without ever running a real `docker` command.
+    async fn daemon_reachable(&self) -> bool;
 }

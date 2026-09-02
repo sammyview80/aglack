@@ -12,7 +12,7 @@ from the filesystem) rather than any feature's own `FeatureError` subclass
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def load_profile_config(config_path: Path) -> dict[str, Any]:
@@ -43,3 +43,15 @@ def save_profile_config(config_path: Path, config: dict[str, Any]) -> None:
     import yaml
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+
+def mutate_profile_config(config_path: Path, mutator: Callable[[dict], None]) -> dict:
+    """Load `config_path`, apply `mutator` in place, save it back, and
+    return the resulting mapping. Propagates `load_profile_config`'s
+    `ValueError`/`save_profile_config`'s `OSError` unchanged — each caller
+    keeps translating those to its own `FeatureError` code/message at the
+    call site, only the load/mutate/save mechanics live here."""
+    config = load_profile_config(config_path)
+    mutator(config)
+    save_profile_config(config_path, config)
+    return config

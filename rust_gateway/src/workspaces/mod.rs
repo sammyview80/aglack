@@ -11,28 +11,24 @@
 //! file) wires store + container together behind the public
 //! `create_workspace` entry point the HTTP route calls.
 
-mod agent_history_proxy;
-mod agent_seeder_proxy;
-mod chat_proxy;
 pub(crate) mod container;
-mod desktop_proxy;
+pub(crate) mod daemon_watch;
 pub(crate) mod diagnosis;
-mod hermes_webui_proxy;
-mod onboarding_proxy;
+mod proxy;
 pub(crate) mod resolve;
 pub(crate) mod route;
 mod store;
 #[cfg(test)]
 pub(crate) mod test_support;
-mod wrapper_prefix_proxy;
 
-pub use agent_history_proxy::{agent_history_proxy_route_root, agent_history_proxy_route_with_path};
-pub use agent_seeder_proxy::{agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path};
-pub use chat_proxy::{chat_proxy_route_root, chat_proxy_route_with_path};
 pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};
-pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
-pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
-pub use onboarding_proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
+pub use daemon_watch::{run as run_daemon_watch, DEFAULT_POLL_INTERVAL};
+pub use proxy::{agent_history_proxy_route_root, agent_history_proxy_route_with_path};
+pub use proxy::{agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path};
+pub use proxy::{chat_proxy_route_root, chat_proxy_route_with_path};
+pub use proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
+pub use proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
+pub use proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
 pub use route::{
     create_workspace_route, delete_workspace_route, diagnose_workspace_route,
     list_workspaces_route, WorkspacesState,
@@ -101,34 +97,86 @@ pub async fn delete_workspace(
     Ok(Some(record))
 }
 
+/// How many times `launch_and_record` retries a failing `launch()` call,
+/// and how long it waits between attempts, before giving up and marking
+/// the row `Failed`. A transient Docker error (daemon momentarily busy,
+/// a port picked in `pick_free_port`'s documented TOCTOU window losing
+/// its race, a slow image pull) is common enough that failing the whole
+/// workspace creation on the FIRST such error is needlessly strict — the
+/// exact same class of retry `../../docs/diagnose-workspace-plan.md`
+/// already accepts as normal for a running container's stop/start cycle.
+/// Kept as a plain constant (not env-configurable), matching
+/// `DiagnosisTimeouts::production()`'s own "real values baked in, no
+/// config sprawl for an internal reliability knob" convention.
+struct LaunchRetryPolicy {
+    max_attempts: u32,
+    base_delay: std::time::Duration,
+}
+
+impl LaunchRetryPolicy {
+    fn production() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay: std::time::Duration::from_millis(200),
+        }
+    }
+
+    /// Exponential backoff: 200ms, 400ms, 800ms, ... — `attempt` is
+    /// 0-based (the delay BEFORE the (attempt+1)-th retry, so attempt 0
+    /// is the wait before the first retry after the initial try).
+    fn delay_for(&self, attempt: u32) -> std::time::Duration {
+        self.base_delay * 2u32.saturating_pow(attempt)
+    }
+}
+
 /// Actually launch a container for an already-claimed `workspace_id` and
-/// record the outcome. On failure, the row is marked `Failed` (not left at
-/// `Creating`) so the NEXT call with this same key knows to retry rather
-/// than treat the row as still-in-progress-forever.
+/// record the outcome. Retries a failing `launch()` with exponential
+/// backoff (see `LaunchRetryPolicy`) before giving up. On final failure,
+/// the row is marked `Failed` (not left at `Creating`) so the NEXT call
+/// with this same key knows to retry rather than treat the row as
+/// still-in-progress-forever.
 async fn launch_and_record(
     store: &WorkspaceStore,
     launcher: &dyn ContainerLauncher,
     idempotency_key: &str,
     workspace_id: &str,
 ) -> Result<WorkspaceRecord, CreateWorkspaceError> {
-    match launcher.launch(workspace_id).await {
-        Ok(launched) => Ok(store
-            .mark_ready(
-                idempotency_key,
-                &launched.container_name,
-                launched.wrapper_port,
-                launched.desktop_port,
-            )
-            .await?),
-        Err(launch_err) => {
-            // Best-effort: if marking the failure itself fails, the row
-            // stays at `Creating` and a future retry will attempt the
-            // launch again anyway (safe, if slightly redundant) — the
-            // original launch error is what the caller sees either way.
-            let _ = store.mark_failed(idempotency_key).await;
-            Err(launch_err)
+    let policy = LaunchRetryPolicy::production();
+    let mut attempt = 0u32;
+    let last_err = loop {
+        match launcher.launch(workspace_id).await {
+            Ok(launched) => {
+                return Ok(store
+                    .mark_ready(
+                        idempotency_key,
+                        &launched.container_name,
+                        launched.wrapper_port,
+                        launched.desktop_port,
+                    )
+                    .await?)
+            }
+            Err(launch_err) => {
+                attempt += 1;
+                if attempt >= policy.max_attempts {
+                    break launch_err;
+                }
+                eprintln!(
+                    "rust_gateway: launch attempt {attempt}/{} failed for workspace \
+                     {workspace_id:?} ({launch_err}); retrying in {:?}",
+                    policy.max_attempts,
+                    policy.delay_for(attempt - 1)
+                );
+                tokio::time::sleep(policy.delay_for(attempt - 1)).await;
+            }
         }
-    }
+    };
+
+    // Best-effort: if marking the failure itself fails, the row stays at
+    // `Creating` and a future retry will attempt the launch again anyway
+    // (safe, if slightly redundant) — the original launch error is what
+    // the caller sees either way.
+    let _ = store.mark_failed(idempotency_key).await;
+    Err(last_err)
 }
 
 #[derive(Debug)]
@@ -200,15 +248,18 @@ mod tests {
     #[tokio::test]
     async fn a_key_whose_launch_failed_is_retried_on_the_next_call_with_the_same_key() {
         let store = temp_store().await;
-        // First call's launch fails (simulating a transient Docker error);
-        // the second call must retry the SAME workspace_id, not return the
-        // permanently-stuck "creating" row from the first attempt.
-        let launcher = FakeLauncher::that_fails_first(1);
+        // Exceeds `LaunchRetryPolicy::production()`'s 3 in-call attempts,
+        // so the first `create_workspace` call genuinely exhausts its own
+        // retries and returns Err; the second call must then retry the
+        // SAME workspace_id, not return the permanently-stuck "creating"
+        // row from the first attempt.
+        let launcher = FakeLauncher::that_fails_first(3);
 
         let first_attempt = create_workspace(&store, &launcher, "key-a").await;
         assert!(
             first_attempt.is_err(),
-            "first attempt should fail (simulated launch failure)"
+            "first attempt should fail after exhausting in-call retries \
+             (simulated launch failure)"
         );
 
         let retry = create_workspace(&store, &launcher, "key-a")
@@ -222,9 +273,56 @@ mod tests {
         );
         assert_eq!(
             launcher.launch_count(),
+            4,
+            "3 in-call attempts (all failing) + 1 more on the cross-call retry \
+             (finally succeeding)"
+        );
+    }
+
+    /// Proves `launch_and_record`'s own in-call backoff retry: a launch
+    /// that fails once (fewer times than `LaunchRetryPolicy::production()`'s
+    /// 3 attempts) must be silently absorbed WITHIN a single
+    /// `create_workspace` call — the caller sees a success, never an
+    /// error, and the row never passes through `Failed`. This is the
+    /// behavior that did not exist before this test: previously ANY
+    /// single `launch()` failure failed the whole call (see the test
+    /// above, which now exists specifically to prove the cross-call retry
+    /// path still works once in-call retries are exhausted).
+    #[tokio::test]
+    async fn a_transient_launch_failure_is_retried_within_the_same_call() {
+        let store = temp_store().await;
+        let launcher = FakeLauncher::that_fails_first(1);
+
+        let result = create_workspace(&store, &launcher, "key-a")
+            .await
+            .expect("a single transient failure must be retried away within one call");
+
+        assert!(result.container_name.is_some());
+        assert_eq!(
+            launcher.launch_count(),
             2,
-            "the retry must call launch() again — the first call's failure must not \
-             be treated as a completed idempotent result"
+            "1 failing attempt + 1 retry, both inside the same create_workspace call"
+        );
+        assert_eq!(
+            result.status,
+            store
+                .find("key-a")
+                .await
+                .expect("lookup succeeds")
+                .expect("row exists")
+                .status,
+            "sanity: the returned record matches what is actually stored"
+        );
+        assert_eq!(
+            store
+                .find("key-a")
+                .await
+                .expect("lookup succeeds")
+                .expect("row exists")
+                .status,
+            crate::workspaces::WorkspaceStatus::Ready,
+            "the row must never have been marked Failed — the retry absorbed the \
+             failure before create_workspace's caller ever saw one"
         );
     }
 
@@ -280,7 +378,11 @@ mod tests {
     #[tokio::test]
     async fn delete_failed_workspace_with_no_container_skips_remove() {
         let store = temp_store().await;
-        let launcher = FakeLauncher::that_fails_first(1);
+        // Exceeds LaunchRetryPolicy::production()'s 3 in-call attempts so
+        // the launch genuinely never succeeds (no container ever exists),
+        // matching this test's premise — a fewer-than-3 failure count
+        // would now be silently absorbed by in-call retry instead.
+        let launcher = FakeLauncher::that_fails_first(3);
         let _ = create_workspace(&store, &launcher, "failed-key").await;
         let failed = store
             .find("failed-key")

@@ -1,0 +1,117 @@
+/* Hermes web UI markdown styling — scoped to chat bubbles (.chat-markdown). */
+.chat-markdown {
+  --chat-md-font-mono: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  --chat-md-code-bg: #111210;
+  --chat-md-code-inline-bg: rgba(255, 255, 255, 0.08);
+  --chat-md-code-text: #f1f0ea;
+  --chat-md-pre-text: #ecebe4;
+  --chat-md-border: rgba(255, 255, 255, 0.1);
+  --chat-md-header-bg: #1a1a18;
+  --chat-md-muted: #9a9aa3;
+  --chat-md-em: #c0c0c0;
+  --chat-md-strong: #fff;
+  --chat-md-link: #4dd0e1;
+  --chat-md-table-head: rgba(255, 255, 255, 0.07);
+  --chat-md-table-row: rgba(255, 255, 255, 0.03);
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  font-size: inherit;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+html[data-theme='light'] .threads-app .chat-markdown {
+  --chat-md-code-bg: #f3f3f3;
+  --chat-md-code-inline-bg: rgba(0, 0, 0, 0.06);
+  --chat-md-code-text: #8b4513;
+  --chat-md-pre-text: #252523;
+  --chat-md-border: rgba(0, 0, 0, 0.1);
+  --chat-md-header-bg: #ececec;
+  --chat-md-muted: #77777e;
+  --chat-md-em: #5c5344;
+  --chat-md-strong: #0f0d08;
+  --chat-md-link: #0288a8;
+  --chat-md-table-head: rgba(0, 0, 0, 0.04);
+  --chat-md-table-row: rgba(0, 0, 0, 0.02);
+}
+
+.chat-markdown[data-tone='outgoing'],
+.chat-markdown[data-tone='error'] {
+  --chat-md-code-bg: rgba(0, 0, 0, 0.28);
+  --chat-md-code-inline-bg: rgba(255, 255, 255, 0.15);
+  --chat-md-code-text: #fff;
+  --chat-md-pre-text: #ecebe4;
+  --chat-md-border: rgba(255, 255, 255, 0.18);
+  --chat-md-header-bg: rgba(0, 0, 0, 0.22);
+  --chat-md-muted: rgba(255, 255, 255, 0.75);
+  --chat-md-em: rgba(255, 255, 255, 0.85);
+  --chat-md-strong: #fff;
+  --chat-md-link: #fff;
+  --chat-md-table-head: rgba(255, 255, 255, 0.12);
+  --chat-md-table-row: rgba(255, 255, 255, 0.06);
+}
+
+.chat-markdown p { margin: 0 0 10px; color: inherit; }
+.chat-markdown p:last-child { margin-bottom: 0; }
+.chat-markdown h1,.chat-markdown h2,.chat-markdown h3,.chat-markdown h4,.chat-markdown h5,.chat-markdown h6 { font-weight: 700; color: var(--chat-md-strong); line-height: 1.3; letter-spacing: -0.01em; }
+.chat-markdown > h1:first-child,.chat-markdown > h2:first-child,.chat-markdown > h3:first-child,.chat-markdown > h4:first-child,.chat-markdown > h5:first-child,.chat-markdown > h6:first-child { margin-top: 0; }
+.chat-markdown h1 { font-size: 24px; margin: 24px 0 12px; border-bottom: 1px solid var(--chat-md-border); padding-bottom: 6px; }
+.chat-markdown h2 { font-size: 20px; margin: 22px 0 10px; border-bottom: 1px solid var(--chat-md-border); padding-bottom: 4px; }
+.chat-markdown h3 { font-size: 17px; margin: 20px 0 8px; }
+.chat-markdown h4 { font-size: 15px; margin: 18px 0 8px; }
+.chat-markdown h5 { font-size: 14px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+.chat-markdown h6 { font-size: 13px; margin: 14px 0 6px; color: var(--chat-md-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.chat-markdown ul,.chat-markdown ol { margin: 6px 0 10px; padding-left: 20px; }
+.chat-markdown ul { list-style: disc; }
+.chat-markdown ol { list-style: decimal; }
+.chat-markdown li { margin-bottom: 3px; }
+.chat-markdown li > p { margin: 0; }
+.chat-markdown strong { color: var(--chat-md-strong); font-weight: 600; letter-spacing: -0.015em; }
+.chat-markdown em { color: var(--chat-md-em); font-style: italic; }
+.chat-markdown a,
+.threads-app .chat-markdown a {
+  color: var(--chat-md-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  background: none;
+  padding: 0;
+}
+.chat-markdown a:hover,
+.threads-app .chat-markdown a:hover {
+  color: var(--chat-md-link);
+  text-decoration: underline;
+}
+.chat-markdown blockquote { border-left: 3px solid var(--chat-md-link); padding-left: 14px; color: var(--chat-md-muted); font-style: italic; margin: 10px 0; }
+.chat-markdown hr { border: none; border-top: 1px solid var(--chat-md-border); margin: 14px 0; }
+.chat-markdown .chat-md-inline { font-family: var(--chat-md-font-mono); font-size: 0.9em; background: var(--chat-md-code-inline-bg); color: var(--chat-md-code-text); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; word-break: break-word; }
+.chat-markdown .chat-md-code-wrap { margin: 10px 0; max-width: 100%; }
+.chat-markdown .chat-md-pre-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 16px; font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--chat-md-muted); background: var(--chat-md-header-bg); border: 1px solid var(--chat-md-border); border-bottom: 0; border-radius: 10px 10px 0 0; }
+.chat-markdown .chat-md-pre-header::before { content: ''; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--chat-md-muted); opacity: 0.4; }
+.chat-markdown .chat-md-pre-label { flex: 1 1 auto; min-width: 0; }
+.chat-markdown .chat-md-copy-btn { flex: 0 0 auto; border: 1px solid var(--chat-md-border); border-radius: 4px; background: rgba(255, 255, 255, 0.06); color: var(--chat-md-muted); font-size: 11px; line-height: 1.3; padding: 2px 6px; cursor: pointer; transition: background-color 0.15s ease, color 0.15s ease; }
+.chat-markdown .chat-md-copy-btn:hover { background: rgba(255, 255, 255, 0.12); color: var(--chat-md-strong); }
+.chat-markdown .chat-md-pre { margin: 0; padding: 14px 16px; overflow-x: auto; border: 1px solid var(--chat-md-border); border-top: 1px solid var(--chat-md-border); border-radius: 0 0 10px 10px; background: var(--chat-md-code-bg) !important; }
+.chat-markdown .chat-md-pre-header + .chat-md-pre { border-top: none; margin-top: 0; }
+.chat-markdown .chat-md-pre[class*='language-'], .chat-markdown .chat-md-pre code[class*='language-'] { background: var(--chat-md-code-bg) !important; }
+.chat-markdown .chat-md-pre code.language-yaml .token { white-space: pre !important; }
+.chat-markdown .chat-md-pre code { display: block; background: none !important; padding: 0; border-radius: 0; color: var(--chat-md-pre-text); font-family: var(--chat-md-font-mono); font-size: 0.86em; line-height: 1.6; white-space: pre; }
+.chat-markdown .token.comment,.chat-markdown .token.prolog,.chat-markdown .token.doctype,.chat-markdown .token.cdata { color: #8b949e; font-style: italic; }
+.chat-markdown .token.punctuation { color: #c9d1d9; }
+.chat-markdown .token.property,.chat-markdown .token.tag,.chat-markdown .token.boolean,.chat-markdown .token.number,.chat-markdown .token.constant,.chat-markdown .token.symbol,.chat-markdown .token.deleted { color: #79c0ff; }
+.chat-markdown .token.selector,.chat-markdown .token.attr-name,.chat-markdown .token.string,.chat-markdown .token.char,.chat-markdown .token.builtin,.chat-markdown .token.inserted { color: #7ee787; }
+.chat-markdown .token.operator,.chat-markdown .token.entity,.chat-markdown .token.url,.chat-markdown .language-css .token.string,.chat-markdown .style .token.string { color: #d2a8ff; }
+.chat-markdown .token.atrule,.chat-markdown .token.attr-value,.chat-markdown .token.keyword { color: #ff7b72; }
+.chat-markdown .token.function,.chat-markdown .token.class-name { color: #d2a8ff; }
+.chat-markdown .token.regex,.chat-markdown .token.important,.chat-markdown .token.variable { color: #ffa657; }
+html[data-theme='light'] .threads-app .chat-markdown .token.comment,html[data-theme='light'] .threads-app .chat-markdown .token.prolog,html[data-theme='light'] .threads-app .chat-markdown .token.doctype,html[data-theme='light'] .threads-app .chat-markdown .token.cdata { color: #7a7060; }
+html[data-theme='light'] .threads-app .chat-markdown .token.string,html[data-theme='light'] .threads-app .chat-markdown .token.char,html[data-theme='light'] .threads-app .chat-markdown .token.builtin,html[data-theme='light'] .threads-app .chat-markdown .token.inserted { color: #276b30; }
+html[data-theme='light'] .threads-app .chat-markdown .token.atrule,html[data-theme='light'] .threads-app .chat-markdown .token.attr-value,html[data-theme='light'] .threads-app .chat-markdown .token.keyword { color: #2d6fa3; }
+html[data-theme='light'] .threads-app .chat-markdown .token.function,html[data-theme='light'] .threads-app .chat-markdown .token.class-name { color: #7a3a00; }
+.chat-markdown table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.86em; display: block; max-width: 100%; overflow-x: auto; }
+.chat-markdown th { background: var(--chat-md-table-head); padding: 6px 10px; text-align: left; font-weight: 600; border: 1px solid var(--chat-md-border); }
+.chat-markdown td { padding: 5px 10px; border: 1px solid var(--chat-md-border); }
+.chat-markdown tr:nth-child(even) { background: var(--chat-md-table-row); }
+.chat-markdown td p,.chat-markdown th p { margin: 0; }

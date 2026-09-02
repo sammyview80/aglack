@@ -58,6 +58,50 @@ def test_list_agents_returns_created_profile(client: TestClient) -> None:
     assert "history-agent-one" in names
 
 
+def test_list_agents_reports_is_working_false_by_default(client: TestClient) -> None:
+    _create_profile(client, "history-agent-idle")
+    _make_session("history-agent-idle")
+
+    response = client.get("/api/wrapper/v1/agent-history/agents")
+
+    assert response.status_code == 200
+    agents_by_name = {a["name"]: a for a in response.json()["data"]["agents"]}
+    assert agents_by_name["history-agent-idle"]["is_working"] is False
+
+
+def test_list_agents_reports_is_working_true_for_a_streaming_session(
+    client: TestClient,
+) -> None:
+    """Sidebar busy-dot signal — the whole point of the `is_working` field
+    added to `list_agents()`. Simulates a real in-flight turn the same way
+    upstream itself detects one: a session with `active_stream_id` set,
+    plus that same stream id present in the live `STREAMS` registry (see
+    `_active_stream_ids()`/`_is_streaming_session()` in
+    `api/models.py`) — not a fake/synthetic flag on the wrapper side."""
+    from api.config import STREAMS, STREAMS_LOCK
+
+    _create_profile(client, "history-agent-busy")
+    _create_profile(client, "history-agent-idle-sibling")
+    stream_id = "test-stream-history-agent-busy"
+    session = _make_session("history-agent-busy")
+    session.active_stream_id = stream_id
+    session.save()
+    _make_session("history-agent-idle-sibling")
+
+    with STREAMS_LOCK:
+        STREAMS[stream_id] = object()
+    try:
+        response = client.get("/api/wrapper/v1/agent-history/agents")
+    finally:
+        with STREAMS_LOCK:
+            STREAMS.pop(stream_id, None)
+
+    assert response.status_code == 200
+    agents_by_name = {a["name"]: a for a in response.json()["data"]["agents"]}
+    assert agents_by_name["history-agent-busy"]["is_working"] is True
+    assert agents_by_name["history-agent-idle-sibling"]["is_working"] is False
+
+
 def test_list_sessions_isolates_by_profile(client: TestClient) -> None:
     _create_profile(client, "history-agent-a")
     _create_profile(client, "history-agent-b")
@@ -158,6 +202,101 @@ def test_messages_returns_projected_messages_for_valid_session(client: TestClien
         {"role": "user", "content": "hello", "timestamp": 1.0},
         {"role": "assistant", "content": "hi there", "timestamp": 2.0},
     ]
+
+
+def test_messages_projects_attachments_when_present(client: TestClient) -> None:
+    """Upstream persists `attachments` on a user message dict verbatim
+    (`user_msg["attachments"] = list(attachments)`,
+    `backend/upstream/api/routes.py:22499`, using the normalized shape from
+    `_normalize_chat_attachments`, `backend/upstream/api/routes.py:24368`).
+    Before this test's fix, `list_messages`'s projection dropped the key
+    entirely — a chat turn sent WITH a real file attached would come back
+    from history with the file invisible, even though upstream never lost
+    it. Assert the projection carries it through, keyed exactly like the
+    normalized upload record, and that a message with no `attachments` key
+    at all gets no key back (not an empty list) so the frontend can tell
+    "never had attachments" apart from "attachments list is empty"."""
+    _create_profile(client, "history-agent-attachments")
+    session = _make_session(
+        "history-agent-attachments",
+        messages=[
+            {
+                "role": "user",
+                "content": "check this out",
+                "timestamp": 1.0,
+                "attachments": [
+                    {"name": "a.png", "path": "/state/attachments/s1/a.png", "mime": "image/png", "size": 42, "is_image": True},
+                    {"name": "b.pdf", "path": "/state/attachments/s1/b.pdf", "mime": "application/pdf", "is_image": False},
+                ],
+            },
+            {"role": "assistant", "content": "nice image", "timestamp": 2.0},
+        ],
+    )
+
+    response = client.get(
+        f"/api/wrapper/v1/agent-history/agents/history-agent-attachments/sessions/{session.session_id}/messages"
+    )
+
+    assert response.status_code == 200
+    messages = response.json()["data"]["messages"]
+    assert messages[0]["attachments"] == [
+        {"name": "a.png", "path": "/state/attachments/s1/a.png", "mime": "image/png", "size": 42, "is_image": True},
+        {"name": "b.pdf", "path": "/state/attachments/s1/b.pdf", "mime": "application/pdf", "is_image": False},
+    ]
+    assert "attachments" not in messages[1]
+
+
+def test_messages_with_no_params_returns_newest_page(client: TestClient) -> None:
+    """No real frontend call site ever sends limit/offset. Without an
+    explicit offset, the default page must be the newest DEFAULT_LIMIT
+    messages (the live tail), still chronological, not the oldest page."""
+    from hermes_webui_wrapper.features.agent_history.service import DEFAULT_LIMIT
+
+    _create_profile(client, "history-agent-tail")
+    total = DEFAULT_LIMIT + 56
+    messages = [
+        {"role": "user", "content": f"msg-{i}", "timestamp": float(i)}
+        for i in range(total)
+    ]
+    session = _make_session("history-agent-tail", messages=messages)
+
+    response = client.get(
+        f"/api/wrapper/v1/agent-history/agents/history-agent-tail/sessions/{session.session_id}/messages"
+    )
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["total"] == total
+    assert len(body["messages"]) == DEFAULT_LIMIT
+    expected_contents = [f"msg-{i}" for i in range(total - DEFAULT_LIMIT, total)]
+    assert [m["content"] for m in body["messages"]] == expected_contents
+    assert body["offset"] == total - DEFAULT_LIMIT
+
+
+def test_messages_with_explicit_offset_zero_returns_oldest_page(client: TestClient) -> None:
+    """Contract for a future 'load older messages' UI: an explicit
+    offset=0 must still mean from-the-start, unaffected by the no-params
+    tail default."""
+    from hermes_webui_wrapper.features.agent_history.service import DEFAULT_LIMIT
+
+    _create_profile(client, "history-agent-explicit-zero")
+    total = DEFAULT_LIMIT + 56
+    messages = [
+        {"role": "user", "content": f"msg-{i}", "timestamp": float(i)}
+        for i in range(total)
+    ]
+    session = _make_session("history-agent-explicit-zero", messages=messages)
+
+    response = client.get(
+        f"/api/wrapper/v1/agent-history/agents/history-agent-explicit-zero/sessions/{session.session_id}/messages",
+        params={"offset": 0},
+    )
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["offset"] == 0
+    expected_contents = [f"msg-{i}" for i in range(DEFAULT_LIMIT)]
+    assert [m["content"] for m in body["messages"]] == expected_contents
 
 
 def test_messages_404s_for_session_owned_by_different_agent(client: TestClient) -> None:

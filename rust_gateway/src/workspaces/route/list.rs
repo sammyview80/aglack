@@ -363,7 +363,9 @@ mod tests {
     async fn list_workspaces_reports_healthy_false_for_creating_and_failed_rows() {
         let state = state_with_store(
             temp_store().await,
-            Arc::new(FakeLauncher::that_fails_first(1)),
+            // Exceeds LaunchRetryPolicy::production()'s 3 in-call attempts so
+            // the launch genuinely never succeeds within the first call.
+            Arc::new(FakeLauncher::that_fails_first(3)),
         );
         // First attempt fails -> row is `Failed`.
         let _ = create_workspace_route(

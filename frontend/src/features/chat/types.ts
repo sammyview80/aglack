@@ -12,6 +12,13 @@
 export type ChatSession = {
   sessionId: string
   profile?: string
+  /** The model this session actually got created with — echoes back
+   * `POST /api/session/new`'s own `model`/`model_provider` response
+   * fields. `null` when the server fell back to the profile default
+   * (no explicit model was requested at creation, or the request left
+   * it unset). See `api.ts`'s `createSession` doc comment. */
+  model?: string | null
+  modelProvider?: string | null
 }
 
 export type StartTurnResult = {
@@ -54,6 +61,20 @@ export type ToolActivity = {
   preview?: string
   isError?: boolean
   complete: boolean
+}
+
+/** Result of `POST /api/upload` (see `api.ts`'s `uploadAttachment`) — the
+ * shape `/api/chat/start`'s `attachments` array expects per-item
+ * (`_normalize_chat_attachments` in `backend/upstream/api/routes.py`
+ * accepts exactly `{name,path,mime,size?,is_image?}`). This is a real
+ * server-side upload result (the file's bytes already landed in the
+ * session's attachment inbox at `path`) — never a client-only file name. */
+export type ChatAttachment = {
+  name: string
+  path: string
+  mime: string
+  size?: number
+  isImage?: boolean
 }
 
 export type ChatTerminalState = 'idle' | 'streaming' | 'done' | 'cancelled' | 'error'

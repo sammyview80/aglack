@@ -1,5 +1,5 @@
 import { act } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
@@ -15,7 +15,17 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-mockedApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
+// This panel prefetches the newest session's messages on hover/list-load
+// (feeds the real chat pane's cache — see agent-history-panel.tsx's own
+// comment on the prefetch effect) even though it never renders a
+// transcript itself. Give the mock a benign default so that prefetch
+// never produces an unhandled "Query data cannot be undefined" warning
+// in tests that don't care about it. beforeEach, not a one-time top-level
+// call: afterEach's clearAllMocks wipes this too, and it must survive
+// every single test, not just the first.
+beforeEach(() => {
+  mockedApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
+})
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -27,7 +37,7 @@ function deferred<T>() {
 
 describe('AgentHistoryPanel fetch gating', () => {
   it('does not fetch agents while the panel is closed', () => {
-    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     renderWithClient(<AgentHistoryPanel workspaceId="ws-1" open={false} />)
 
     expect(mockedApi.listAgents).not.toHaveBeenCalled()
@@ -36,7 +46,7 @@ describe('AgentHistoryPanel fetch gating', () => {
   })
 
   it('fetches agents once the panel opens', async () => {
-    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     renderWithClient(<AgentHistoryPanel workspaceId="ws-1" open={true} />)
 
     await waitFor(() => expect(mockedApi.listAgents).toHaveBeenCalledTimes(1))
@@ -47,7 +57,7 @@ describe('AgentHistoryPanel agent switching', () => {
   it('never shows the previous agent sessions while the new agent is still loading', async () => {
     const user = userEvent.setup()
     mockedApi.listAgents.mockResolvedValue({
-      agents: [{ name: 'agent-a' }, { name: 'agent-b' }],
+      agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }],
     })
 
     const sessionsA = {
@@ -91,9 +101,62 @@ describe('AgentHistoryPanel agent switching', () => {
   })
 })
 
+describe('AgentHistoryPanel onSelectSession', () => {
+  it('fires onSelectSession with the exact agent and session clicked, and stays on the sessions list', async () => {
+    const user = userEvent.setup()
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
+    const session = {
+      sessionId: 'sess-1',
+      title: 'Clicked session',
+      messageCount: 3,
+      updatedAt: 1,
+      lastMessageAt: 1,
+    }
+    mockedApi.listAgentSessions.mockResolvedValue({ sessions: [session], limit: 50, offset: 0 })
+    const onSelectSession = vi.fn()
+
+    renderWithClient(<AgentHistoryPanel workspaceId="ws-1" open={true} onSelectSession={onSelectSession} />)
+
+    await screen.findByLabelText('agent-a')
+    await user.click(screen.getByLabelText('agent-a'))
+    await screen.findByText('Clicked session')
+    await user.click(screen.getByText('Clicked session'))
+
+    expect(onSelectSession).toHaveBeenCalledWith('agent-a', session)
+    // This panel is sessions-list-only now — it never has its own separate
+    // transcript view to navigate into (a real chat pane elsewhere owns
+    // that). The clicked session's row must still be right there — no
+    // "messages" view ever replaces this list.
+    expect(screen.getByText('Clicked session')).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: /messages/i })).not.toBeInTheDocument()
+  })
+
+  it('never navigates to a transcript view itself, even without onSelectSession wired', async () => {
+    const user = userEvent.setup()
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
+    mockedApi.listAgentSessions.mockResolvedValue({
+      sessions: [{ sessionId: 'sess-1', title: 'No callback wired', messageCount: 1, updatedAt: 1, lastMessageAt: 1 }],
+      limit: 50,
+      offset: 0,
+    })
+
+    renderWithClient(<AgentHistoryPanel workspaceId="ws-1" open={true} />)
+
+    await screen.findByLabelText('agent-a')
+    await user.click(screen.getByLabelText('agent-a'))
+    await screen.findByText('No callback wired')
+    await user.click(screen.getByText('No callback wired'))
+
+    // The click stays on the sessions list — no crash, no navigation, no
+    // separate transcript view, even with no callback to report to.
+    expect(screen.getByText('No callback wired')).toBeInTheDocument()
+    expect(screen.getByLabelText('Back to agents')).toBeInTheDocument()
+  })
+})
+
 describe('AgentHistoryPanel skeleton behavior', () => {
   it('shows a skeleton only on first load, not on a refetch that keeps prior content', async () => {
-    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedApi.listAgentSessions.mockResolvedValue({
       sessions: [
         { sessionId: 's-1', title: 'First session', messageCount: 1, updatedAt: 1, lastMessageAt: 1 },
@@ -116,8 +179,8 @@ describe('AgentHistoryPanel skeleton behavior', () => {
 
     // A refetch must not rip the already-rendered session out for a skeleton.
     expect(screen.getByText('First session')).toBeInTheDocument()
-    const history = screen.getByText('First session').closest('.audience-history')
-    expect(within(history as HTMLElement).queryAllByRole('listitem').length).toBeGreaterThan(0)
+    const history = screen.getByTestId('audience-history')
+    expect(within(history).queryAllByRole('listitem').length).toBeGreaterThan(0)
   })
 
   it('renders a skeleton during the initial pending fetch', () => {
