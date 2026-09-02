@@ -208,12 +208,10 @@ html[data-theme="dark"] .threads-app,.dark .threads-app{
 .threads-app .audience-session-item:hover{background:var(--th-hover)}
 .threads-app .audience-session-title{color:var(--th-text);font-size:13.5px;font-weight:600}
 .threads-app .audience-session-meta{color:var(--th-muted);font-size:12px}
-.threads-app .chat-agent-picker{display:flex;align-items:center;gap:6px;padding:0;background:transparent;color:var(--th-muted);font-size:14px;font-weight:650}
-.threads-app .chat-agent-picker:disabled{opacity:.5}
-.threads-app .meta-line{position:relative}
-.threads-app .chat-agent-menu{position:absolute;top:100%;left:0;z-index:5;margin-top:6px;min-width:140px;padding:6px;border-radius:8px;border:1px solid var(--th-line);background:var(--th-card);box-shadow:0 8px 24px #1f1f2824}
-.threads-app .chat-agent-menu button{width:100%;padding:6px 8px;border-radius:6px;text-align:left;color:var(--th-text);font-size:14px}
-.threads-app .chat-agent-menu button:hover{background:var(--th-hover)}
+.threads-app .chat-header-row{align-items:center;gap:12px}
+.threads-app .chat-new-button{display:flex;align-items:center;gap:6px;margin-left:auto;padding:8px 14px;border-radius:8px;border:1px solid var(--th-line);background:transparent;color:var(--th-text);font-size:13px;font-weight:650;transition:background .15s}
+.threads-app .chat-new-button:hover:not(:disabled){background:var(--th-hover)}
+.threads-app .chat-new-button:disabled{opacity:.5;cursor:default}
 .threads-app .chat-message-error{color:#d1435b}
 .threads-app .chat-reasoning{margin:5px 0;color:var(--th-muted);font-size:14px;font-style:italic}
 .threads-app .thinking-card{margin:6px 0;border:1px solid var(--th-line);border-radius:8px;background:var(--th-search);overflow:hidden}
