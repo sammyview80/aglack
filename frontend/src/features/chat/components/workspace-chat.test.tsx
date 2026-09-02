@@ -82,9 +82,9 @@ describe('WorkspaceChat agent + sessionStorage selection', () => {
     mockedChatApi.createSession.mockResolvedValue({ sessionId: 'auto-session' })
     mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
 
-    renderChat('/workspaces/ws-1/chat')
+    const { router } = renderChat('/workspaces/ws-1/chat')
 
-    await waitFor(() => expect(screen.getByText('agent-a')).toBeInTheDocument())
+    await waitFor(() => expect(router.state.location.search).toContain('agent=agent-a'))
   })
 
   it('shows the new-chat empty state when the agent has no sessionStorage entry', async () => {
@@ -211,7 +211,7 @@ describe('WorkspaceChat model pick before any session exists (real bug report)',
   // session yet, then sending the first message, must carry that pick
   // into createSession — this is the exact "add model + new chat failed"
   // report this test guards against regressing again.
-  it('renders CHAT above CHANNELS in the sidebar', async () => {
+  it('renders CHANNELS above CHAT in the sidebar', async () => {
     mockedAgentHistoryApi.listAgents.mockResolvedValue({
       agents: [{ name: 'agent-a', isWorking: false }],
     })
@@ -221,7 +221,7 @@ describe('WorkspaceChat model pick before any session exists (real bug report)',
 
     const chat = await screen.findByTestId('sidebar-chat-section')
     const channels = screen.getByText('CHANNELS')
-    expect(chat.compareDocumentPosition(channels) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(channels.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
   })
 
   it('a model picked with no session yet rides along with the session created by the first send', async () => {

@@ -1,13 +1,13 @@
 /** Tailwind class strings for the Threads shell (--th-* tokens on `.threads-app`). */
 export const threadsUi = {
   root:
-    'threads-app flex h-dvh min-h-dvh items-stretch justify-stretch overflow-hidden bg-[var(--th-backdrop)] p-0 text-[var(--th-text)] max-[760px]:p-0',
+    'threads-app flex h-dvh min-h-dvh items-stretch justify-stretch overflow-hidden bg-[var(--th-window)] p-0 text-[var(--th-text)]',
 
   appWindow:
-    'grid h-full min-h-0 w-full grid-cols-[72px_317px_minmax(560px,1fr)_327px] overflow-hidden rounded-[21px] border border-[var(--th-window-border)] bg-[var(--th-window)] shadow-[0_28px_70px_#0a011859,0_3px_12px_#1106223d] max-[1120px]:grid-cols-[72px_250px_minmax(500px,1fr)] max-[760px]:h-dvh max-[760px]:min-h-0 max-[760px]:grid-cols-[72px_1fr] max-[760px]:gap-0 max-[760px]:rounded-none',
+    'grid h-full min-h-0 w-full grid-cols-[72px_260px_minmax(0,1fr)_240px] grid-rows-[56px_minmax(0,1fr)] overflow-hidden bg-[var(--th-window)] max-[1120px]:grid-cols-[72px_240px_minmax(0,1fr)] max-[760px]:grid-cols-[72px_minmax(0,1fr)]',
 
   guildRail:
-    'flex w-[72px] min-w-[72px] flex-col items-center overflow-auto bg-[#1e1f22] px-0 pb-3 pt-3 max-[760px]:flex',
+    'col-start-1 row-start-1 row-span-2 flex w-[72px] min-w-[72px] flex-col items-center overflow-auto bg-[#1e1f22] px-0 pb-3 pt-3 max-[760px]:flex',
   guildHome:
     'relative grid size-12 place-items-center overflow-hidden rounded-2xl bg-white p-0 text-white transition-[border-radius,background,color] duration-150 ease-out [&_img]:size-[88%] [&_img]:object-contain',
   guildBtn:
@@ -20,16 +20,16 @@ export const threadsUi = {
     'absolute left-[-12px] h-0 w-1 rounded-r-[4px] bg-[#f2f3f5] transition-[height] duration-150 ease-out group-hover:h-5 group-aria-[current=page]:h-10',
 
   sidebar:
-    'flex flex-col overflow-auto rounded-xl border border-[var(--th-sidebar-line)] bg-gradient-to-b from-[var(--th-sidebar)] to-[var(--th-sidebar-2)] px-3.5 pb-5 pt-4 max-[760px]:hidden',
-  workspaceRow: 'flex h-12 items-center gap-[9px] px-[11px] text-[var(--th-text)] [&_strong]:text-base [&_strong]:tracking-[-0.4px]',
-  workspaceHome: 'flex cursor-pointer items-center gap-[9px] bg-transparent p-0 text-inherit',
+    'col-start-2 row-start-2 flex min-h-0 flex-col overflow-auto border-r border-[var(--th-sidebar-line)] bg-[var(--th-sidebar)] px-3 pb-3 pt-2 max-[760px]:hidden',
+  workspaceRow: 'flex h-14 shrink-0 items-center gap-1.5 pr-3 text-[var(--th-text)] [&_strong]:text-[15px] [&_strong]:tracking-[-0.3px]',
+  workspaceHome: 'flex cursor-pointer items-center gap-[9px] bg-transparent p-0 text-inherit max-[760px]:hidden',
   workspaceMark:
     'grid h-[39px] w-[39px] place-content-center gap-0 rounded-[7px] bg-[#1e2633] pr-[5px] text-base leading-[9px] tracking-[-4px] text-[#f7f7f8] [&_span]:block [&_span]:h-2',
   iconButton:
     'grid place-items-center rounded-md bg-transparent p-[5px] text-[var(--th-icon)] transition-[background,transform] duration-200 hover:-translate-y-px hover:bg-[var(--th-icon-hover)]',
   topAction: 'ml-auto',
   composeButton:
-    'mb-5 mt-5 flex h-11 min-h-11 w-full shrink-0 cursor-pointer items-center justify-center gap-[9px] rounded-lg bg-[var(--th-compose)] text-sm font-[650] text-white transition-colors duration-200 hover:bg-[var(--th-compose-hover)]',
+    'mx-2 mb-3 mt-1 flex h-10 w-[148px] shrink-0 cursor-pointer items-center justify-center gap-2 rounded-lg bg-[var(--th-compose)] text-sm font-[650] text-white hover:bg-[var(--th-compose-hover)]',
   primaryNav: 'grid gap-1 px-px',
   navItem:
     'flex w-full items-center gap-3 rounded-md px-[15px] py-2 text-left text-sm font-[560] text-[var(--th-text)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)] [&_svg]:text-[var(--th-icon)]',
@@ -53,10 +53,11 @@ export const threadsUi = {
   personSelected: 'bg-[var(--th-selected)]',
   personAvatarWrap: 'relative inline-block h-[31px] w-[31px] shrink-0',
   personName: 'capitalize',
-  sidebarFooter: 'mt-auto flex flex-wrap gap-1 pt-6',
+  sidebarFooter:
+    'mt-auto flex items-center gap-0.5 border-t border-[var(--th-sidebar-line)] px-1 pt-2',
   footerButton:
-    'flex w-auto items-center gap-3 rounded px-[13px] py-[7px] text-left text-xs text-[var(--th-muted)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)]',
-  companyHeading: 'text-[17px] font-bold tracking-tight',
+    'grid size-9 place-items-center rounded-md text-[var(--th-muted)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)] hover:text-[var(--th-text)]',
+  companyHeading: 'min-w-0 truncate text-[17px] font-bold tracking-tight',
 
   desktopPreviewPanel: 'flex flex-1 min-h-0 flex-col pt-4',
   // w-full so the thumb never overflows the audience column (327px /
@@ -86,24 +87,47 @@ export const threadsUi = {
   desktopExpandStage: 'relative min-h-0 flex-1',
   desktopExpandScreen: 'absolute overflow-hidden bg-black',
   desktopExpandFrame: 'absolute left-0 top-0 origin-top-left border-0',
-  contentArea: 'flex justify-between h-full min-h-0 min-w-0 flex-col bg-[var(--th-content)]',
+  contentArea: 'col-start-3 row-start-2 flex h-full min-h-0 min-w-0 flex-col bg-[var(--th-card)] max-[760px]:col-start-2',
   contentHeader:
-    'flex h-[69px] shrink-0 items-center border-b border-[var(--th-header-line)] px-8 max-[760px]:px-4 [&_h1]:m-0 [&_h1]:text-[17px] [&_h1]:tracking-[-0.4px] [&_h1]:text-[var(--th-text)]',
+    'col-start-2 col-span-3 row-start-1 flex h-14 shrink-0 items-center border-b border-[var(--th-header-line)] bg-[var(--th-window)] px-3 max-[1120px]:col-span-2 max-[760px]:col-span-1 max-[760px]:px-2 [&_h1]:m-0 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h1]:tracking-[-0.2px] [&_h1]:text-[var(--th-text)]',
+  headerSplit: 'mx-3 hidden h-6 w-px shrink-0 bg-[var(--th-header-line)] min-[760px]:block',
   threadsBack:
     'mr-3 flex items-center gap-1.5 rounded-lg bg-transparent px-2.5 py-1.5 text-[13px] font-[560] text-[var(--th-text)] hover:bg-[var(--th-icon-hover)]',
   headerActions:
     'relative ml-auto flex items-center gap-[18px] max-[760px]:gap-[7px] max-[760px]:[&>:nth-child(1)]:hidden max-[760px]:[&>:nth-child(2)]:hidden max-[760px]:[&>:nth-last-child(2)]:hidden',
   searchBox:
-    'flex h-[38px] w-[158px] items-center gap-[9px] rounded-lg bg-[var(--th-search)] px-[11px] text-[var(--th-muted)] max-[760px]:w-[130px] [&_input]:min-w-0 [&_input]:w-full [&_input]:border-0 [&_input]:bg-transparent [&_input]:text-sm [&_input]:text-[var(--th-text)] [&_input]:outline-none [&_input::placeholder]:text-[var(--th-muted)] [&_input::placeholder]:opacity-100',
+    'flex h-9 w-[180px] items-center gap-2 rounded-full bg-[var(--th-search)] px-3 text-[var(--th-muted)] max-[760px]:w-[120px] [&_input]:min-w-0 [&_input]:w-full [&_input]:border-0 [&_input]:bg-transparent [&_input]:text-sm [&_input]:text-[var(--th-text)] [&_input]:outline-none [&_input::placeholder]:text-[var(--th-muted)] [&_input::placeholder]:opacity-100',
   profileButton:
     'flex items-center bg-transparent p-0 max-[760px]:hidden [&_span+span]:-ml-1.5',
   headerMenu:
-    'absolute right-7 top-[58px] z-[8] min-w-[180px] rounded-[10px] border border-[var(--th-line)] bg-[var(--th-card)] p-1.5 shadow-[0_10px_28px_#1f1f281f]',
+    'absolute right-0 top-[52px] z-[8] min-w-[180px] rounded-[10px] border border-[var(--th-line)] bg-[var(--th-card)] p-1.5 shadow-[0_10px_28px_#1f1f281f]',
   menuButton:
     'block w-full rounded-md bg-transparent px-2.5 py-2 text-left text-[13px] text-[var(--th-text)] hover:bg-[var(--th-menu-hover)]',
-  audienceToggle: 'hidden max-[1120px]:grid',
   themeSwitch:
     'rounded-md bg-transparent text-[var(--th-icon)] shadow-none hover:bg-[var(--th-icon-hover)] hover:text-[var(--th-text)]',
+
+  membersPanel:
+    'col-start-4 row-start-2 flex min-h-0 flex-col overflow-auto border-l border-[var(--th-sidebar-line)] bg-[var(--th-window)] px-4 pb-4 pt-4 max-[1120px]:hidden',
+  membersHeader: 'mb-3 flex items-center justify-between gap-2',
+  membersTitle: 'text-[11px] font-[750] tracking-[1.4px] text-[var(--th-muted)]',
+  membersAdd:
+    'bg-transparent p-0 text-[11px] font-[750] tracking-[1.2px] text-[var(--th-muted)] hover:text-[var(--th-text)]',
+  membersList: 'flex flex-col gap-0.5',
+  membersItem:
+    'flex w-full items-center gap-2.5 rounded-md px-1 py-1.5 text-left text-sm text-[var(--th-text)] hover:bg-[var(--th-hover)]',
+  membersName: 'capitalize',
+  membersDot:
+    'absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-[var(--th-online-border)] bg-[#22c55e]',
+
+  historyPortalBackdrop: 'fixed inset-0 z-40 bg-[var(--th-modal-scrim)]',
+  historyPortalPopup:
+    'fixed right-0 top-0 z-50 flex h-dvh w-[min(380px,92vw)] flex-col border-l border-[var(--th-line)] bg-[var(--th-window)] shadow-[-12px_0_40px_#00000026] outline-none',
+  historyPortalHeader:
+    'flex h-14 shrink-0 items-center justify-between border-b border-[var(--th-header-line)] px-4',
+  historyPortalTitle: 'text-[15px] font-semibold text-[var(--th-text)]',
+  historyPortalClose:
+    'grid size-9 place-items-center rounded-md text-[var(--th-muted)] hover:bg-[var(--th-icon-hover)]',
+  historyPortalBody: 'min-h-0 flex-1 overflow-auto px-4 pb-6',
 
   threadScroll:
     'flex-1 overflow-auto px-[27px] pb-[38px] pt-[34px] max-[760px]:px-2.5 max-[760px]:pb-[25px] max-[760px]:pt-4',

@@ -1,11 +1,11 @@
 /** Shared Tailwind classes for chat UI (threads-app tokens). */
 export const chatUi = {
   threadScroll:
-    'thread-scroll flex min-h-0 flex-1 flex-col overflow-hidden px-10 pb-6 pt-5 max-[760px]:px-3 max-[760px]:pb-4 max-[760px]:pt-3',
+    'thread-scroll flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--th-card)] px-6 pb-5 pt-3 max-[760px]:px-3 max-[760px]:pb-4 max-[760px]:pt-2',
   threadCard:
-    'thread-card mx-auto flex min-h-0 w-full max-w-[min(100%,920px)] flex-1 flex-col overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)] shadow-[0_2px_5px_#1f1f2814]',
+    'thread-card mx-auto flex min-h-0 w-full flex-1 flex-col overflow-hidden',
   threadMain:
-    'thread-main flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-2 pt-4 max-[760px]:px-4 max-[760px]:pt-3',
+    'thread-main flex min-h-0 flex-1 flex-col overflow-hidden pb-2 pt-1',
   divider: 'divider my-2 mb-2.5 h-px shrink-0 bg-[var(--th-line)]',
   headerRow: 'flex items-center gap-3 min-h-11',
   headerIdentity: 'flex min-w-0 flex-col gap-px',
@@ -45,7 +45,7 @@ export const chatUi = {
   thinkingBody:
     'm-0 whitespace-pre-wrap break-words px-2.5 pb-2.5 font-[inherit] text-[13px] leading-normal text-[var(--th-muted)]',
   composer:
-    'chat-composer relative z-20 flex min-h-0 flex-col items-stretch gap-0 overflow-visible border-t border-[var(--th-line)] bg-[var(--th-content)] px-6 py-4 max-[760px]:px-4',
+    'chat-composer relative z-20 mx-1 mb-1 flex min-h-0 flex-col items-stretch gap-0 overflow-visible rounded-xl border border-[var(--th-line)] bg-[var(--th-card)] px-4 py-3 shadow-[0_2px_8px_#1f1f2810] max-[760px]:mx-0 max-[760px]:px-3',
   composerBody: 'flex w-full flex-col gap-2',
   composerInput:
     'w-full min-w-0 rounded-[10px] border border-[var(--th-line)] bg-[var(--th-card)] px-3 py-2.5 text-sm text-[var(--th-text)] transition-[border-color,box-shadow] focus:border-[var(--th-compose)] focus:outline-none focus:shadow-[0_0_0_2px_#6743ed26] disabled:opacity-60 dark:focus:shadow-[0_0_0_2px_#7b5cff33]',

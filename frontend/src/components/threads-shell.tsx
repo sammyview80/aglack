@@ -9,12 +9,13 @@ import {
   FileText,
   Hash,
   History,
-  Laptop,
   Maximize2,
+  Mic,
   Monitor,
   Pencil,
   Plus,
   Compass,
+  ScreenShare,
   Search,
   Send,
   Settings2,
@@ -29,7 +30,7 @@ import { Hint, TooltipProvider } from '@/components/ui/tooltip'
 import { BrandLogo } from '@/components/brand-mark'
 import { cn } from '@/lib/utils'
 import { useWorkspaceList } from '@/features/workspace/hooks/use-workspace-list'
-import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
+import { HistoryPortal } from '@/features/agent-history/components/history-portal'
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { RandomAvatar } from '@/components/random-avatar'
 import { PulseDot, motionPresets } from '@/components/motion'
@@ -160,8 +161,7 @@ export function ThreadsShell({
   const [composeEmoji, setComposeEmoji] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
   const [headerMore, setHeaderMore] = useState(false)
-  const [audienceOpen, setAudienceOpen] = useState(false)
-  const [audiencePanelOpen, setAudiencePanelOpen] = useState(false)
+  const [historyPortalOpen, setHistoryPortalOpen] = useState(false)
   const [audience, setAudience] = useState('DESIGN-WWW')
   // Replaces the ENTIRE content area (where chat/thread normally renders)
   // with a full, embedded live desktop (webtop/KasmVNC) for this
@@ -172,30 +172,9 @@ export function ThreadsShell({
   const [desktopPanelOpen, setDesktopPanelOpen] = useState(false)
   useEffect(() => {
     setDesktopPanelOpen(false)
+    setHistoryPortalOpen(false)
   }, [workspaceId])
 
-  useEffect(() => {
-    if (!audiencePanelOpen) return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setAudiencePanelOpen(false)
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [audiencePanelOpen])
-
-  // Below 1120px the audience panel is a drawer (display:none until opened);
-  // above it, the panel is always visible in the three-column layout, so
-  // treat that width as "open" without requiring a click.
-  const [isAudienceDesktop, setIsAudienceDesktop] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1121px)').matches,
-  )
-  useEffect(() => {
-    const mql = window.matchMedia('(min-width: 1121px)')
-    const onChange = () => setIsAudienceDesktop(mql.matches)
-    mql.addEventListener('change', onChange)
-    return () => mql.removeEventListener('change', onChange)
-  }, [])
-  const audienceVisible = isAudienceDesktop || audiencePanelOpen
   const [query, setQuery] = useState(search ?? '')
 
   // Real agents for the CHAT sidebar section. Deliberate scope extension of
@@ -205,6 +184,7 @@ export function ThreadsShell({
   // the AUDIENCE panel being open (inside AgentHistoryPanel).
   const agentsQuery = useAgents(workspaceId, true)
   const sidebarAgents = agentsQuery.data?.agents ?? []
+  const memberCount = sidebarAgents.length > 0 ? sidebarAgents.length : 1
   // Which agent's history is shown in the AUDIENCE panel; the sidebar and
   // the panel share this selection. Externally controlled when the
   // caller passes `selectedAgent` (e.g. WorkspaceChat, keyed off its own
@@ -236,7 +216,6 @@ export function ThreadsShell({
   function openSection(next: string) {
     setSection(next)
     setHeaderMore(false)
-    setAudienceOpen(false)
   }
 
   function openCompose() {
@@ -256,23 +235,11 @@ export function ThreadsShell({
 
   function selectAgentHistory(name: string) {
     setHistoryAgentFromPanel(name)
-    // Below the three-column breakpoint the AUDIENCE panel is a drawer —
-    // open it so the click actually shows the agent's history.
-    if (!isAudienceDesktop) setAudiencePanelOpen(true)
-    // Picking an agent from history is an explicit "show history" action —
-    // drop out of desktop mode so the panel actually displays what was
-    // just clicked instead of staying on the desktop thumbnail.
     setDesktopPanelOpen(false)
   }
 
-  /** Toggles the AUDIENCE panel's desktop-preview mode (see `DesktopPreview`
-   * below) — same panel slot `selectAgentHistory` uses for history, just a
-   * different mode flag on the same right-hand panel instead of a second
-   * panel. Below the three-column breakpoint this also has to force the
-   * panel open, same reasoning as `selectAgentHistory`. */
   function openDesktopPanel() {
     setDesktopPanelOpen((v) => !v)
-    if (!isAudienceDesktop) setAudiencePanelOpen(true)
   }
 
   // Shared by the sidebar's own click handler above and
@@ -316,28 +283,6 @@ export function ThreadsShell({
           onOpenSettings={() => openSection('Settings')}
         />
         <aside className={threadsUi.sidebar}>
-          <div className={threadsUi.workspaceRow}>
-            <button type="button" className={threadsUi.workspaceHome} onClick={() => navigate('/')}>
-              <div className={threadsUi.workspaceMark}>
-                <span>▪▪</span>
-                <span>▪▪</span>
-              </div>
-              <strong>Aglack</strong>
-              <ChevronDown size={15} strokeWidth={2.5} />
-            </button>
-            <button
-              type="button"
-              className={cn(threadsUi.iconButton, threadsUi.topAction)}
-              aria-label="Activity"
-              onClick={() => openSection('Activity')}
-            >
-              <History size={21} />
-            </button>
-            <button type="button" className={threadsUi.iconButton} aria-label="Quick actions" onClick={openCompose}>
-              <Zap size={21} />
-            </button>
-          </div>
-
           <button type="button" className={threadsUi.composeButton} onClick={openCompose}>
             <Pencil size={20} /> Compose
           </button>
@@ -358,41 +303,6 @@ export function ThreadsShell({
               <FileText size={20} /> Drafts
             </button>
           </nav>
-
-          <section
-            className={threadsUi.sidebarSection}
-            data-testid="sidebar-chat-section"
-          >
-            <div className={threadsUi.sectionLabel}>
-              <ChevronDown size={14} /> CHAT
-            </div>
-            {agentsQuery.isError ? (
-              <span className={threadsUi.personItem} aria-disabled="true">
-                Could not load agents
-              </span>
-            ) : null}
-            {!agentsQuery.isError && !agentsQuery.isPending && sidebarAgents.length === 0 ? (
-              <span className={threadsUi.personItem} aria-disabled="true">
-                No agents yet
-              </span>
-            ) : null}
-            {sidebarAgents.map((agent) => (
-              <button
-                key={agent.name}
-                type="button"
-                className={cn(threadsUi.personItem, historyAgent === agent.name && threadsUi.personSelected)}
-                onClick={() => selectAgentHistory(agent.name)}
-              >
-                <span className={threadsUi.personAvatarWrap}>
-                  <RandomAvatar seed={agent.name} size={31} />
-                  {agent.isWorking ? (
-                    <PulseDot size="sm" className={chatUi.activeDotSm} label={`${agent.name} is working`} />
-                  ) : null}
-                </span>
-                <span className={threadsUi.personName}>{agent.name}</span>
-              </button>
-            ))}
-          </section>
 
           <section className={threadsUi.sidebarSection}>
             <div className={threadsUi.sectionLabel}>
@@ -441,18 +351,85 @@ export function ThreadsShell({
               : null}
           </section>
 
+          <section
+            className={threadsUi.sidebarSection}
+            data-testid="sidebar-chat-section"
+          >
+            <div className={threadsUi.sectionLabel}>
+              <ChevronDown size={14} /> CHAT
+            </div>
+            {agentsQuery.isError ? (
+              <span className={threadsUi.personItem} aria-disabled="true">
+                Could not load agents
+              </span>
+            ) : null}
+            {!agentsQuery.isError && !agentsQuery.isPending && sidebarAgents.length === 0 ? (
+              <span className={threadsUi.personItem} aria-disabled="true">
+                No agents yet
+              </span>
+            ) : null}
+            {sidebarAgents.map((agent) => (
+              <button
+                key={agent.name}
+                type="button"
+                className={cn(threadsUi.personItem, historyAgent === agent.name && threadsUi.personSelected)}
+                onClick={() => selectAgentHistory(agent.name)}
+              >
+                <span className={threadsUi.personAvatarWrap}>
+                  <RandomAvatar seed={agent.name} size={31} />
+                  {agent.isWorking ? (
+                    <PulseDot size="sm" className={chatUi.activeDotSm} label={`${agent.name} is working`} />
+                  ) : null}
+                </span>
+                <span className={threadsUi.personName}>{agent.name}</span>
+              </button>
+            ))}
+          </section>
+
           <div className={threadsUi.sidebarFooter}>
-            <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Settings')}>
-              <Settings2 size={18} /> Settings
+            <button type="button" className={threadsUi.footerButton} aria-label="Voice" onClick={openCompose}>
+              <Mic size={18} />
             </button>
-            <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Help')}>
-              <CircleHelp size={18} /> Help
+            <button
+              type="button"
+              className={threadsUi.footerButton}
+              aria-label={desktopPanelOpen ? 'Hide desktop' : 'Share screen'}
+              onClick={openDesktopPanel}
+            >
+              <ScreenShare size={18} />
+            </button>
+            <button type="button" className={threadsUi.footerButton} aria-label="Settings" onClick={() => openSection('Settings')}>
+              <Settings2 size={18} />
+            </button>
+            <button type="button" className={threadsUi.footerButton} aria-label="Help" onClick={() => openSection('Help')}>
+              <CircleHelp size={18} />
             </button>
           </div>
         </aside>
 
-        <section className={threadsUi.contentArea}>
-          <header className={threadsUi.contentHeader}>
+        <header className={threadsUi.contentHeader}>
+            <div className={threadsUi.workspaceRow}>
+              <button type="button" className={threadsUi.workspaceHome} onClick={() => navigate('/')}>
+                <div className={threadsUi.workspaceMark}>
+                  <span>▪▪</span>
+                  <span>▪▪</span>
+                </div>
+                <strong>Aglack</strong>
+                <ChevronDown size={15} strokeWidth={2.5} />
+              </button>
+              <button
+                type="button"
+                className={cn(threadsUi.iconButton, threadsUi.topAction)}
+                aria-label="History"
+                onClick={() => setHistoryPortalOpen(true)}
+              >
+                <History size={21} />
+              </button>
+              <button type="button" className={threadsUi.iconButton} aria-label="Quick actions" onClick={openCompose}>
+                <Zap size={21} />
+              </button>
+            </div>
+            <div className={threadsUi.headerSplit} />
             <h1 className={threadsUi.companyHeading}>{heading}</h1>
             <div className={threadsUi.headerActions}>
               <button
@@ -482,14 +459,6 @@ export function ThreadsShell({
               </label>
               <button type="button" className={threadsUi.iconButton} aria-label="Help" onClick={() => openSection('Help')}>
                 <CircleHelp size={20} />
-              </button>
-              <button
-                type="button"
-                className={cn(threadsUi.iconButton, threadsUi.audienceToggle)}
-                aria-label="Toggle agent history"
-                onClick={() => setAudiencePanelOpen((v) => !v)}
-              >
-                <History size={20} />
               </button>
               {workspaceId ? (
                 <button
@@ -526,9 +495,10 @@ export function ThreadsShell({
                   </button>
                 </div>
               ) : null}
-            </div>
-          </header>
+          </div>
+        </header>
 
+        <section className={threadsUi.contentArea}>
           {showThread ? (
             alignCenter ? (
               <div className={threadsUi.threadScroll}>
@@ -552,57 +522,47 @@ export function ThreadsShell({
           )}
         </section>
 
-        {audiencePanelOpen ? (
-          <div
-            className={cn(threadsUi.audienceBackdrop, motionPresets.overlayEnter)}
-            onClick={() => setAudiencePanelOpen(false)}
-          />
-        ) : null}
-
-        <aside className={cn(threadsUi.audiencePanel, audiencePanelOpen && threadsUi.audiencePanelOpen)}>
-          <button
-            type="button"
-            className={threadsUi.audienceClose}
-            aria-label="Close agent history"
-            onClick={() => setAudiencePanelOpen(false)}
-          >
-            <X size={18} />
-          </button>
-          <div className={threadsUi.audienceTitle}>
-            <strong>AUDIENCE</strong>
-            <button type="button" onClick={() => setAudienceOpen((v) => !v)}>
-              <Laptop size={14} fill="currentColor" /> {audience} <ChevronDown size={14} fill="currentColor" />
+        <aside className={threadsUi.membersPanel} aria-label="Members">
+          <div className={threadsUi.membersHeader}>
+            <span className={threadsUi.membersTitle}>
+              {memberCount} MEMBER{memberCount === 1 ? '' : 'S'}
+            </span>
+            <button type="button" className={threadsUi.membersAdd} onClick={openCompose}>
+              ADD SOMEONE
             </button>
-            {audienceOpen ? (
-              <div className={cn(threadsUi.audienceMenu, motionPresets.dropdownEnter)}>
-                {PLACEHOLDER_CHANNELS.map((channel) => (
-                  <button
-                    key={channel.label}
-                    type="button"
-                    className={threadsUi.menuButton}
-                    onClick={() => {
-                      setAudience(channel.label.toUpperCase())
-                      openSection(channel.label)
-                    }}
-                  >
-                    {channel.label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
+          </div>
+          <div className={threadsUi.membersList}>
+            {(sidebarAgents.length > 0 ? sidebarAgents : [{ name: 'you', isWorking: false }]).map((agent) => (
+              <button
+                key={agent.name}
+                type="button"
+                className={threadsUi.membersItem}
+                onClick={() => selectAgentHistory(agent.name)}
+              >
+                <span className={threadsUi.personAvatarWrap}>
+                  <RandomAvatar seed={agent.name} size={31} />
+                  <span className={threadsUi.membersDot} aria-hidden="true" />
+                </span>
+                <span className={threadsUi.membersName}>{agent.name === 'you' ? 'You' : agent.name}</span>
+              </button>
+            ))}
           </div>
           {desktopPanelOpen ? (
             <DesktopPreview workspaceId={workspaceId} workspaceName={workspaceName} />
-          ) : (
-            <AgentHistoryPanel
-              workspaceId={workspaceId}
-              open={audienceVisible}
-              selectedAgent={historyAgent}
-              onSelectedAgentChange={setHistoryAgentFromPanel}
-              onSelectSession={onSelectSession}
-            />
-          )}
+          ) : null}
         </aside>
+
+        <HistoryPortal
+          workspaceId={workspaceId}
+          open={historyPortalOpen}
+          onOpenChange={setHistoryPortalOpen}
+          selectedAgent={historyAgent}
+          onSelectedAgentChange={setHistoryAgentFromPanel}
+          onSelectSession={(agentName, session) => {
+            setHistoryPortalOpen(false)
+            onSelectSession?.(agentName, session)
+          }}
+        />
       </div>
 
       {composeOpen ? (
