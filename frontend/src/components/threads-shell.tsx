@@ -29,6 +29,7 @@ import { useWorkspaceList } from '@/features/workspace/hooks/use-workspace-list'
 import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { RandomAvatar } from '@/components/random-avatar'
+import type { AgentSession } from '@/features/agent-history/types'
 import '@/styles/threads-app.css'
 
 export type ThreadsWorkspaceIcon = {
@@ -45,6 +46,20 @@ type ThreadsShellProps = {
   onPublish?: (text: string) => void
   search?: string
   onSearchChange?: (value: string) => void
+  /** Forwarded straight to AgentHistoryPanel — lets whatever renders as
+   * `children` (e.g. the real chat pane) load a clicked AUDIENCE session
+   * as a live, sendable conversation. Optional: omitting it keeps the
+   * panel's own read-only session viewer as the only effect of a click. */
+  onSelectSession?: (agentName: string, session: AgentSession) => void
+  /** Optional external control of which agent's history is shown (the
+   * CHAT sidebar list + AUDIENCE panel) — same externally-controlled
+   * pattern AgentHistoryPanel itself already uses. Wire this to whatever
+   * owns the real chat pane's agent selection (e.g. its URL `?agent=`
+   * param) so clicking an agent in the sidebar ALSO switches the actual
+   * chat, not only the AUDIENCE panel's own selection. Omit both props to
+   * keep this shell's original self-contained (URL-unaware) behavior. */
+  selectedAgent?: string | null
+  onSelectAgent?: (name: string) => void
   children: ReactNode
 }
 
@@ -124,6 +139,9 @@ export function ThreadsShell({
   onPublish,
   search,
   onSearchChange,
+  onSelectSession,
+  selectedAgent: selectedAgentProp,
+  onSelectAgent,
   children,
 }: ThreadsShellProps) {
   const navigate = useNavigate()
@@ -170,12 +188,20 @@ export function ThreadsShell({
   const agentsQuery = useAgents(workspaceId, true)
   const sidebarAgents = agentsQuery.data?.agents ?? []
   // Which agent's history is shown in the AUDIENCE panel; the sidebar and
-  // the panel share this selection.
-  const [historyAgent, setHistoryAgent] = useState<string | null>(null)
+  // the panel share this selection. Externally controlled when the
+  // caller passes `selectedAgent` (e.g. WorkspaceChat, keyed off its own
+  // URL `?agent=` param) — same pattern AgentHistoryPanel itself already
+  // uses for its own external-selection prop.
+  const [historyAgentState, setHistoryAgentState] = useState<string | null>(null)
+  const historyAgent = selectedAgentProp !== undefined ? selectedAgentProp : historyAgentState
   // A selection is only meaningful within one workspace — switching
-  // workspaces must not query the previous workspace's agent name.
+  // workspaces must not query the previous workspace's agent name. Only
+  // resets the INTERNAL fallback state; an externally-controlled
+  // selection is the caller's own responsibility to reset (it already
+  // does this for its own reasons, e.g. WorkspaceChat's URL params reset
+  // naturally on navigation).
   useEffect(() => {
-    setHistoryAgent(null)
+    setHistoryAgentState(null)
   }, [workspaceId])
 
   useEffect(() => {
@@ -211,10 +237,32 @@ export function ThreadsShell({
   }
 
   function selectAgentHistory(name: string) {
-    setHistoryAgent(name)
+    setHistoryAgentFromPanel(name)
     // Below the three-column breakpoint the AUDIENCE panel is a drawer —
     // open it so the click actually shows the agent's history.
     if (!isAudienceDesktop) setAudiencePanelOpen(true)
+  }
+
+  // Shared by the sidebar's own click handler above and
+  // AgentHistoryPanel's `onSelectedAgentChange` (fired by ITS internal
+  // navigation, e.g. its close/back button clearing back to `null`) — both
+  // are "the agent selection changed" from this shell's point of view, and
+  // both must update the internal fallback state AND report outward the
+  // same way, so the real chat pane (via `onSelectAgent`) stays in sync
+  // with EITHER path a user takes to change agents, not only the sidebar.
+  //
+  // When `selectedAgent` is externally controlled (WorkspaceChat's URL
+  // `?agent=`), clicking the panel's own close/back button to `null` is
+  // intentionally NOT what clears the chat's agent — `historyAgent` is
+  // derived from the prop, so the panel snaps right back open on the
+  // very next render showing that same URL-bound agent. This is
+  // deliberate: collapsing a side panel is not the same action as
+  // navigating the actual chat away from an agent, and the whole point
+  // of this wiring is that AUDIENCE always mirrors whichever agent the
+  // real chat is actually on.
+  function setHistoryAgentFromPanel(name: string | null) {
+    setHistoryAgentState(name)
+    if (name) onSelectAgent?.(name)
   }
 
   async function copyLink() {
@@ -482,7 +530,8 @@ export function ThreadsShell({
             workspaceId={workspaceId}
             open={audienceVisible}
             selectedAgent={historyAgent}
-            onSelectedAgentChange={setHistoryAgent}
+            onSelectedAgentChange={setHistoryAgentFromPanel}
+            onSelectSession={onSelectSession}
           />
         </aside>
       </div>
