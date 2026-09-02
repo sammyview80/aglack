@@ -62,10 +62,78 @@ def get_status() -> dict[str, Any]:
     return _wrap("onboarding_status_failed", get_onboarding_status)
 
 
-def apply_setup(body: dict[str, Any]) -> dict[str, Any]:
-    from api.onboarding import apply_onboarding_setup
+# Upstream's onboarding catalog (`api/onboarding.py`'s `_SUPPORTED_PROVIDER_SETUPS`)
+# advertises provider ids that `hermes_cli` (the thing that actually runs a
+# turn) does not recognize — e.g. it offers "openai" and "x-ai" as onboarding
+# choices, but `hermes_cli.auth.PROVIDER_REGISTRY` only knows them as
+# "openai-api" and "xai". `apply_onboarding_setup` itself must keep using the
+# *onboarding* id verbatim (it looks up env vars / key-presence via that same
+# `_SUPPORTED_PROVIDER_SETUPS` table), so we let it run unmodified and only
+# rewrite `model.provider` in config.yaml afterwards. Left uncorrected, a
+# chat turn fails with `AuthError: Unknown provider 'openai'. Check 'hermes
+# model' for available providers...`, which upstream's own chat surface
+# reports to the user as a misleading "no API key found" message — sending
+# them chasing a credential that was never the problem. `../upstream/` is
+# read-only, so this wrapper is the right place to reconcile the two catalogs.
+_ONBOARDING_TO_HERMES_CLI_PROVIDER = {
+    "openai": "openai-api",
+    "x-ai": "xai",
+}
 
-    return _wrap("onboarding_setup_failed", apply_onboarding_setup, body)
+
+def _map_provider_id(onboarding_provider: str, registry) -> str:
+    """Pure decision logic: map `onboarding_provider` to its `hermes_cli`
+    registry id, if a mapping exists and the mapped id is present in
+    `registry`. Otherwise return `onboarding_provider` unchanged (fail-soft
+    guarantee — callers rely on this when `hermes_cli` is absent, e.g. the
+    local dev/test venv, where the rewrite is a deliberate no-op).
+    """
+    mapped = _ONBOARDING_TO_HERMES_CLI_PROVIDER.get(onboarding_provider)
+    if not mapped or mapped not in registry:
+        return onboarding_provider
+    return mapped
+
+
+def _normalize_provider_in_config(config_path, onboarding_provider: str) -> None:
+    """Best-effort: remap `onboarding_provider` to its `hermes_cli`-registry
+    equivalent in `config_path`'s `model.provider`. Never raises — a missing
+    `hermes_cli` import means we fail soft and leave the onboarding id as-is,
+    rather than guess.
+    """
+    from pathlib import Path
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except ImportError:
+        return
+
+    mapped = _map_provider_id(onboarding_provider, PROVIDER_REGISTRY)
+    if mapped == onboarding_provider:
+        return
+
+    from hermes_webui_wrapper.features.profile_yaml import (
+        load_profile_config,
+        save_profile_config,
+    )
+
+    path = Path(config_path)
+    cfg = load_profile_config(path)
+    model_cfg = cfg.get("model")
+    if not isinstance(model_cfg, dict) or model_cfg.get("provider") != onboarding_provider:
+        return
+    model_cfg["provider"] = mapped
+    save_profile_config(path, cfg)
+
+
+def apply_setup(body: dict[str, Any]) -> dict[str, Any]:
+    from api.onboarding import _get_config_path, apply_onboarding_setup
+
+    result = _wrap("onboarding_setup_failed", apply_onboarding_setup, body)
+    if isinstance(result, dict) and result.get("error") == "config_exists":
+        return result
+    onboarding_provider = str(body.get("provider") or "").strip().lower()
+    _normalize_provider_in_config(_get_config_path(), onboarding_provider)
+    return result
 
 
 def apply_self_hosted_setup(body: dict[str, Any]) -> dict[str, Any]:

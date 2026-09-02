@@ -5,6 +5,8 @@ mocks, so these prove the actual upstream integration works end to end.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -135,3 +137,116 @@ def test_complete_marks_onboarding_completed(client: TestClient) -> None:
     body = response.json()
     assert body["ok"] is True
     assert body["data"]["completed"] is True
+
+
+def _written_provider(upstream_root: "Path") -> str:
+    import os
+
+    import yaml
+
+    from api.onboarding import _get_config_path
+
+    config_path = _get_config_path()
+    return yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))["model"]["provider"]
+
+
+def _hermes_cli_importable() -> bool:
+    try:
+        import hermes_cli.auth  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    not _hermes_cli_importable(),
+    reason=(
+        "hermes_cli is not installed in this venv, so the registry-backed "
+        "provider rewrite can only be verified where hermes_cli ships (the "
+        "Docker image) — this is an environment limitation, not a disabled "
+        "assertion. See test_map_provider_id_* for the pure-logic coverage."
+    ),
+)
+def test_setup_with_onboarding_openai_id_writes_hermes_cli_registry_id(
+    client: TestClient, upstream_root: "Path"
+) -> None:
+    """Upstream's onboarding catalog advertises the provider id "openai",
+    but `hermes_cli.auth.PROVIDER_REGISTRY` (the thing that actually runs a
+    turn) only knows it as "openai-api" — a config.yaml with "openai" makes
+    every chat turn fail with `AuthError: Unknown provider 'openai'`, which
+    surfaces to the user as a misleading "no API key found" message. Prove
+    service.py rewrites it to the id `hermes_cli` actually accepts."""
+    response = client.post(
+        "/api/wrapper/v1/onboarding/setup",
+        json={
+            "provider": "openai",
+            "model": "gpt-4o",
+            "api_key": "sk-test-key",
+            "confirm_overwrite": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert _written_provider(upstream_root) == "openai-api"
+
+
+def test_setup_with_already_valid_provider_is_passed_through_unchanged(
+    client: TestClient, upstream_root: "Path"
+) -> None:
+    """A provider id already valid in both catalogs (e.g. "anthropic") must
+    not be touched by the reconciliation helper."""
+    response = client.post(
+        "/api/wrapper/v1/onboarding/setup",
+        json={
+            "provider": "anthropic",
+            "model": "claude-sonnet-4.6",
+            "api_key": "sk-ant-test-key",
+            "confirm_overwrite": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert _written_provider(upstream_root) == "anthropic"
+
+
+def test_setup_with_unmapped_provider_is_passed_through_unchanged(
+    client: TestClient, upstream_root: "Path"
+) -> None:
+    """"ollama" has no verified `hermes_cli` registry equivalent (only
+    "ollama-cloud" exists, which is a different provider) — the
+    reconciliation helper must not invent a mapping for it."""
+    response = client.post(
+        "/api/wrapper/v1/onboarding/setup",
+        json={
+            "provider": "ollama",
+            "model": "qwen3:32b",
+            "base_url": "http://localhost:11434/v1",
+            "confirm_overwrite": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert _written_provider(upstream_root) == "ollama"
+
+
+def test_map_provider_id_maps_openai_when_registry_has_openai_api() -> None:
+    from hermes_webui_wrapper.features.onboarding.service import _map_provider_id
+
+    assert _map_provider_id("openai", {"openai-api", "anthropic"}) == "openai-api"
+
+
+def test_map_provider_id_leaves_openai_unchanged_when_registry_lacks_openai_api() -> None:
+    from hermes_webui_wrapper.features.onboarding.service import _map_provider_id
+
+    assert _map_provider_id("openai", {"anthropic"}) == "openai"
+
+
+def test_map_provider_id_leaves_anthropic_and_ollama_unchanged() -> None:
+    from hermes_webui_wrapper.features.onboarding.service import _map_provider_id
+
+    registry = {"openai-api", "anthropic", "xai"}
+    assert _map_provider_id("anthropic", registry) == "anthropic"
+    assert _map_provider_id("ollama", registry) == "ollama"
