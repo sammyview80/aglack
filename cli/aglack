@@ -63,9 +63,10 @@ Setup
                        (same as ./bootstrap.sh's setup half, no run)
 
 Run (local dev, routing-only stack)
-  up                   Start rust_gateway + test_backend + frontend
-                       (same as ./run.sh; foreground, Ctrl+C stops all)
-  bootstrap            Setup (if needed) then up (same as ./bootstrap.sh)
+  up                   Setup (if needed) then start rust_gateway +
+                       test_backend + frontend (same as ./bootstrap.sh;
+                       foreground, Ctrl+C stops all)
+  bootstrap            Alias for 'up' (same as ./bootstrap.sh)
 
 Test
   test                 Run every suite: cargo test, pytest x2, npm build
@@ -125,6 +126,11 @@ cmd_install_deps() {
 cmd_up() {
   require_cmd cargo
   require_cmd npm
+  # Same as bootstrap.sh: never dead-end a first run on a missing .env or
+  # missing node_modules — run.sh fails closed on those with a manual `cp`/
+  # `npm install` instruction, which defeats the point of a CLI that is
+  # supposed to remember these steps for you.
+  cmd_install_deps
   exec "$ROOT/run.sh"
 }
 

@@ -82,34 +82,41 @@ which subdirectory a given check lives in.
 
 ### Install
 
-This repo is **private** — GitHub returns 404 for an unauthenticated
-`curl` of a raw file on a private repo, so a bare
+This repo is **private**. A bare
 `curl https://raw.githubusercontent.com/... | sh` does **not** work here
-(verified: it 404s). The installer instead uses **`git` over SSH** (your
-existing repo access) to fetch its own source, then symlinks the CLI —
-this is the accurate "one line" install for a private repo:
+— GitHub returns 404 for an unauthenticated raw-file fetch on a private
+repo (verified live: plain `curl` on that URL 404s, every time, no
+exception). Pick whichever of these you actually have:
+
+**Option A — you have a GitHub personal access token** (repo scope) —
+this is the real curl one-liner, authenticated:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sammyview80/aglack/aglack/cli/install.sh -o /tmp/aglack-install.sh \
-  && sh /tmp/aglack-install.sh
+curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/sammyview80/aglack/aglack/cli/install.sh \
+  | sh
 ```
 
-(Downloading the installer script itself over `curl` still needs
-either a public copy of just that one file, or `gh auth token` /
-`Authorization: token` header — if you don't have that set up yet, skip
-straight to running it from a checkout you already have, below.)
-
-If you already have a checkout (e.g. from Install above), just run it
-directly — no curl needed:
+**Option B — you have the `gh` CLI, already logged in:**
 
 ```bash
-sh cli/install.sh
+gh api repos/sammyview80/aglack/contents/cli/install.sh --branch aglack \
+  --jq '.content' | base64 -d | sh
 ```
 
-Either way it clones (or updates) the repo to `~/.aglack/src` and
-symlinks `cli/aglack` onto your `PATH` (`~/.local/bin` by default).
-Re-running it updates the checkout and re-links the CLI — safe to run
-again any time. See `cli/install.sh`'s own header for every env override
+**Option C — you already have (or are about to make) a checkout via
+SSH** (no token needed, uses the same access `git clone`/`git push`
+already use):
+
+```bash
+git clone git@github.com:sammyview80/aglack.git hermano && sh hermano/cli/install.sh
+```
+
+All three run the exact same `cli/install.sh`. It clones (or updates)
+the repo to `~/.aglack/src` and symlinks
+`cli/aglack` onto your `PATH` (`~/.local/bin` by default). Re-running it
+updates the checkout and re-links the CLI — safe to run again any time.
+See `cli/install.sh`'s own header for every env override
 (`AGLACK_SRC_DIR`, `AGLACK_BIN_DIR`, `AGLACK_REPO`, `AGLACK_BRANCH`).
 
 Already have a checkout and don't want a second copy under
@@ -120,9 +127,9 @@ or call it directly: `./cli/aglack help`.
 
 ```bash
 aglack help                    # full command list
-aglack bootstrap                # setup (if needed) + run everything
-aglack up                       # run everything (assumes setup already done)
-aglack install-deps             # just the setup half
+aglack up                       # setup (if needed) + run everything — safe as the very first command
+aglack bootstrap                # alias for 'up'
+aglack install-deps             # just the setup half, no run
 aglack test                     # run every suite (gateway, wrapper, seeder, frontend)
 aglack test gateway              # just one suite
 aglack image build               # docker build the workspace-image
@@ -132,7 +139,7 @@ aglack workspace rm <id>         # DELETE /workspaces/:id
 aglack status                    # is the gateway reachable?
 ```
 
-Every command is a thin wrapper — `aglack up` runs `run.sh`, `aglack test
+Every command is a thin wrapper — `aglack up` runs setup then `run.sh`, `aglack test
 gateway` runs `cargo test`, `aglack image build` runs the same `docker
 build` from the Install section above, `aglack workspace ...` calls the
 gateway's own HTTP API (see `rust_gateway/src/app.rs`'s routes). Nothing
