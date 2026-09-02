@@ -7,9 +7,12 @@ Every handler goes through the shared `envelope.service_call` (threadpool
 hop + FeatureError -> error-envelope mapping — see its own docstring).
 
 Security note (deliberate, current scope — mirrors `api/v1/agent_config.py`'s
-own note): these routes have no auth gate today. This wrapper has no
-session/login layer yet at all. Revisit the moment any auth layer exists in
-front of this service.
+own note): see `features/errors.py`'s `NO_AUTH_GATE_NOTE`. Unlike the other
+three route modules, these routes are read-only and never mutate
+config.yaml/SOUL.md/AGENTS.md — but without a gate, any caller can still
+read every agent's chat transcripts for the workspace, which is its own
+exposure distinct from the shared note.
+Revisit the moment any auth layer exists in front of this service.
 """
 from __future__ import annotations
 

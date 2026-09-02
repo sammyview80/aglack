@@ -29,7 +29,9 @@ import { useWorkspaceList } from '@/features/workspace/hooks/use-workspace-list'
 import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { RandomAvatar } from '@/components/random-avatar'
+import { PulseDot } from '@/components/motion'
 import { avatarToneStyles, threadsUi, type AvatarTone } from '@/components/threads-ui'
+import { chatUi } from '@/features/chat/chat-ui'
 import type { AgentSession } from '@/features/agent-history/types'
 
 export type { AvatarTone }
@@ -402,6 +404,9 @@ export function ThreadsShell({
               >
                 <span className={threadsUi.personAvatarWrap}>
                   <RandomAvatar seed={agent.name} size={31} />
+                  {agent.isWorking ? (
+                    <PulseDot size="sm" className={chatUi.activeDotSm} label={`${agent.name} is working`} />
+                  ) : null}
                 </span>
                 <span className={threadsUi.personName}>{agent.name}</span>
               </button>

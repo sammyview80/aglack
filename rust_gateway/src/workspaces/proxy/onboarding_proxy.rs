@@ -15,7 +15,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::route::WorkspacesState;
+use crate::workspaces::route::WorkspacesState;
 use super::wrapper_prefix_proxy::forward_to_wrapper_namespace;
 
 /// Handles `/workspaces/:id/onboarding/*path` — axum captures both
@@ -43,64 +43,24 @@ pub async fn onboarding_proxy_route_root(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{body_json, temp_store};
+    use crate::workspaces::test_support::{
+        assert_failed_workspace_returns_409_not_ready, assert_not_ready_workspace_returns_409,
+        assert_unknown_workspace_id_returns_404, spawn_echo_wrapper, temp_store,
+    };
     use super::*;
     use crate::workspaces::container::FakeLauncher;
-    use crate::workspaces::WorkspaceStatus;
     use axum::{
         body::{to_bytes, Body},
         http::{Request as HttpRequest, StatusCode},
-        routing::{any as any_method, Router},
     };
 
     fn state_with_store(store: crate::workspaces::WorkspaceStore) -> Arc<WorkspacesState> {
-        super::super::test_support::state_with_store(store, Arc::new(FakeLauncher::default()))
-    }
-
-    /// A tiny real axum server standing in for "a workspace's wrapper",
-    /// bound to a real OS-assigned port — proves the proxy route actually
-    /// performs a real network hop to the recorded port, not just that
-    /// its internal logic looks right. Echoes back the exact path it
-    /// received so the test can assert the prefix-stripping/rewrite is
-    /// correct, not just that SOME 200 came back.
-    async fn spawn_echo_wrapper() -> u16 {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind echo wrapper");
-        let port = listener.local_addr().unwrap().port();
-        let app: Router = Router::new().route(
-            "/*path",
-            any_method(|req: HttpRequest<Body>| async move {
-                req.uri()
-                    .path_and_query()
-                    .map(|pq| pq.as_str().to_string())
-                    .unwrap_or_default()
-            }),
-        );
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.ok();
-        });
-        port
+        crate::workspaces::test_support::state_with_store(store, Arc::new(FakeLauncher::default()))
     }
 
     #[tokio::test]
     async fn unknown_workspace_id_returns_404() {
-        let state = state_with_store(temp_store().await);
-
-        let response = onboarding_proxy_route_root(
-            State(state),
-            Path("does-not-exist".to_string()),
-            HttpRequest::builder()
-                .uri("/workspaces/does-not-exist/onboarding/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = body_json(response).await;
-        assert_eq!(body["ok"], false);
-        assert_eq!(body["error"]["code"], "workspace_not_found");
+        assert_unknown_workspace_id_returns_404("onboarding", onboarding_proxy_route_root).await;
     }
 
     /// A workspace that exists but never finished creating (still
@@ -108,28 +68,7 @@ mod tests {
     /// "only the successfully created workspace can be reached" rule.
     #[tokio::test]
     async fn not_ready_workspace_returns_409() {
-        let store = temp_store().await;
-        let record = store
-            .begin_creation("my-workspace", "ws-1")
-            .await
-            .expect("begin_creation");
-        assert_eq!(record.status, WorkspaceStatus::Creating);
-        let state = state_with_store(store);
-
-        let response = onboarding_proxy_route_root(
-            State(state),
-            Path("ws-1".to_string()),
-            HttpRequest::builder()
-                .uri("/workspaces/ws-1/onboarding/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = body_json(response).await;
-        assert_eq!(body["ok"], false);
-        assert_eq!(body["error"]["code"], "workspace_not_ready");
+        assert_not_ready_workspace_returns_409("onboarding", onboarding_proxy_route_root).await;
     }
 
     /// A `failed` workspace (a previous launch attempt that errored out)
@@ -137,30 +76,8 @@ mod tests {
     /// merely "not creating".
     #[tokio::test]
     async fn failed_workspace_returns_409_not_ready() {
-        let store = temp_store().await;
-        store
-            .begin_creation("my-workspace", "ws-1")
-            .await
-            .expect("begin_creation");
-        store
-            .mark_failed("my-workspace")
-            .await
-            .expect("mark_failed");
-        let state = state_with_store(store);
-
-        let response = onboarding_proxy_route_root(
-            State(state),
-            Path("ws-1".to_string()),
-            HttpRequest::builder()
-                .uri("/workspaces/ws-1/onboarding/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "workspace_not_ready");
+        assert_failed_workspace_returns_409_not_ready("onboarding", onboarding_proxy_route_root)
+            .await;
     }
 
     /// The real end-to-end case: a `ready` workspace's request is

@@ -16,10 +16,10 @@ export const chatUi = {
     'flex items-center justify-center gap-1.5 rounded-lg border border-[var(--th-line)] bg-transparent px-2.5 py-1.5 text-xs font-semibold text-[var(--th-text)] transition-colors hover:bg-[var(--th-hover)] disabled:cursor-default disabled:opacity-50',
   transcript: 'chat-transcript min-h-0 w-full flex-1 overflow-x-auto overflow-y-auto',
   transcriptInner:
-    'flex min-h-full w-full flex-col pl-1 pr-6 pb-2 [&:has(.chat-message-list-empty)]:min-h-[min(420px,100%)] [&:has(.chat-message-list-empty)]:justify-center',
-  messageList: 'flex w-full flex-col gap-1.5',
+    'flex min-h-full w-full flex-col pl-1 pr-6 pt-3 pb-4 [&:has(.chat-message-list-empty)]:min-h-[min(420px,100%)] [&:has(.chat-message-list-empty)]:justify-center',
+  messageList: 'flex w-full flex-col gap-4',
   messageListEmpty: 'chat-message-list-empty flex min-h-[min(420px,100%)] flex-1 flex-col justify-center',
-  messageBlock: 'flex w-fit max-w-[92%] flex-col gap-0.5',
+  messageBlock: 'flex w-fit max-w-[92%] flex-col gap-1',
   messageBlockUser: 'items-end',
   messageRow: 'flex items-end gap-2 [&_.avatar]:shrink-0 [&_svg[role=img]]:shrink-0',
   messageContent: 'flex min-w-0 flex-col gap-1',
@@ -27,7 +27,7 @@ export const chatUi = {
   messageTimeAssistant: 'pl-8',
   messageTimeUser: 'pr-8 text-right',
   bubbleBase:
-    'inline-flex w-fit max-w-full flex-col items-stretch gap-1 break-words rounded-[18px] px-3 py-2 text-sm leading-snug text-left',
+    'inline-flex w-fit max-w-full flex-col items-stretch gap-1 break-words rounded-[18px] px-4 py-3 text-sm leading-snug text-left',
   bubbleOutgoing: 'bg-[var(--th-compose)] text-white shadow-[0_1px_2px_#6743ed33]',
   bubbleIncoming:
     'border border-[var(--th-assistant-bubble-border)] bg-[var(--th-assistant-bubble)] text-[var(--th-text)] shadow-[var(--th-assistant-bubble-shadow)]',

@@ -7,9 +7,9 @@ Every handler goes through the shared `envelope.service_call` (threadpool
 hop + FeatureError -> error-envelope mapping — see its own docstring).
 
 Security note (deliberate, current scope — mirrors `api/v1/onboarding.py`'s
-own note): these routes have no auth gate today. This wrapper has no
-session/login layer yet at all. Revisit the moment any auth layer exists in
-front of this service.
+own note): see `features/errors.py`'s `NO_AUTH_GATE_NOTE` — this module's
+own routes carry no further feature-specific risk beyond that shared note.
+Revisit the moment any auth layer exists in front of this service.
 """
 from __future__ import annotations
 

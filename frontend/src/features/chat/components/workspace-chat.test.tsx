@@ -44,7 +44,7 @@ function renderChat(initialUrl: string) {
 
 describe('WorkspaceChat URL-driven agent/session', () => {
   it('picks up ?agent= and ?session= from the URL instead of always defaulting to the first agent', async () => {
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }, { name: 'agent-b' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }] })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({
       messages: [{ role: 'assistant', content: 'restored from history', timestamp: 1 }],
       limit: 50,
@@ -62,7 +62,7 @@ describe('WorkspaceChat URL-driven agent/session', () => {
   })
 
   it('defaults ?agent= to the first real agent when the URL has none yet', async () => {
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
     mockedChatApi.createSession.mockResolvedValue({ sessionId: 'auto-session' })
     mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
@@ -74,7 +74,7 @@ describe('WorkspaceChat URL-driven agent/session', () => {
 
   it('switching agent via the sidebar clears any session bound to the previous agent', async () => {
     const user = userEvent.setup()
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }, { name: 'agent-b' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
     mockedChatApi.createSession.mockResolvedValue({ sessionId: 'agent-b-fresh-session' })
@@ -100,7 +100,7 @@ describe('WorkspaceChat URL-driven agent/session', () => {
 
   it('clicking an agent in the sidebar CHAT list also switches the real chat + updates the URL', async () => {
     const user = userEvent.setup()
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }, { name: 'agent-b' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockImplementation((_ws, agentName) =>
       Promise.resolve({
@@ -133,7 +133,7 @@ describe('WorkspaceChat URL-driven agent/session', () => {
 describe('WorkspaceChat new chat', () => {
   it('clears the URL session param and starts a genuinely new session on the next send', async () => {
     const user = userEvent.setup()
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({
       messages: [{ role: 'user', content: 'old conversation', timestamp: 1 }],
@@ -163,7 +163,7 @@ describe('WorkspaceChat new chat', () => {
 
   it('clears the persisted localStorage session id, not only the URL', async () => {
     const user = userEvent.setup()
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
     // Deliberately never resolves — isolates the click's IMMEDIATE effect
@@ -190,7 +190,7 @@ describe('WorkspaceChat new chat', () => {
   })
 
   it('disables the New chat button while a turn is actively streaming', async () => {
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
     // agent_running: true (an already-active stream) — reconnects on

@@ -15,10 +15,10 @@ Every handler goes through the shared `envelope.service_call` (threadpool
 hop + FeatureError -> error-envelope mapping — see its own docstring).
 
 Security note (deliberate, current scope — mirrors `api/v1/onboarding.py`'s
-own note): no auth gate today. This is a provisioning action with real
-side effects (creates profiles, writes config.yaml/SOUL.md/AGENTS.md) —
-revisit the moment any auth layer exists in front of this service, before
-exposing it beyond local/trusted use.
+own note): see `features/errors.py`'s `NO_AUTH_GATE_NOTE`. This is also a
+provisioning action with real side effects (creates profiles, writes
+config.yaml/SOUL.md/AGENTS.md) — revisit the moment any auth layer exists
+in front of this service, before exposing it beyond local/trusted use.
 """
 from __future__ import annotations
 

@@ -391,7 +391,10 @@ mod tests {
     #[tokio::test]
     async fn workspace_with_no_container_yet_returns_no_container() {
         let store = temp_store().await;
-        let launcher = FakeLauncher::that_fails_first(1);
+        // Exceeds LaunchRetryPolicy::production()'s 3 in-call attempts so
+        // the launch genuinely never succeeds, matching this test's
+        // "no container ever existed" premise.
+        let launcher = FakeLauncher::that_fails_first(3);
         let client = reqwest::Client::new();
 
         // First launch attempt fails -> row exists (Failed) but

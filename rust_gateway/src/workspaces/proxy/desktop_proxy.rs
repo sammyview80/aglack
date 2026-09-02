@@ -34,8 +34,8 @@ use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest, http, Message as TungsteniteMessage,
 };
 
-use super::resolve::resolve_ready_workspace;
-use super::route::WorkspacesState;
+use crate::workspaces::resolve::resolve_ready_workspace;
+use crate::workspaces::route::WorkspacesState;
 use crate::proxy::forward_to;
 
 /// Build the outbound WebSocket handshake request to `target_ws_url` with
@@ -243,7 +243,7 @@ async fn relay_websocket(socket: WebSocket, target_ws_url: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{body_json, temp_store};
+    use crate::workspaces::test_support::{body_json, temp_store};
     use super::*;
     use crate::workspaces::container::FakeLauncher;
     use axum::{
@@ -253,7 +253,7 @@ mod tests {
     };
 
     fn state_with_store(store: crate::workspaces::WorkspaceStore) -> Arc<WorkspacesState> {
-        super::super::test_support::state_with_store(store, Arc::new(FakeLauncher::default()))
+        crate::workspaces::test_support::state_with_store(store, Arc::new(FakeLauncher::default()))
     }
 
     #[tokio::test]

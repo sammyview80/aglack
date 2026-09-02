@@ -18,7 +18,7 @@ import type {
   ListAgentsResult,
 } from '@/features/agent-history/types'
 
-type WireAgent = { name: string }
+type WireAgent = { name: string; is_working?: boolean }
 
 type WireListAgentsResult = { agents: WireAgent[] }
 
@@ -91,7 +91,7 @@ export async function listAgents(workspaceId: string): Promise<ListAgentsResult>
     gatewayUrl(),
     agentHistoryPath(workspaceId, 'agents'),
   )
-  return { agents: data.agents.map((row) => ({ name: row.name })) }
+  return { agents: data.agents.map((row) => ({ name: row.name, isWorking: row.is_working === true })) }
 }
 
 export async function listAgentSessions(

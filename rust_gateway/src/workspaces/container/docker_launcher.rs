@@ -4,7 +4,7 @@ use tokio::process::Command;
 
 use super::boot_script::deliver_boot_script;
 use super::desktop::desktop_subfolder_env_arg;
-use super::docker_cli::{pick_free_port, run_docker};
+use super::docker_cli::{docker_daemon_reachable, pick_free_port, run_docker};
 use super::health::{wait_for_desktop_ready, wait_for_wrapper_ready};
 use super::inspect::inspect_container_state;
 use super::{ContainerLauncher, ContainerState, LaunchedContainer};
@@ -214,5 +214,9 @@ impl ContainerLauncher for DockerCliLauncher {
         container_name: &str,
     ) -> Result<(), super::super::CreateWorkspaceError> {
         run_docker(container_name, &["start", container_name]).await
+    }
+
+    async fn daemon_reachable(&self) -> bool {
+        docker_daemon_reachable().await
     }
 }

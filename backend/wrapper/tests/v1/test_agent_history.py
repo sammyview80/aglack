@@ -58,6 +58,50 @@ def test_list_agents_returns_created_profile(client: TestClient) -> None:
     assert "history-agent-one" in names
 
 
+def test_list_agents_reports_is_working_false_by_default(client: TestClient) -> None:
+    _create_profile(client, "history-agent-idle")
+    _make_session("history-agent-idle")
+
+    response = client.get("/api/wrapper/v1/agent-history/agents")
+
+    assert response.status_code == 200
+    agents_by_name = {a["name"]: a for a in response.json()["data"]["agents"]}
+    assert agents_by_name["history-agent-idle"]["is_working"] is False
+
+
+def test_list_agents_reports_is_working_true_for_a_streaming_session(
+    client: TestClient,
+) -> None:
+    """Sidebar busy-dot signal — the whole point of the `is_working` field
+    added to `list_agents()`. Simulates a real in-flight turn the same way
+    upstream itself detects one: a session with `active_stream_id` set,
+    plus that same stream id present in the live `STREAMS` registry (see
+    `_active_stream_ids()`/`_is_streaming_session()` in
+    `api/models.py`) — not a fake/synthetic flag on the wrapper side."""
+    from api.config import STREAMS, STREAMS_LOCK
+
+    _create_profile(client, "history-agent-busy")
+    _create_profile(client, "history-agent-idle-sibling")
+    stream_id = "test-stream-history-agent-busy"
+    session = _make_session("history-agent-busy")
+    session.active_stream_id = stream_id
+    session.save()
+    _make_session("history-agent-idle-sibling")
+
+    with STREAMS_LOCK:
+        STREAMS[stream_id] = object()
+    try:
+        response = client.get("/api/wrapper/v1/agent-history/agents")
+    finally:
+        with STREAMS_LOCK:
+            STREAMS.pop(stream_id, None)
+
+    assert response.status_code == 200
+    agents_by_name = {a["name"]: a for a in response.json()["data"]["agents"]}
+    assert agents_by_name["history-agent-busy"]["is_working"] is True
+    assert agents_by_name["history-agent-idle-sibling"]["is_working"] is False
+
+
 def test_list_sessions_isolates_by_profile(client: TestClient) -> None:
     _create_profile(client, "history-agent-a")
     _create_profile(client, "history-agent-b")

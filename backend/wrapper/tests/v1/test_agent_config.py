@@ -205,3 +205,46 @@ def test_update_soul_rejects_symlinked_target(client: TestClient, tmp_path) -> N
     body = response.json()
     assert body["error"]["code"] == "agent_config_symlink_rejected"
     assert outside_target.read_text(encoding="utf-8") == "do not touch\n"
+
+
+def test_traversal_shaped_profile_name_returns_404_not_root_soul(
+    client: TestClient,
+) -> None:
+    """Regression test for a bug in `_require_known_profile`: it was
+    missing the `_PROFILE_ID_RE` pre-check that
+    `agent_history/service.py`'s own version already has (see that
+    module's `test_traversal_shaped_profile_name_returns_404`, which uses
+    the same `%2e%2e` traversal-shaped name).
+    `get_hermes_home_for_profile()` falls back to the BASE Hermes home for
+    any name that isn't a valid profile id, so `home.is_dir()` alone
+    (always true for the base home) would incorrectly accept the name and
+    let a caller read/write the ROOT profile's own SOUL.md under a fake
+    identity."""
+    from api.profiles import get_hermes_home_for_profile
+
+    root_home = get_hermes_home_for_profile("default")
+    root_soul_path = root_home / "SOUL.md"
+    original_root_soul = (
+        root_soul_path.read_text(encoding="utf-8") if root_soul_path.exists() else None
+    )
+
+    get_response = client.get("/api/wrapper/v1/agent-config/%2e%2e/soul")
+
+    assert get_response.status_code == 404
+    get_body = get_response.json()
+    assert get_body["ok"] is False
+    assert get_body["error"]["code"] == "agent_config_profile_not_found"
+
+    put_response = client.put(
+        "/api/wrapper/v1/agent-config/%2e%2e/soul",
+        json={"content": "# Malicious\n"},
+    )
+
+    assert put_response.status_code == 404
+    put_body = put_response.json()
+    assert put_body["ok"] is False
+    assert put_body["error"]["code"] == "agent_config_profile_not_found"
+
+    assert (
+        root_soul_path.read_text(encoding="utf-8") if root_soul_path.exists() else None
+    ) == original_root_soul

@@ -134,6 +134,28 @@ impl WorkspaceStore {
         Ok(row.map(Self::record_from_row))
     }
 
+    /// Every workspace the store currently believes is `Ready` AND has a
+    /// real `container_name` — the exact set `daemon_watch.rs` needs to
+    /// know "which containers should be running right now" after a
+    /// Docker daemon down→up transition. Deliberately excludes
+    /// `Creating`/`Failed` rows: those were never a working container
+    /// (or the last attempt explicitly failed), so auto-starting them
+    /// would resurrect something that was never meant to run, not
+    /// recover something that legitimately went down with the daemon.
+    pub async fn list_ready_with_container(&self) -> Result<Vec<WorkspaceRecord>, sqlx::Error> {
+        let status = WorkspaceStatus::Ready.as_db_str();
+        let rows = sqlx::query(
+            "SELECT workspace_id, status, container_name, host_port, desktop_port \
+             FROM workspace_creations \
+             WHERE status = ? AND container_name IS NOT NULL",
+        )
+        .bind(status)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Self::record_from_row).collect())
+    }
+
     /// List workspaces, newest first, for a listing/dashboard caller. A
     /// single `SELECT ... ORDER BY ... LIMIT ... OFFSET ...` — no per-row
     /// follow-up query, no container/network call (see

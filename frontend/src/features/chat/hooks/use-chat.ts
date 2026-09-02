@@ -325,6 +325,10 @@ export function useChat(
 
     if (workspaceId && agent) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentHistory.sessions(workspaceId, agent) })
+      // The turn just went idle — re-fetch the sidebar's agents list so its
+      // busy dot (AgentSummary.isWorking) clears for this agent. Mirrors
+      // the `send()` invalidation below that lights it in the first place.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentHistory.agents(workspaceId) })
       if (sessionId) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.agentHistory.messages(workspaceId, agent, sessionId),
@@ -392,6 +396,11 @@ export function useChat(
       }
       setStreamId(result.streamId)
       setIsSending(false)
+      // Turn just started server-side — re-fetch the sidebar's agents list
+      // so its busy dot lights immediately rather than waiting for this
+      // agent's OWN turn-settle invalidation above (which only fires once
+      // the turn ends) or another agent's unrelated 30s staleTime to lapse.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentHistory.agents(sentForWorkspaceId) })
     } catch {
       /* onError already toasted */
       if (sendSeqRef.current === seq) setIsSending(false)

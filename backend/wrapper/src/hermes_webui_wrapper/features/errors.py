@@ -14,6 +14,14 @@ mapping it applies.
 """
 from __future__ import annotations
 
+NO_AUTH_GATE_NOTE = (
+    "these routes have no auth gate today. This wrapper has no "
+    "session/login layer yet at all."
+)
+"""Shared opening sentence for each native route module's own "Security
+note" docstring — every `api/v1/*.py` route module still appends its own
+feature-specific risk detail after this."""
+
 
 class FeatureError(Exception):
     def __init__(self, code: str, message: str, status_code: int):

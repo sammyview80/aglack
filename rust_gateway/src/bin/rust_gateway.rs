@@ -65,6 +65,20 @@ async fn main() {
         http_client: reqwest::Client::new(),
     });
 
+    // Background watcher: if the Docker daemon itself goes down (e.g.
+    // Docker Desktop killed) and later comes back up, make sure every
+    // workspace the store believes is Ready actually has a running
+    // container again. See `workspaces::daemon_watch` for the exact
+    // down→up trigger and why it does not run continuously. Cloning the
+    // `Arc<WorkspacesState>` (cheap refcount bump, same real store and
+    // launcher every HTTP route already uses) keeps this an independent
+    // long-lived task, not something that could ever block or be blocked
+    // by request handling.
+    tokio::spawn(rust_gateway::workspaces::run_daemon_watch(
+        workspaces_state.clone(),
+        rust_gateway::workspaces::DEFAULT_POLL_INTERVAL,
+    ));
+
     let app = build_router(
         proxy_state,
         workspaces_state,

@@ -60,22 +60,21 @@ def _require_known_profile(name: str) -> None:
     profile's home, which always exists, and incorrectly accept the name.
     Same filesystem-existence check `features/agent_config/service.py`
     already uses for a *valid* name, so a not-yet-created agent behaves
-    identically across both features."""
-    from api.profiles import _is_root_profile, _PROFILE_ID_RE, get_hermes_home_for_profile
+    identically across both features. Delegates the actual lookup to
+    `features.profile_lookup.known_profile_home` (shared with
+    `agent_config`), which does this same name-shape-then-existence
+    check."""
+    from hermes_webui_wrapper.features.profile_lookup import known_profile_home
 
-    if _is_root_profile(name):
-        return
-    if not name or not _PROFILE_ID_RE.fullmatch(name):
-        raise AgentHistoryError(
-            "agent_history_profile_not_found", f"Profile '{name}' does not exist.", 404
-        )
-    home = get_hermes_home_for_profile(name)
-    if not home.is_dir():
+    if known_profile_home(name) is None:
         raise AgentHistoryError(
             "agent_history_profile_not_found", f"Profile '{name}' does not exist.", 404
         )
 
 
+# If a second feature needs pagination, move `_parse_int_param` and
+# `_validate_pagination` here (or to a shared module) instead of
+# reimplementing them — they have no agent-history-specific logic.
 def _parse_int_param(value: str | int | None, default: int, label: str) -> int:
     """Parse a raw query-string value into an int, raising this feature's
     400 error instead of letting FastAPI's own query-param typing produce a
@@ -120,8 +119,41 @@ def list_agents() -> dict[str, Any]:
                 names.add(entry.name)
 
     ordered = ["default"] + sorted(names - {"default"})
-    agents = [{"name": name} for name in ordered]
+    working = _profiles_with_a_streaming_session(ordered)
+    agents = [{"name": name, "is_working": name in working} for name in ordered]
     return {"agents": agents}
+
+
+def _profiles_with_a_streaming_session(names: list[str]) -> set[str]:
+    """Which of `names` currently own at least one actively-streaming
+    session — reuses the one place upstream computes `is_streaming`
+    (`all_sessions()` -> `_is_streaming_session()` against the live
+    `STREAMS`/`ACTIVE_RUNS` state in `api/models.py`) instead of a second,
+    possibly-drifting definition of "busy", and the same
+    `_profiles_match()` `list_sessions()` below already uses for
+    profile/session attribution. One `all_sessions()` scan covers every
+    profile — `list_agents()` is on the sidebar-refresh path, and profile
+    count and session count are both unbounded here, so this must not be
+    one upstream call per profile.
+    """
+    from api.models import all_sessions
+    from api.profiles import _profiles_match
+
+    working: set[str] = set()
+    remaining = set(names)
+    if not remaining:
+        return working
+    for row in all_sessions():
+        if not row.get("is_streaming"):
+            continue
+        row_profile = row.get("profile")
+        for name in list(remaining):
+            if _profiles_match(row_profile, name):
+                working.add(name)
+                remaining.discard(name)
+        if not remaining:
+            break
+    return working
 
 
 _SESSION_PROJECTION_KEYS = (

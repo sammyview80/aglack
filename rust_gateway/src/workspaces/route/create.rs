@@ -171,7 +171,9 @@ mod tests {
     async fn posting_a_name_that_previously_failed_still_retries_instead_of_409() {
         let state = state_with_store(
             temp_store().await,
-            Arc::new(FakeLauncher::that_fails_first(1)),
+            // Exceeds LaunchRetryPolicy::production()'s 3 in-call attempts so
+            // the launch genuinely never succeeds within the first call.
+            Arc::new(FakeLauncher::that_fails_first(3)),
         );
 
         let first = create_workspace_route(

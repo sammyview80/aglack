@@ -27,6 +27,23 @@ pub(crate) async fn pick_free_port() -> Result<u16, super::super::CreateWorkspac
         })
 }
 
+/// Cheap, real liveness check for the Docker daemon itself — `docker info`
+/// exits non-zero (or the `docker` binary is entirely unreachable) when
+/// the daemon is down, e.g. Docker Desktop was killed. Used by the
+/// daemon-recovery watcher (`../../daemon_watch.rs`) to detect the exact
+/// down→up transition that means "containers that were running before
+/// the daemon died need to be started again" — a single boolean, not
+/// `ContainerState`, since this is about the DAEMON's own availability,
+/// not any one container's.
+pub(crate) async fn docker_daemon_reachable() -> bool {
+    Command::new("docker")
+        .args(["info"])
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 pub(crate) async fn run_docker(
     container_name: &str,
     args: &[&str],

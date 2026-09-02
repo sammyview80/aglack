@@ -4,6 +4,13 @@
 
 export type AgentSummary = {
   name: string
+  /** True while this agent has at least one actively-streaming session
+   * (any session, not only the one this tab may have open) — backed by
+   * upstream's own `is_streaming` (`all_sessions()` in Hermes' `api/models.py`),
+   * aggregated per-profile by the wrapper's `agent_history` service. Drives
+   * the sidebar busy dot (see `threads-shell.tsx`), distinct from the
+   * per-open-chat `chat.isStreaming` from `useChat`. */
+  isWorking: boolean
 }
 
 export type AgentSession = {

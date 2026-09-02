@@ -21,8 +21,8 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::resolve::resolve_ready_workspace;
-use super::route::WorkspacesState;
+use crate::workspaces::resolve::resolve_ready_workspace;
+use crate::workspaces::route::WorkspacesState;
 use crate::proxy::forward_to;
 
 /// Handles `/workspaces/:id/hermes-webui/*path`.
@@ -72,7 +72,10 @@ async fn hermes_webui_proxy(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{body_json, temp_store};
+    use crate::workspaces::test_support::{
+        assert_not_ready_workspace_returns_409, assert_unknown_workspace_id_returns_404,
+        temp_store,
+    };
     use super::*;
     use crate::workspaces::container::FakeLauncher;
     use axum::{
@@ -82,7 +85,7 @@ mod tests {
     };
 
     fn state_with_store(store: crate::workspaces::WorkspaceStore) -> Arc<WorkspacesState> {
-        super::super::test_support::state_with_store(store, Arc::new(FakeLauncher::default()))
+        crate::workspaces::test_support::state_with_store(store, Arc::new(FakeLauncher::default()))
     }
 
     async fn spawn_echo_wrapper() -> u16 {
@@ -115,45 +118,14 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_workspace_id_returns_404() {
-        let state = state_with_store(temp_store().await);
-
-        let response = hermes_webui_proxy_route_root(
-            State(state),
-            Path("does-not-exist".to_string()),
-            HttpRequest::builder()
-                .uri("/workspaces/does-not-exist/hermes-webui/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "workspace_not_found");
+        assert_unknown_workspace_id_returns_404("hermes-webui", hermes_webui_proxy_route_root)
+            .await;
     }
 
     #[tokio::test]
     async fn not_ready_workspace_returns_409() {
-        let store = temp_store().await;
-        store
-            .begin_creation("my-workspace", "ws-1")
-            .await
-            .expect("begin_creation");
-        let state = state_with_store(store);
-
-        let response = hermes_webui_proxy_route_root(
-            State(state),
-            Path("ws-1".to_string()),
-            HttpRequest::builder()
-                .uri("/workspaces/ws-1/hermes-webui/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "workspace_not_ready");
+        assert_not_ready_workspace_returns_409("hermes-webui", hermes_webui_proxy_route_root)
+            .await;
     }
 
     /// Unlike onboarding_proxy.rs, ANY path (not just a fixed namespace)

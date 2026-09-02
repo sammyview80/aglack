@@ -58,7 +58,7 @@ function renderChat() {
 
 describe('WorkspaceChat clarification layout', () => {
   it('renders the clarify prompt outside the scrollable transcript, above the composer', async () => {
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedUseChat.mockReturnValue(
       baseChat({
         clarify: { clarifyId: 'c1', question: 'Which environment?', choicesOffered: ['staging', 'prod'] },
@@ -82,7 +82,7 @@ describe('WorkspaceChat clarification layout', () => {
   })
 
   it('does not show the "answer required" scroll button when there is no pending clarification', async () => {
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedUseChat.mockReturnValue(baseChat())
 
     renderChat()
@@ -95,7 +95,7 @@ describe('WorkspaceChat clarification layout', () => {
 
   it('the "answer required" button scrolls to and focuses the clarify input', async () => {
     const user = userEvent.setup()
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedUseChat.mockReturnValue(
       baseChat({
         clarify: { clarifyId: 'c1', question: 'Which environment?', choicesOffered: [] },
@@ -116,7 +116,7 @@ describe('WorkspaceChat clarification layout', () => {
   })
 
   it('renders exactly one pending-input panel when both approval and clarify are set (approval wins)', async () => {
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedUseChat.mockReturnValue(
       baseChat({
         approval: {

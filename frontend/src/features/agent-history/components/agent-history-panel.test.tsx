@@ -37,7 +37,7 @@ function deferred<T>() {
 
 describe('AgentHistoryPanel fetch gating', () => {
   it('does not fetch agents while the panel is closed', () => {
-    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     renderWithClient(<AgentHistoryPanel workspaceId="ws-1" open={false} />)
 
     expect(mockedApi.listAgents).not.toHaveBeenCalled()
@@ -46,7 +46,7 @@ describe('AgentHistoryPanel fetch gating', () => {
   })
 
   it('fetches agents once the panel opens', async () => {
-    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     renderWithClient(<AgentHistoryPanel workspaceId="ws-1" open={true} />)
 
     await waitFor(() => expect(mockedApi.listAgents).toHaveBeenCalledTimes(1))
@@ -57,7 +57,7 @@ describe('AgentHistoryPanel agent switching', () => {
   it('never shows the previous agent sessions while the new agent is still loading', async () => {
     const user = userEvent.setup()
     mockedApi.listAgents.mockResolvedValue({
-      agents: [{ name: 'agent-a' }, { name: 'agent-b' }],
+      agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }],
     })
 
     const sessionsA = {
@@ -104,7 +104,7 @@ describe('AgentHistoryPanel agent switching', () => {
 describe('AgentHistoryPanel onSelectSession', () => {
   it('fires onSelectSession with the exact agent and session clicked, and stays on the sessions list', async () => {
     const user = userEvent.setup()
-    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     const session = {
       sessionId: 'sess-1',
       title: 'Clicked session',
@@ -133,7 +133,7 @@ describe('AgentHistoryPanel onSelectSession', () => {
 
   it('never navigates to a transcript view itself, even without onSelectSession wired', async () => {
     const user = userEvent.setup()
-    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedApi.listAgentSessions.mockResolvedValue({
       sessions: [{ sessionId: 'sess-1', title: 'No callback wired', messageCount: 1, updatedAt: 1, lastMessageAt: 1 }],
       limit: 50,
@@ -156,7 +156,7 @@ describe('AgentHistoryPanel onSelectSession', () => {
 
 describe('AgentHistoryPanel skeleton behavior', () => {
   it('shows a skeleton only on first load, not on a refetch that keeps prior content', async () => {
-    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a' }] })
+    mockedApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedApi.listAgentSessions.mockResolvedValue({
       sessions: [
         { sessionId: 's-1', title: 'First session', messageCount: 1, updatedAt: 1, lastMessageAt: 1 },
