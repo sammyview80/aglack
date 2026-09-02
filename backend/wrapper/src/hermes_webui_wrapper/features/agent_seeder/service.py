@@ -30,7 +30,13 @@ For each agent in a mode's tree:
 
 1. Create the profile via `api.profiles.create_profile_api` if it doesn't
    already exist (idempotent — an existing profile is never re-created or
-   destroyed).
+   destroyed). A newly created profile clones the root/default profile's
+   `config.yaml`/`.env` (`clone_from=<resolved root name>, clone_config=True`)
+   so it inherits an already-configured model provider/credentials —
+   otherwise the agent has no model and cannot chat. Root name is resolved
+   via `list_profiles_api()`'s `is_default` row, never hardcoded. Soft
+   no-op if the root itself has no model configured yet (pre-onboarding).
+   Never re-applied to an existing profile.
 2. `_ensure_agent_workspace`: if that profile has no `workspace`/
    `default_workspace` configured yet, create a real directory named
    after the agent under `config.resolve_agent_workspaces_root()` (e.g.
@@ -41,7 +47,12 @@ For each agent in a mode's tree:
    always hitting the skip path `create_profile_api` alone would leave it
    in (that function never sets a workspace itself).
 3. Overwrite SOUL.md from `soul.md`, via
-   `features.agent_config.service.update_soul`.
+   `features.agent_config.service.update_soul`. If the agent has no
+   `soul.md` of its own AND its profile was just created in step 1
+   (never for a pre-existing profile), delete the SOUL.md that step 1's
+   clone copied in from the root — otherwise a soul-less agent would
+   silently keep the ROOT's identity instead of having none, since a
+   missing SOUL.md is what every consumer already treats as "no soul".
 4. If a workspace is configured for that profile (from step 2, or already
    set by hand), overwrite its workspace AGENTS.md from `agent.md`, via
    `features.agent_config.service.update_agent_instructions`. Skipped
@@ -106,16 +117,52 @@ def list_modes() -> list[str]:
     return available_modes(_default_seeder_root())
 
 
+def _resolve_root_profile_name() -> str | None:
+    """The root/default profile's actual name, resolved the same way
+    `agent_history`/`agent_config` do (`_is_root_profile`/`_profiles_match`)
+    — never the hardcoded literal `"default"`, since this checkout may have
+    a renamed root profile. Returns `None` only if `list_profiles_api()`
+    reports no row at all (should not happen in practice, but this is a
+    read path so it fails soft, not hard)."""
+    from api.profiles import list_profiles_api
+
+    for p in list_profiles_api():
+        if p.get("is_default"):
+            return p.get("name")
+    return None
+
+
 def _create_profile_if_missing(agent: AgentSpec) -> bool:
     """Returns True if a new profile was created. Idempotent — an existing
-    profile is left untouched."""
+    profile is left untouched.
+
+    A brand-new profile clones the root profile's `config.yaml`/`.env` via
+    upstream's own `clone_from`/`clone_config` (see `create_profile_api` in
+    `../upstream/api/profiles.py`, `_CLONE_CONFIG_FILES`) so it inherits
+    the already-configured model provider/credentials — otherwise a seeded
+    agent has no model at all and cannot start a chat turn. Cloning the
+    `.env` also copies the root profile's API key(s); that is deliberate
+    here, not incidental — a per-agent profile needs real credentials to
+    talk to its provider, not just the model name. This only ever applies
+    to a profile being created for the first time (gated by the `is_dir()`
+    check above); re-running the seeder against an existing profile never
+    touches its config again, so a user's later model change is never
+    clobbered. If the root profile itself has no model configured yet
+    (onboarding not run), cloning still succeeds — it just copies whatever
+    the root's config.yaml/.env currently contain, so this is a soft
+    no-op, not a failure, and the agent is still created."""
     from api.profiles import create_profile_api, get_hermes_home_for_profile
 
     home = get_hermes_home_for_profile(agent.slug)
     if home.is_dir():
         return False
+
+    root_name = _resolve_root_profile_name()
     try:
-        create_profile_api(agent.slug)
+        if root_name is not None:
+            create_profile_api(agent.slug, clone_from=root_name, clone_config=True)
+        else:
+            create_profile_api(agent.slug)
     except FileExistsError:
         # Raced with something else creating it between the is_dir() check
         # and this call — fine, proceed as "already existed".
@@ -180,11 +227,25 @@ def _ensure_agent_workspace(agent: AgentSpec, profile_home: Path) -> str | None:
     return str(workspace_dir)
 
 
-def _apply_soul(agent: AgentSpec) -> bool:
+def _apply_soul(agent: AgentSpec, profile_home: Path, profile_created: bool) -> bool:
+    """Write this agent's own `soul.md` if it has one. If it has none AND
+    the profile was just created here, remove the SOUL.md that
+    `create_profile_api(..., clone_config=True)` copied in from the root
+    profile (`_CLONE_CONFIG_FILES` in `../upstream/api/profiles.py`
+    includes `SOUL.md`) — otherwise this agent would silently keep the
+    ROOT's identity instead of getting no soul at all. Every consumer of
+    a missing SOUL.md (see `../upstream/api/routes.py`'s memory-panel
+    read, `soul_file.exists()` else `""`) treats "file absent" as an
+    empty soul, not an error, so deleting it is the correct "no soul"
+    state — never invent placeholder text, and never touch a
+    pre-existing profile's SOUL.md (the never-clobber rule)."""
     from hermes_webui_wrapper.features.agent_config import service as agent_config_service
 
     content = agent.read_soul()
     if content is None:
+        if profile_created:
+            soul_path = profile_home / "SOUL.md"
+            soul_path.unlink(missing_ok=True)
         return False
     agent_config_service.update_soul(agent.slug, content)
     return True
@@ -258,14 +319,15 @@ def _apply_agent(tree: SeederTree, agent: AgentSpec) -> dict[str, Any]:
 
     result: dict[str, Any] = {"agent": agent.slug, "display_name": agent.folder_name}
 
-    result["profile_created"] = _create_profile_if_missing(agent)
+    profile_created = _create_profile_if_missing(agent)
+    result["profile_created"] = profile_created
     profile_home = get_hermes_home_for_profile(agent.slug)
 
     workspace_created = _ensure_agent_workspace(agent, profile_home)
     if workspace_created:
         result["workspace_created"] = workspace_created
 
-    result["soul_updated"] = _apply_soul(agent)
+    result["soul_updated"] = _apply_soul(agent, profile_home, profile_created)
     _apply_agent_instructions(agent, result)
 
     result["skills_seeded"] = _apply_skills(tree, agent, profile_home)

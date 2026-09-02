@@ -168,8 +168,14 @@ src/hermes_webui_wrapper/
     │   ├── service.py          parses ../../../../seeder/ via seeder_kit.parse_tree
     │   │                       (mode-scoped — see that module's own docstring for why
     │   │                       per-agent content is mode-scoped but global tools/skills
-    │   │                       are not), then applies it via create_profile_api +
-    │   │                       _ensure_agent_workspace (creates a real
+    │   │                       are not), then applies it via create_profile_api
+    │   │                       (new profiles clone the root profile's config.yaml/
+    │   │                       .env via clone_from/clone_config=True, so a seeded
+    │   │                       agent inherits model provider + API key; root name
+    │   │                       resolved via list_profiles_api()'s is_default row,
+    │   │                       never hardcoded "default"; soft no-op if root has
+    │   │                       no model yet; never re-applied to an existing
+    │   │                       profile) + _ensure_agent_workspace (creates a real
     │   │                       <agent-workspaces-root>/<slug>/ dir + writes it into
     │   │                       config.yaml as `workspace`, only if none is set yet —
     │   │                       config.resolve_agent_workspaces_root() derives the root

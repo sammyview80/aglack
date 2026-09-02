@@ -137,6 +137,43 @@ def test_apply_writes_soul_content_from_soul_md(
     assert soul_response.json()["data"]["content"] == f"# {agent_name}\nI am the {agent_name} agent.\n"
 
 
+def test_apply_agent_without_soul_md_does_not_inherit_root_soul(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_name: str
+) -> None:
+    """`create_profile_api(..., clone_config=True)` clones `SOUL.md` along
+    with `config.yaml`/`.env` (`_CLONE_CONFIG_FILES` in
+    `../upstream/api/profiles.py`) so a newly seeded agent inherits a
+    reachable model provider — but that same clone would silently leave
+    the ROOT's identity in place for an agent with no `soul.md` of its
+    own (soul is optional per `seeder_kit`). Every consumer of a missing
+    SOUL.md treats "file absent" as no soul at all (empty string), not an
+    error, so the fix must delete the cloned file, not invent placeholder
+    text or leave the root's identity in place."""
+    from api.profiles import get_hermes_home_for_profile
+
+    root = tmp_path / "seeder"
+    _write_tool(root / "tools" / "global_tool.py", "global_tool")
+    _write_skill(root / "skills" / "global_skill", "global_skill")
+    agent_dir = _agent_dir(root, "simple", agent_name)
+    _write_tool(agent_dir / "tools" / "widget_tool.py", "widget_tool")
+    _write_skill(agent_dir / "skills" / "widget_skill", "widget_skill")
+    # Deliberately no soul.md for this agent.
+    monkeypatch.setattr(agent_seeder_service, "_default_seeder_root", lambda: root)
+
+    root_name = agent_seeder_service._resolve_root_profile_name()
+    root_soul_path = get_hermes_home_for_profile(root_name) / "SOUL.md"
+    root_soul_path.write_text(
+        "You are Hermes Agent, ... created by Nous Research\n", encoding="utf-8"
+    )
+
+    response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+    entry = response.json()["data"]["applied"][0]
+    assert entry["soul_updated"] is False
+
+    agent_soul_path = get_hermes_home_for_profile(agent_name) / "SOUL.md"
+    assert not agent_soul_path.exists()
+
+
 def test_apply_seeds_global_and_agent_skills(
     client: TestClient, synthetic_seeder_tree: Path, agent_name: str
 ) -> None:
@@ -492,3 +529,104 @@ def test_list_modes_empty_when_no_modes_directory(
 
     assert response.status_code == 200
     assert response.json()["data"] == []
+
+
+# --- Model-configuration inheritance (a seeded agent must be able to chat) ---
+
+
+def _configure_root_model(model_provider: str = "openai", default_model: str = "fake-model") -> None:
+    """Writes a model section into the root/default profile's config.yaml
+    directly (the state onboarding would normally produce), resolved via
+    the same root-name lookup the seeder itself uses."""
+    from api.profiles import get_hermes_home_for_profile
+
+    from hermes_webui_wrapper.features.profile_yaml import load_profile_config, save_profile_config
+
+    root_name = agent_seeder_service._resolve_root_profile_name()
+    config_path = get_hermes_home_for_profile(root_name) / "config.yaml"
+    config = load_profile_config(config_path)
+    config["model"] = {"provider": model_provider, "default": default_model}
+    save_profile_config(config_path, config)
+
+
+def test_apply_new_profile_inherits_root_model_configuration(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """The gap this fix closes: without a model, a seeded agent's profile
+    cannot start a chat turn at all. A newly created profile must clone
+    the root profile's already-configured model settings."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    _configure_root_model(model_provider="openai", default_model="fake-model")
+
+    response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+    entry = response.json()["data"]["applied"][0]
+    assert entry["profile_created"] is True
+
+    home = get_hermes_home_for_profile(agent_name)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert config["model"]["provider"] == "openai"
+    assert config["model"]["default"] == "fake-model"
+
+
+def test_apply_before_onboarding_still_creates_agent_without_model(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """Seeding before onboarding (root profile has no model configured
+    yet) is a legitimate order — this must be a soft no-op, not a hard
+    failure of profile creation.
+
+    `HERMES_HOME` is session-scoped (see `agent_name` fixture docstring),
+    so an earlier test in this module may have already called
+    `_configure_root_model` on the shared root profile. Arrange and
+    verify the "no model configured" precondition explicitly here rather
+    than assuming it, so this test provably exercises the pre-onboarding
+    path instead of possibly passing via the already-configured one."""
+    from api.profiles import get_hermes_home_for_profile
+
+    from hermes_webui_wrapper.features.profile_yaml import load_profile_config, save_profile_config
+
+    root_name = agent_seeder_service._resolve_root_profile_name()
+    config_path = get_hermes_home_for_profile(root_name) / "config.yaml"
+    config = load_profile_config(config_path)
+    config.pop("model", None)
+    save_profile_config(config_path, config)
+    assert "model" not in load_profile_config(config_path)
+
+    response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+
+    assert response.status_code == 200, response.text
+    entry = response.json()["data"]["applied"][0]
+    assert entry["profile_created"] is True
+    assert entry["agent"] == agent_name
+
+
+def test_reapply_does_not_overwrite_agent_model_changed_after_first_apply(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """Idempotency / never-clobber guarantee: once a profile exists, the
+    seeder must never re-clone or otherwise reset its model config, even
+    if the root profile's own model changes later."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    _configure_root_model(model_provider="openai", default_model="fake-model")
+    client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+
+    home = get_hermes_home_for_profile(agent_name)
+    config_path = home / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["model"] = {"provider": "anthropic", "default": "user-changed-model"}
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    # Root's model changes after the agent's own was hand-edited.
+    _configure_root_model(model_provider="google", default_model="root-changed-model")
+
+    response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+    entry = response.json()["data"]["applied"][0]
+    assert entry["profile_created"] is False
+
+    final_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert final_config["model"]["provider"] == "anthropic"
+    assert final_config["model"]["default"] == "user-changed-model"
