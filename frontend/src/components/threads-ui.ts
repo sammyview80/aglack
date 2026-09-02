@@ -1,10 +1,10 @@
 /** Tailwind class strings for the Threads shell (--th-* tokens on `.threads-app`). */
 export const threadsUi = {
   root:
-    'threads-app flex h-dvh min-h-dvh items-stretch justify-stretch overflow-hidden bg-[var(--th-backdrop)] p-0 text-[var(--th-text)]',
+    'threads-app flex h-dvh min-h-dvh items-stretch justify-stretch overflow-hidden bg-[var(--th-backdrop)] p-0 text-[var(--th-text)] max-[760px]:p-0',
 
   appWindow:
-    'grid h-full min-h-0 w-full grid-cols-[72px_317px_minmax(560px,1fr)_327px] overflow-hidden rounded-[21px] border border-[var(--th-window-border)] bg-[var(--th-window)] shadow-[0_28px_70px_#0a011859,0_3px_12px_#1106223d] max-[1120px]:grid-cols-[72px_250px_minmax(500px,1fr)] max-[760px]:h-dvh max-[760px]:min-h-0 max-[760px]:grid-cols-[72px_1fr] max-[760px]:rounded-none',
+    'grid h-full min-h-0 w-full grid-cols-[72px_317px_minmax(560px,1fr)_327px] overflow-hidden rounded-[21px] border border-[var(--th-window-border)] bg-[var(--th-window)] shadow-[0_28px_70px_#0a011859,0_3px_12px_#1106223d] max-[1120px]:grid-cols-[72px_250px_minmax(500px,1fr)] max-[760px]:h-dvh max-[760px]:min-h-0 max-[760px]:grid-cols-[72px_1fr] max-[760px]:gap-0 max-[760px]:rounded-none',
 
   guildRail:
     'flex w-[72px] min-w-[72px] flex-col items-center overflow-auto bg-[#1e1f22] px-0 pb-3 pt-3 max-[760px]:flex',
@@ -20,7 +20,7 @@ export const threadsUi = {
     'absolute left-[-12px] h-0 w-1 rounded-r-[4px] bg-[#f2f3f5] transition-[height] duration-150 ease-out group-hover:h-5 group-aria-[current=page]:h-10',
 
   sidebar:
-    'flex flex-col overflow-auto border-r border-[var(--th-sidebar-line)] bg-gradient-to-b from-[var(--th-sidebar)] to-[var(--th-sidebar-2)] px-[11px] pb-3 pt-[13px] max-[760px]:hidden',
+    'flex flex-col overflow-auto rounded-xl border border-[var(--th-sidebar-line)] bg-gradient-to-b from-[var(--th-sidebar)] to-[var(--th-sidebar-2)] px-4 pb-4 pt-4 max-[760px]:hidden',
   workspaceRow: 'flex h-12 items-center gap-[9px] px-[11px] text-[var(--th-text)] [&_strong]:text-base [&_strong]:tracking-[-0.4px]',
   workspaceHome: 'flex cursor-pointer items-center gap-[9px] bg-transparent p-0 text-inherit',
   workspaceMark:
@@ -57,10 +57,10 @@ export const threadsUi = {
   sidebarFooter: 'mt-auto flex flex-wrap gap-1 pt-[25px]',
   footerButton:
     'flex w-auto items-center gap-3 rounded px-[13px] py-[7px] text-left text-xs text-[var(--th-muted)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)]',
-
-  contentArea: 'flex h-full min-h-0 min-w-0 flex-col bg-[var(--th-content)]',
+  companyHeading: 'text-[17px] font-bold tracking-tight',
+  contentArea: 'flex justify-between h-full min-h-0 min-w-0 flex-col bg-[var(--th-content)]',
   contentHeader:
-    'flex h-[69px] shrink-0 items-center border-b border-[var(--th-header-line)] px-7 max-[760px]:px-4 [&_h1]:m-0 [&_h1]:text-[17px] [&_h1]:tracking-[-0.4px] [&_h1]:text-[var(--th-text)]',
+    'flex h-[69px] shrink-0 items-center border-b border-[var(--th-header-line)] px-8 max-[760px]:px-4 [&_h1]:m-0 [&_h1]:text-[17px] [&_h1]:tracking-[-0.4px] [&_h1]:text-[var(--th-text)]',
   threadsBack:
     'mr-3 flex items-center gap-1.5 rounded-lg bg-transparent px-2.5 py-1.5 text-[13px] font-[560] text-[var(--th-text)] hover:bg-[var(--th-icon-hover)]',
   headerActions:
@@ -90,7 +90,7 @@ export const threadsUi = {
 
   audienceBackdrop: 'hidden max-[1120px]:fixed max-[1120px]:inset-0 max-[1120px]:z-[14] max-[1120px]:block max-[1120px]:bg-[var(--th-modal-scrim)]',
   audiencePanel:
-    'border-l border-[var(--th-sidebar-line)] bg-[var(--th-sidebar)] px-7 pb-12 pt-[49px] max-[1120px]:fixed max-[1120px]:bottom-0 max-[1120px]:right-0 max-[1120px]:top-0 max-[1120px]:z-[15] max-[1120px]:flex max-[1120px]:w-[300px] max-[1120px]:max-w-[85vw] max-[1120px]:translate-x-full max-[1120px]:flex-col max-[1120px]:shadow-[-8px_0_24px_#0000004d] max-[1120px]:transition-transform max-[1120px]:duration-200 max-[1120px]:ease-out',
+    'rounded-xl border border-[var(--th-sidebar-line)] bg-[var(--th-sidebar)] px-8 pb-12 pt-[49px] max-[1120px]:fixed max-[1120px]:bottom-0 max-[1120px]:right-0 max-[1120px]:top-0 max-[1120px]:z-[15] max-[1120px]:flex max-[1120px]:w-[300px] max-[1120px]:max-w-[85vw] max-[1120px]:translate-x-full max-[1120px]:flex-col max-[1120px]:rounded-none max-[1120px]:border-0 max-[1120px]:shadow-[-8px_0_24px_#0000004d] max-[1120px]:transition-transform max-[1120px]:duration-200 max-[1120px]:ease-out',
   audiencePanelOpen: 'max-[1120px]:translate-x-0',
   audienceClose:
     'hidden max-[1120px]:grid max-[1120px]:place-items-center max-[1120px]:self-end max-[1120px]:rounded-md max-[1120px]:bg-transparent max-[1120px]:p-[5px] max-[1120px]:text-[var(--th-muted)] max-[1120px]:transition-colors max-[1120px]:hover:bg-[var(--th-icon-hover)]',
@@ -103,16 +103,16 @@ export const threadsUi = {
   audienceEmpty: 'pt-1 text-[13px] text-[var(--th-muted)]',
   audienceAvatarBtn:
     'rounded-[5px] bg-transparent p-0 hover:outline hover:outline-2 hover:outline-offset-1 hover:outline-[var(--th-hover)]',
-  audienceHistory: 'flex min-h-0 flex-col gap-3 pt-3.5',
+  audienceHistory: 'flex min-h-0 flex-col gap-4 pt-4',
   audienceHistoryHeader: 'flex items-center justify-between gap-2',
   audienceHistoryBack:
     'flex items-center gap-1.5 bg-transparent p-0 text-[13px] font-[650] text-[var(--th-text)]',
   audienceHistoryActions: 'flex items-center gap-1',
   audienceHistoryIcon:
     'grid place-items-center rounded-md bg-transparent p-[5px] text-[var(--th-icon)] hover:bg-[var(--th-icon-hover)]',
-  audienceSessionList: 'flex flex-col gap-0.5 overflow-auto',
+  audienceSessionList: 'flex flex-col gap-1.5 overflow-auto',
   audienceSessionItem:
-    'flex w-full flex-col gap-0.5 rounded-md bg-transparent px-[9px] py-2 text-left transition-[background,color,transform] duration-150 hover:bg-[var(--th-hover)]',
+    'flex w-full flex-col gap-1 rounded-md bg-transparent px-3 py-2.5 text-left transition-[background,color,transform] duration-150 hover:bg-[var(--th-hover)]',
   audienceSessionTitle: 'text-[13.5px] font-semibold text-[var(--th-text)]',
   audienceSessionMeta: 'text-xs text-[var(--th-muted)]',
 

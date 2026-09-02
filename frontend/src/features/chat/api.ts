@@ -16,7 +16,13 @@
  * `hermes_profile` cookie the container requires for per-agent isolation.
  */
 import { gatewayUrl } from '@/lib/env'
-import type { ApprovalChoice, CancelTurnResult, ChatSession, StartTurnResult } from '@/features/chat/types'
+import type {
+  ApprovalChoice,
+  CancelTurnResult,
+  ChatAttachment,
+  ChatSession,
+  StartTurnResult,
+} from '@/features/chat/types'
 
 /** Hermes nests the session under a `session` key
  * (`{"session":{"session_id":...}}`); a top-level `session_id` is kept as a
@@ -32,6 +38,12 @@ type WireStartTurnResult = {
   effective_model_provider?: string
 }
 type WireCancelTurnResult = { ok: boolean; cancelled: boolean; stream_id: string }
+/** Success shape of `POST /api/upload` (`backend/upstream/api/upload.py`'s
+ * `handle_upload`) — the file's bytes are already written server-side by
+ * the time this resolves; `path` is what `startTurn`'s `attachments` must
+ * echo back so `/api/chat/start` can find them (see `_normalize_chat_attachments`,
+ * `backend/upstream/api/routes.py`). */
+type WireUploadResult = { filename: string; path: string; size: number; mime: string; is_image: boolean }
 /** Only the fields this app actually uses from upstream's much larger
  * `session_status()` response (api/session_ops.py) — the rest (title,
  * model, token counts, ...) is intentionally not modeled, matching this
@@ -98,10 +110,32 @@ export async function startTurn(
   agent: string,
   sessionId: string,
   message: string,
+  attachments?: ChatAttachment[],
 ): Promise<StartTurnResult> {
   const data = await chatFetch<WireStartTurnResult>(
     withAgent(`${chatBase(workspaceId)}/api/chat/start`, agent),
-    { method: 'POST', body: JSON.stringify({ session_id: sessionId, message, profile: agent }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        session_id: sessionId,
+        message,
+        profile: agent,
+        // Only sent when non-empty — upstream's normalizer treats an absent
+        // key the same as `[]` (`_normalize_chat_attachments`), so this
+        // avoids widening every existing call's request body for nothing.
+        ...(attachments && attachments.length > 0
+          ? {
+              attachments: attachments.map((a) => ({
+                name: a.name,
+                path: a.path,
+                mime: a.mime,
+                size: a.size,
+                is_image: a.isImage,
+              })),
+            }
+          : {}),
+      }),
+    },
   )
   return {
     streamId: data.stream_id,
@@ -111,6 +145,61 @@ export async function startTurn(
     title: data.title,
     effectiveModel: data.effective_model,
     effectiveModelProvider: data.effective_model_provider,
+  }
+}
+
+/** Uploads one file into the session's server-side attachment inbox via
+ * upstream's real `POST /api/upload` (`backend/upstream/api/upload.py`) —
+ * multipart, NOT JSON, so this bypasses `chatFetch` (which always sets
+ * `Content-Type: application/json`; a multipart body needs the browser's
+ * own boundary-bearing content type, which only happens if we never set
+ * the header ourselves). The returned `path` is what must be echoed back
+ * in `startTurn`'s `attachments` for the turn to actually see the file —
+ * uploading alone does not attach it to anything. */
+export async function uploadAttachment(
+  workspaceId: string,
+  agent: string,
+  sessionId: string,
+  file: File,
+): Promise<ChatAttachment> {
+  const form = new FormData()
+  form.append('session_id', sessionId)
+  form.append('file', file, file.name)
+
+  let res: Response
+  try {
+    res = await fetch(withAgent(`${chatBase(workspaceId)}/api/upload`, agent), {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    })
+  } catch {
+    throw new Error('Cannot reach the gateway. Is rust_gateway running?')
+  }
+
+  let body: unknown
+  try {
+    body = await res.json()
+  } catch {
+    body = undefined
+  }
+
+  const errorText =
+    body && typeof body === 'object' && 'error' in body
+      ? String((body as { error: unknown }).error)
+      : undefined
+
+  if (!res.ok || errorText) {
+    throw new Error(errorText ?? `Upload failed (HTTP ${res.status})`)
+  }
+
+  const data = body as WireUploadResult
+  return {
+    name: data.filename,
+    path: data.path,
+    mime: data.mime,
+    size: data.size,
+    isImage: data.is_image,
   }
 }
 
@@ -137,6 +226,43 @@ export async function getSessionStatus(
 export function chatStreamUrl(workspaceId: string, agent: string, streamId: string): string {
   return withAgent(
     `${chatBase(workspaceId)}/api/chat/stream?stream_id=${encodeURIComponent(streamId)}`,
+    agent,
+  )
+}
+
+/**
+ * Real, servable URL for a previously-uploaded attachment — backed by
+ * upstream's existing `GET /api/file/raw` (`backend/upstream/api/routes.py`,
+ * `_handle_file_raw`), which falls back to the requesting session's own
+ * attachment inbox via `_file_raw_target` (`api/routes.py:20710-20731`,
+ * `_session_attachment_dir()`) when the path isn't found under the
+ * workspace root — exactly where `uploadAttachment()`'s `POST /api/upload`
+ * wrote the file. This is NOT an invented URL scheme: it is the same route
+ * upstream's own vanilla client uses for this exact purpose (see
+ * `backend/upstream/static/ui.js:17012`,
+ * `'api/file/raw?session_id='+sid+'&path='+encodeURIComponent(fname)`).
+ *
+ * `path` MUST be the bare filename (`ChatAttachment.name`, i.e. `dest.name`
+ * from the upload response) — NOT the absolute server-side `ChatAttachment.path`.
+ * `_file_raw_target` resolves `path` via `safe_resolve(root, rel)`, which
+ * requires `rel` to stay a relative child of `root`
+ * (`resolved.relative_to(root)` raises otherwise, `api/helpers.py:62-66`);
+ * handing it the full absolute path would fail that containment check and
+ * 404/403 instead of finding the file one directory up.
+ *
+ * Reached through this same chat proxy (`ANY /workspaces/:id/chat/*path`)
+ * every other call in this file uses, so it carries the same
+ * `?agent=<name>` -> `hermes_profile` cookie translation `_file_raw_target`
+ * needs to resolve the right profile's session.
+ */
+export function attachmentFileUrl(
+  workspaceId: string,
+  agent: string,
+  sessionId: string,
+  filename: string,
+): string {
+  return withAgent(
+    `${chatBase(workspaceId)}/api/file/raw?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(filename)}`,
     agent,
   )
 }

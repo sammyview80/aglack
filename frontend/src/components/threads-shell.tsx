@@ -15,7 +15,6 @@ import {
   Search,
   Send,
   Settings2,
-  ArrowLeft,
   SmilePlus,
   X,
   Zap,
@@ -150,7 +149,7 @@ export function ThreadsShell({
 }: ThreadsShellProps) {
   const navigate = useNavigate()
   const [section, setSection] = useState(title === 'Thread' ? 'Inbox' : title)
-  const heading = section === 'Inbox' ? 'Thread' : section
+  const heading = section === 'Inbox' ? 'Aglack' : section
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeText, setComposeText] = useState('')
   const [composeEmoji, setComposeEmoji] = useState(false)
@@ -425,10 +424,7 @@ export function ThreadsShell({
 
         <section className={threadsUi.contentArea}>
           <header className={threadsUi.contentHeader}>
-            <button type="button" className={threadsUi.threadsBack} onClick={() => navigate('/')} aria-label="Back to workspaces">
-              <ArrowLeft size={16} strokeWidth={2.4} /> Back
-            </button>
-            <h1>{heading}</h1>
+            <h1 className={threadsUi.companyHeading}>{heading}</h1>
             <div className={threadsUi.headerActions}>
               <button type="button" className={threadsUi.iconButton} aria-label="Comments" onClick={openCompose}>
                 <MessageCircle size={21} />

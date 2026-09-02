@@ -12,6 +12,7 @@ import { apiFetch } from '@/lib/api'
 import { gatewayUrl } from '@/lib/env'
 import type {
   AgentMessage,
+  AgentMessageAttachment,
   AgentSession,
   ListAgentMessagesResult,
   ListAgentSessionsResult,
@@ -36,10 +37,19 @@ type WireListAgentSessionsResult = {
   offset: number
 }
 
+type WireAgentMessageAttachment = {
+  name: string
+  path: string
+  mime: string
+  size?: number
+  is_image?: boolean
+}
+
 type WireAgentMessage = {
   role: string
   content: string
   timestamp: number
+  attachments?: WireAgentMessageAttachment[]
 }
 
 type WireListAgentMessagesResult = {
@@ -77,11 +87,22 @@ function mapSession(row: WireAgentSession): AgentSession {
   }
 }
 
+function mapAttachment(row: WireAgentMessageAttachment): AgentMessageAttachment {
+  return {
+    name: row.name,
+    path: row.path,
+    mime: row.mime,
+    size: row.size,
+    isImage: row.is_image,
+  }
+}
+
 function mapMessage(row: WireAgentMessage): AgentMessage {
   return {
     role: row.role,
     content: row.content,
     timestamp: row.timestamp,
+    attachments: row.attachments?.map(mapAttachment),
   }
 }
 

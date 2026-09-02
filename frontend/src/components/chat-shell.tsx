@@ -70,9 +70,9 @@ export function ChatShell({ title, workspaceId, children, aside }: ChatShellProp
         <aside className="sticky top-0 hidden h-dvh w-[320px] shrink-0 overflow-auto px-4 py-4 xl:block">
           {aside ?? (
             <div className="rounded-2xl bg-muted p-4">
-              <p className="text-[15px] font-bold">Thread</p>
+              <p className="text-[15px] font-bold">Aglack</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Chat stays inside this workspace.
+                Aglack is a platform for creating and managing your own AI agents.
               </p>
             </div>
           )}

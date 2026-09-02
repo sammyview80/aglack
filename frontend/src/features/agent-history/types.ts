@@ -21,10 +21,31 @@ export type AgentSession = {
   lastMessageAt: number
 }
 
+/** Same normalized shape `startTurn`'s own `ChatAttachment` sends over the
+ * wire (`features/chat/types.ts`) — this is that record read BACK from
+ * upstream's persisted history via the wrapper's `agent_history` projection
+ * (`backend/wrapper/.../agent_history/service.py::_project_attachments`),
+ * which carries it through verbatim from upstream's own
+ * `user_msg["attachments"]` (`backend/upstream/api/routes.py:22499`).
+ * `size`/`isImage` are optional because upstream's own normalizer
+ * (`_normalize_chat_attachments`, `api/routes.py:24368`) only includes them
+ * when the original upload actually had them. */
+export type AgentMessageAttachment = {
+  name: string
+  path: string
+  mime: string
+  size?: number
+  isImage?: boolean
+}
+
 export type AgentMessage = {
   role: string
   content: string
   timestamp: number
+  /** Absent (not `[]`) means this message never had attachments at all —
+   * see `_project_attachments`'s own doc comment for why that distinction
+   * is preserved through the projection rather than collapsed to `[]`. */
+  attachments?: AgentMessageAttachment[]
 }
 
 export type ListAgentsResult = {

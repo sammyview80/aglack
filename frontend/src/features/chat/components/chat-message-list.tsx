@@ -1,4 +1,5 @@
 import { AgentAvatar } from '@/features/chat/components/agent-avatar'
+import { ChatAttachmentList } from '@/features/chat/components/chat-attachments'
 import { ChatEmptyState } from '@/features/chat/components/chat-empty-state'
 import { MarkdownContent } from '@/features/chat/components/markdown-content'
 import { ThinkingCard } from '@/features/chat/components/thinking-card'
@@ -31,6 +32,8 @@ export function ChatMessageList({
   reasoningText,
   tools,
   onSuggest,
+  workspaceId,
+  sessionId,
 }: {
   agent: string
   turns: ChatTurn[]
@@ -39,6 +42,17 @@ export function ChatMessageList({
   reasoningText: string
   tools: ToolActivity[]
   onSuggest?: (text: string) => void
+  /**
+   * Needed only to build a real image-thumbnail URL for a turn's
+   * attachments (`ChatAttachmentList` -> `attachmentFileUrl`, see that
+   * function's doc comment in `features/chat/api.ts`) — optional so
+   * every existing test/call site that has no attachments to render
+   * keeps working unchanged; a turn WITH attachments but no
+   * `workspaceId`/`sessionId` still renders correctly, just as filename
+   * chips instead of thumbnails (see `ChatAttachmentList`'s fallback).
+   */
+  workspaceId?: string
+  sessionId?: string | null
 }) {
   const isEmpty = turns.length === 0 && !isStreaming
 
@@ -57,7 +71,7 @@ export function ChatMessageList({
         return (
           <div
             className={cn(
-              'flex w-full max-w-full',
+              'flex min-w-0 w-full max-w-full',
               isUser ? 'justify-end' : 'justify-start',
               motionPresets.messageEnter,
             )}
@@ -71,6 +85,14 @@ export function ChatMessageList({
                   {!isUser && turn.reasoning ? <ThinkingCard reasoning={turn.reasoning} /> : null}
                   {!isUser && turn.tools && turn.tools.length > 0 ? (
                     <ToolActivitySummary tools={turn.tools} />
+                  ) : null}
+                  {turn.attachments && turn.attachments.length > 0 ? (
+                    <ChatAttachmentList
+                      attachments={turn.attachments}
+                      workspaceId={workspaceId}
+                      agent={agent}
+                      sessionId={sessionId}
+                    />
                   ) : null}
                   <div
                     data-bubble-tone={turn.errored ? 'error' : isUser ? 'outgoing' : 'incoming'}
@@ -105,7 +127,7 @@ export function ChatMessageList({
         )
       })}
       {isStreaming ? (
-        <div className={cn('flex w-full justify-start', motionPresets.messageEnter)}>
+        <div className={cn('flex min-w-0 w-full max-w-full justify-start', motionPresets.messageEnter)}>
           <div className={chatUi.messageBlock}>
             <div className={chatUi.messageRow}>
               <div className="relative shrink-0">

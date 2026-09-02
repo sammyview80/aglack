@@ -1,11 +1,11 @@
 /** Shared Tailwind classes for chat UI (threads-app tokens). */
 export const chatUi = {
   threadScroll:
-    'thread-scroll flex min-h-0 flex-1 flex-col overflow-hidden px-[27px] pb-5 pt-4 max-[760px]:px-2.5 max-[760px]:pb-4 max-[760px]:pt-3',
+    'thread-scroll flex min-h-0 flex-1 flex-col overflow-hidden px-10 pb-6 pt-5 max-[760px]:px-3 max-[760px]:pb-4 max-[760px]:pt-3',
   threadCard:
-    'thread-card flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)] shadow-[0_2px_5px_#1f1f2814]',
+    'thread-card mx-auto flex min-h-0 w-full max-w-[min(100%,920px)] flex-1 flex-col overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)] shadow-[0_2px_5px_#1f1f2814]',
   threadMain:
-    'thread-main flex min-h-0 flex-1 flex-col overflow-hidden px-[18px] pb-1.5 pt-3 max-[760px]:px-4 max-[760px]:pt-2.5',
+    'thread-main flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-2 pt-4 max-[760px]:px-4 max-[760px]:pt-3',
   divider: 'divider my-2 mb-2.5 h-px shrink-0 bg-[var(--th-line)]',
   headerRow: 'flex items-center gap-3 min-h-11',
   headerIdentity: 'flex min-w-0 flex-col gap-px',
@@ -14,31 +14,29 @@ export const chatUi = {
   headerActions: 'ml-auto flex items-center gap-1.5',
   headerButton:
     'flex items-center justify-center gap-1.5 rounded-lg border border-[var(--th-line)] bg-transparent px-2.5 py-1.5 text-xs font-semibold text-[var(--th-text)] transition-colors hover:bg-[var(--th-hover)] disabled:cursor-default disabled:opacity-50',
-  transcript: 'chat-transcript min-h-0 w-full flex-1 overflow-x-auto overflow-y-auto',
+  transcript: 'chat-transcript min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto',
   transcriptInner:
-    'flex min-h-full w-full flex-col pl-1 pr-6 pt-3 pb-4 [&:has(.chat-message-list-empty)]:min-h-[min(420px,100%)] [&:has(.chat-message-list-empty)]:justify-center',
-  messageList: 'flex w-full flex-col gap-4',
+    'flex min-h-full min-w-0 w-full max-w-full flex-col px-2 pt-4 pb-6 max-[760px]:px-1 [&:has(.chat-message-list-empty)]:min-h-[min(420px,100%)] [&:has(.chat-message-list-empty)]:justify-center',
+  olderMessagesSpinner: 'flex w-full items-center justify-center py-2 text-[var(--th-muted)]',
+  messageList: 'flex min-w-0 w-full max-w-full flex-col gap-6',
   messageListEmpty: 'chat-message-list-empty flex min-h-[min(420px,100%)] flex-1 flex-col justify-center',
-  messageBlock: 'flex w-fit max-w-[92%] flex-col gap-1',
+  messageBlock: 'flex min-w-0 w-fit max-w-[92%] flex-col gap-1.5',
   messageBlockUser: 'items-end',
-  messageRow: 'flex items-end gap-2 [&_.avatar]:shrink-0 [&_svg[role=img]]:shrink-0',
-  messageContent: 'flex min-w-0 flex-col gap-1',
+  messageRow: 'flex min-w-0 max-w-full items-end gap-3 [&_.avatar]:shrink-0 [&_svg[role=img]]:shrink-0',
+  messageContent: 'flex min-w-0 max-w-full flex-col gap-1.5',
   messageTime: 'text-[11px] leading-tight text-[var(--th-muted)] whitespace-nowrap',
-  messageTimeAssistant: 'pl-8',
-  messageTimeUser: 'pr-8 text-right',
+  messageTimeAssistant: 'pl-10',
+  messageTimeUser: 'pr-10 text-right',
   bubbleBase:
-    'inline-flex w-fit max-w-full flex-col items-stretch gap-1 break-words rounded-[18px] px-4 py-3 text-sm leading-snug text-left',
+    'chat-bubble inline-flex min-w-0 w-fit max-w-full flex-col items-stretch gap-1.5 overflow-x-auto overscroll-x-contain break-words rounded-[18px] px-5 py-4 text-sm leading-relaxed text-left',
   bubbleOutgoing: 'bg-[var(--th-compose)] text-white shadow-[0_1px_2px_#6743ed33]',
   bubbleIncoming:
     'border border-[var(--th-assistant-bubble-border)] bg-[var(--th-assistant-bubble)] text-[var(--th-text)] shadow-[var(--th-assistant-bubble-shadow)]',
   bubbleError: 'rounded-[18px] border-[#d1435b] bg-[#d1435b] text-white',
   bubbleStreaming: 'text-[var(--th-muted)]',
-  markdownRoot:
-    'w-fit max-w-full text-inherit leading-snug [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:mb-2 [&_ul]:pl-[22px] [&_ol]:mb-2 [&_ol]:pl-[22px] [&_li]:my-0.5 [&_table]:mb-2 [&_table]:block [&_table]:w-max [&_table]:max-w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_table]:text-[0.95em] [&_th]:border [&_th]:border-[var(--th-line)] [&_th]:px-2.5 [&_th]:py-1.5 [&_td]:border [&_td]:border-[var(--th-line)] [&_td]:px-2.5 [&_td]:py-1.5 [&_a]:underline',
-  markdownIncoming:
-    '[&_p]:text-[var(--th-text)] [&_code]:rounded [&_code]:bg-[var(--th-assistant-code)] [&_code]:px-1.5 [&_code]:py-px [&_code]:text-[0.9em] [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-[var(--th-assistant-bubble-border)] [&_pre]:bg-[var(--th-assistant-code)] [&_pre]:p-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_blockquote]:mb-2 [&_blockquote]:border-l-2 [&_blockquote]:border-[var(--th-assistant-bubble-border)] [&_blockquote]:pl-3 [&_blockquote]:text-[var(--th-muted)]',
-  markdownOutgoing:
-    '[&_p]:text-white [&_li]:text-white [&_strong]:text-white [&_em]:text-white [&_a]:text-white [&_code]:rounded [&_code]:bg-white/15 [&_code]:px-1.5 [&_code]:py-px [&_code]:text-[0.9em] [&_code]:text-white [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-white/15 [&_pre]:p-3 [&_pre]:text-white [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_blockquote]:mb-2 [&_blockquote]:border-l-2 [&_blockquote]:border-white/35 [&_blockquote]:pl-3 [&_blockquote]:text-white/85',
+  markdownRoot: 'min-w-0 w-full max-w-full text-inherit',
+  markdownIncoming: '[&_p]:text-[var(--th-text)]',
+  markdownOutgoing: '[&_p]:text-white [&_li]:text-white',
   markdownError: '[&_p]:text-white',
   thinkingCard:
     'my-1.5 overflow-hidden rounded-lg border border-[var(--th-line)] bg-[var(--th-search)]',
@@ -47,7 +45,7 @@ export const chatUi = {
   thinkingBody:
     'm-0 whitespace-pre-wrap break-words px-2.5 pb-2.5 font-[inherit] text-[13px] leading-normal text-[var(--th-muted)]',
   composer:
-    'chat-composer flex min-h-0 flex-col items-stretch gap-0 border-t border-[var(--th-line)] bg-[var(--th-content)] px-4 py-3',
+    'chat-composer flex min-h-0 flex-col items-stretch gap-0 border-t border-[var(--th-line)] bg-[var(--th-content)] px-6 py-4 max-[760px]:px-4',
   composerBody: 'flex w-full flex-col gap-2',
   composerInput:
     'w-full min-w-0 rounded-[10px] border border-[var(--th-line)] bg-[var(--th-card)] px-3 py-2.5 text-sm text-[var(--th-text)] transition-[border-color,box-shadow] focus:border-[var(--th-compose)] focus:outline-none focus:shadow-[0_0_0_2px_#6743ed26] disabled:opacity-60 dark:focus:shadow-[0_0_0_2px_#7b5cff33]',
@@ -102,6 +100,20 @@ export const chatUi = {
   retryButton: 'font-semibold text-[var(--th-text)] underline',
   activeDotMd: 'right-[-1px] bottom-[-1px]',
   activeDotSm: 'right-0 bottom-0',
+  // Attachment display (transcript, not composer) — a turn's real
+  // uploaded files, rendered as an inline image thumbnail (real serving
+  // route, see `attachmentFileUrl` in `features/chat/api.ts`) or a
+  // filename+icon chip for everything else. Kept visually distinct from
+  // `composerAttachmentChip` (pre-send, removable) since this one is
+  // read-only history, not a pending draft.
+  attachmentList: 'flex flex-wrap gap-1.5',
+  attachmentImage:
+    'block max-h-64 max-w-full rounded-lg border border-[var(--th-line)] object-contain',
+  attachmentImageButton: 'block cursor-pointer border-0 bg-transparent p-0',
+  attachmentChip:
+    'inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--th-line)] bg-[var(--th-search)] px-2.5 py-1.5 text-xs text-[var(--th-text)]',
+  attachmentChipName: 'min-w-0 flex-1 truncate',
+  attachmentChipSize: 'shrink-0 text-[var(--th-muted)]',
 } as const
 
 export type MarkdownTone = 'incoming' | 'outgoing' | 'error'

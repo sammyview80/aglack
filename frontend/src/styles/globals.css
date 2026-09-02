@@ -103,6 +103,25 @@ html[data-theme='dark'] .threads-app,
   background: color-mix(in srgb, var(--th-muted) 48%, transparent);
 }
 
+.chat-bubble {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--th-muted) 32%, transparent) transparent;
+}
+.chat-bubble::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+.chat-bubble::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-bubble::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--th-muted) 32%, transparent);
+  border-radius: 999px;
+}
+.chat-bubble::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--th-muted) 48%, transparent);
+}
+
 /* Match existing ThemeSwitch: html[data-theme] plus shadcn's .dark class. */
 @custom-variant dark (&:is(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
 

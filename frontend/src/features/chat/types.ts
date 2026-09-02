@@ -56,4 +56,18 @@ export type ToolActivity = {
   complete: boolean
 }
 
+/** Result of `POST /api/upload` (see `api.ts`'s `uploadAttachment`) — the
+ * shape `/api/chat/start`'s `attachments` array expects per-item
+ * (`_normalize_chat_attachments` in `backend/upstream/api/routes.py`
+ * accepts exactly `{name,path,mime,size?,is_image?}`). This is a real
+ * server-side upload result (the file's bytes already landed in the
+ * session's attachment inbox at `path`) — never a client-only file name. */
+export type ChatAttachment = {
+  name: string
+  path: string
+  mime: string
+  size?: number
+  isImage?: boolean
+}
+
 export type ChatTerminalState = 'idle' | 'streaming' | 'done' | 'cancelled' | 'error'

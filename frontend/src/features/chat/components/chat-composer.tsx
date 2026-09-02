@@ -9,13 +9,19 @@ export function ChatComposer({
   isStreaming,
   onSend,
   onStop,
-  onAttachFiles,
 }: {
   disabled?: boolean
   isStreaming: boolean
-  onSend: (text: string) => void
+  /**
+   * `files`, when present, are REAL attachments that `onSend` uploads to
+   * Hermes' own attachment inbox and references in the turn (see
+   * `useChat.send` and `rust_gateway/docs/hermes-chat-wire-contract.md`
+   * §1.1) — this composer no longer fabricates a `[Attached: ...]` text
+   * placeholder for a file that was never actually sent anywhere (that was
+   * the bug: real file picker + chips + remove button, wired to nothing).
+   */
+  onSend: (text: string, files?: File[]) => void
   onStop: () => void
-  onAttachFiles?: (files: File[]) => void
 }) {
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<File[]>([])
@@ -31,14 +37,9 @@ export function ChatComposer({
 
   function submit() {
     const text = draft.trim()
-    const attachmentNote =
-      attachments.length > 0 ? `[Attached: ${attachments.map((f) => f.name).join(', ')}]` : ''
-    const message = text || attachmentNote
-    if (!message || disabled) return
-    if (attachments.length > 0) {
-      onAttachFiles?.(attachments)
-    }
-    onSend(message)
+    if (!text && attachments.length === 0) return
+    if (disabled) return
+    onSend(text, attachments.length > 0 ? attachments : undefined)
     setDraft('')
     setAttachments([])
     if (fileInputRef.current) fileInputRef.current.value = ''

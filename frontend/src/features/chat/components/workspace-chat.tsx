@@ -22,6 +22,7 @@ import { PendingInputPanel } from '@/features/chat/components/pending-input-pane
 import { selectPendingInput } from '@/features/chat/components/pending-input'
 import { usePendingInputFocus } from '@/features/chat/components/use-pending-input-focus'
 import { useChatTranscriptScroll } from '@/features/chat/components/use-chat-transcript-scroll'
+import { ModelPicker } from '@/features/models/components/model-picker'
 import type { AgentSession } from '@/features/agent-history/types'
 
 type WorkspaceChatProps = {
@@ -105,6 +106,9 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
     agent,
     sessionId: selectedSessionId,
     isLoadingTranscript: chat.isLoadingTranscript,
+    onNearTop: chat.loadOlderMessages,
+    canLoadOlder: chat.hasOlderMessages,
+    isLoadingOlder: chat.isLoadingOlderMessages,
   })
 
   function newChat() {
@@ -155,6 +159,11 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
               )}
               {agent ? (
                 <div className={chatUi.headerActions}>
+                  {/* Per-agent model shortlist + quick-switch — models
+                   * feature, kept out of chat's own state/logic entirely
+                   * (reads localStorage + its own API module). See
+                   * features/models/components/model-picker.tsx. */}
+                  <ModelPicker workspaceId={workspaceId} agent={agent} />
                   <Hint label="Reload messages" side="top">
                     <button
                       type="button"
@@ -200,6 +209,11 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
                       <ChatTranscriptSkeleton />
                     ) : (
                       <>
+                        {chat.isLoadingOlderMessages ? (
+                          <div className={chatUi.olderMessagesSpinner} aria-label="Loading older messages">
+                            <RefreshCw size={14} className={motionPresets.spin} />
+                          </div>
+                        ) : null}
                         <ChatMessageList
                           agent={agent}
                           turns={chat.turns}
@@ -208,6 +222,8 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
                           reasoningText={chat.reasoningText}
                           tools={chat.tools}
                           onSuggest={chat.send}
+                          workspaceId={workspaceId}
+                          sessionId={chat.sessionId}
                         />
                         {pendingInput?.kind === 'clarify' ? (
                           <button
@@ -258,7 +274,7 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
 
           {agent ? (
             <ChatComposer
-              disabled={chat.isSending || !agent}
+              disabled={chat.isSending || chat.isUploadingAttachments || !agent}
               isStreaming={chat.isStreaming}
               onSend={chat.send}
               onStop={chat.stop}
