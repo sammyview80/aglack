@@ -153,10 +153,22 @@ session's code**:
    per-agent work.
 2. `POST /onboarding/setup` accepted a `base_url` but did not persist it;
    `config.yaml` kept `https://api.openai.com/v1`. Worth a look separately.
-3. A seeded agent's profile (`profiles/pm/config.yaml`) has **no model
-   section at all**, so a seeded agent cannot chat until one is configured.
-   The seeder creates the profile, workspace, SOUL.md and skills but never a
-   model config. That is a real product gap for "click an agent and chat".
+3. ~~A seeded agent's profile has **no model section at all**~~ — **FIXED
+   this session** (commit `41774a1`). The seeder called `create_profile_api`
+   with only the agent slug, ignoring its `clone_from`/`clone_config`
+   parameters. New agent profiles now clone the root profile's
+   `config.yaml`/`.env`, so an agent inherits the provider and credentials
+   onboarding already configured. Verified on a real container:
+   `profiles/pm/config.yaml` now carries the inherited model section, and
+   both `.env` files stay `0600`.
+
+   Review caught a latent bug in the same change: `clone_config` also copies
+   `SOUL.md`, so any agent *without* its own `soul.md` would silently adopt
+   the root's "You are Hermes Agent…" identity. Invisible today because
+   every Simple-mode agent defines a soul, so the inherited file is now
+   removed for a freshly created soul-less agent rather than waiting for
+   someone to add one and wonder why their agent has the wrong persona.
+   Mutation-tested: neutralising the removal fails the new test.
 
 What this means: the transport is proven end-to-end (real SSE, real
 container, correct events, correct per-agent routing), and the client
@@ -168,16 +180,22 @@ watched against a live model.
 
 - `rust_gateway`: **114/114** (103 → 105 streaming → 114 chat proxy).
 - `frontend`: **26/26** vitest (18 → 26; 8 new chat tests) + clean build.
-- `backend/wrapper`: **85/85**. `backend/seeder_kit`: **38/38**.
+- `backend/wrapper`: **89/89** (85 → 88 seeder model inheritance → 89 the
+  SOUL.md guard). `backend/seeder_kit`: **38/38**.
 
 ## Next
 
 1. **Get a real provider key in and watch tokens render.** Everything else
-   is in place; this is the one unproven link.
-2. **Give seeded agents a model config** (gap 3 above) — otherwise clicking
-   an agent and chatting cannot work regardless of the frontend.
-3. Investigate the `.env`-not-in-process-environment behavior (gap 1) and
-   the dropped `base_url` (gap 2).
-4. Approval/clarify have no live exercise yet — they are implemented and
+   is in place; this is the one unproven link, and it needs a credential
+   this environment does not have.
+2. Investigate the `.env`-not-in-process-environment behavior (gap 1) and
+   the dropped `base_url` (gap 2). Gap 1 is the reason the fake-provider
+   test could not complete, and it reproduces on the default profile
+   through the supported onboarding flow — so it is worth understanding
+   before blaming anything in this session's code.
+3. Approval/clarify have no live exercise yet — they are implemented and
    unit-tested, but no real tool-approval round trip has been observed.
+4. The Company-mode seeder tree is still untracked and untested after four
+   sessions. Either verify and commit it, or delete it — leaving it in the
+   working tree indefinitely is the worst of both.
 </content>
