@@ -1,0 +1,186 @@
+# Python packages: backend/seeder_kit, backend/wrapper, backend/workspace-image.
+#
+# Split by suite so a red X names the failing component. The three suites have
+# genuinely different dependency needs, which is why they are separate jobs
+# rather than steps in one:
+#
+#   seeder-kit      pure stdlib + pytest. No upstream checkout, no network.
+#   wrapper         REQUIRES the pinned backend/upstream/ checkout (see below).
+#   workspace-image pure stdlib + pytest. Dockerfile-contract tests only; the
+#                   Docker-dependent e2e_test_*.py is excluded by pytest.ini.
+#   lint            ruff over all three.
+#
+# WHY THE WRAPPER JOB CLONES UPSTREAM AND THE OTHERS DO NOT
+# ---------------------------------------------------------
+# backend/upstream/ is a git-ignored pinned third-party checkout, so a fresh
+# clone (which is exactly what a CI runner has) does not contain it. The wrapper
+# tests do not mock upstream — they import the real thing:
+#   * tests/v1/*.py do `from api.profiles import ...`, `from api.config import
+#     SESSION_DIR`, `from api.onboarding import _get_config_path`
+#   * create_app() -> load_bindings() -> bootstrap_upstream(), which calls
+#     _validate_root() and raises "upstream checkout is missing or not a
+#     directory" when it is absent
+# Verified by pointing HERMES_WEBUI_UPSTREAM at a nonexistent path: 6 of the 10
+# wrapper test modules ERROR at COLLECTION time. So the bootstrap step is
+# mandatory for this job. seeder_kit and workspace-image import nothing from
+# upstream (verified by grep + a clean local run), so they must NOT pay for a
+# clone they do not need.
+name: Python
+
+on:
+  push:
+    branches: [main, master, aglack]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep test runs from littering the checkout with bytecode.
+  PYTHONDONTWRITEBYTECODE: '1'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+jobs:
+  seeder-kit:
+    name: seeder_kit pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares requires-python = ">=3.11". 3.11 is the floor and
+        # the version the project is developed against; 3.12/3.13 are included
+        # because this package is pure standard library with zero runtime
+        # dependencies, so forward-compatibility is cheap to verify.
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/seeder_kit/requirements-dev.txt
+
+      - name: Install pinned test toolchain
+        working-directory: backend/seeder_kit
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Install seeder_kit (editable)
+        working-directory: backend/seeder_kit
+        run: python -m pip install -e .
+
+      - name: Run tests
+        working-directory: backend/seeder_kit
+        run: python -m pytest -q
+
+  wrapper:
+    name: wrapper pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Restricted to 3.11 ONLY, on purpose. Unlike seeder_kit, the wrapper
+        # runs against the pinned third-party upstream checkout, whose own
+        # supported interpreter range this repo does not control. The upstream
+        # AGENTS.md guidance pins local runs to 3.11-3.13 and the project's
+        # working venv is 3.11.14. Widening this matrix would make CI red on a
+        # third-party incompatibility rather than on a contributor's change.
+        # Add 3.12/3.13 here once the upstream pin is verified against them.
+        python-version: ['3.11']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/wrapper/requirements-dev.txt
+
+      # MANDATORY for this job — see the header comment. The script clones over
+      # public HTTPS (no credentials) and verifies HEAD == the pinned SHA,
+      # exiting non-zero on any mismatch, so a moved pin fails here loudly.
+      - name: Bootstrap pinned upstream checkout
+        run: ./backend/bootstrap-upstream.sh
+
+      - name: Install pinned test toolchain
+        working-directory: backend/wrapper
+        run: python -m pip install -r requirements-dev.txt
+
+      # ORDER IS LOAD-BEARING. backend/wrapper/pyproject.toml depends on a bare
+      # `seeder-kit` name with NO PyPI package behind it; it is satisfied only
+      # by whatever is already installed. Installing the wrapper first would
+      # send pip to PyPI for a package that does not exist there.
+      - name: Install seeder_kit FIRST (satisfies the wrapper's bare dep)
+        run: python -m pip install -e backend/seeder_kit
+
+      - name: Install wrapper SECOND
+        run: python -m pip install -e backend/wrapper
+
+      - name: Run tests
+        working-directory: backend/wrapper
+        env:
+          # Required by Settings.from_env(); it fails closed when unset. Value
+          # only needs to be a well-formed origin for CORS assertions.
+          HERMES_FRONTEND_ORIGIN: http://localhost:5173
+        run: python -m pytest -q
+
+  workspace-image:
+    name: workspace-image pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # No requirements file and no package install: these tests read the
+      # Dockerfile and the patch_kasmvnc_*.py scripts as text/importable
+      # modules using only the standard library. pytest is the sole dependency.
+      - name: Install pytest
+        run: python -m pip install 'pytest==9.1.1'
+
+      # pytest.ini in this directory sets python_files = test_*.py, which
+      # excludes e2e_test_kasmvnc_lastactiveat.py — that one shells out to real
+      # docker build/run and is opt-in only, never collected here.
+      - name: Run fast Dockerfile-contract tests
+        working-directory: backend/workspace-image
+        run: python -m pytest -q
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Pinned so a ruff release cannot turn CI red without a deliberate bump.
+      # This is the exact version the rule set below was verified green against.
+      - name: Install ruff
+        run: python -m pip install 'ruff==0.16.5'
+
+      # Config is the repo-root ruff.toml. The enabled rule set (E4/E7/E9/F/B)
+      # was chosen because it reports ZERO findings against the tree as of this
+      # change — a lint gate that is red on arrival teaches people to ignore it.
+      - name: ruff check
+        run: ruff check .
+
+      # ADVISORY ONLY (continue-on-error). `ruff format` would currently rewrite
+      # 51 of 71 files in the Python packages, because the existing code is
+      # hand-wrapped in ways the formatter normalizes. Blocking on that would
+      # require a repo-wide reformat to land with this CI change. This step keeps
+      # the diff visible; flip it to blocking after a dedicated reformat commit.
+      - name: ruff format --check (advisory, non-blocking)
+        continue-on-error: true
+        run: ruff format --check --diff .

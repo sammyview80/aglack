@@ -6,11 +6,19 @@ single Rust gateway and a React frontend.
 
 `rust_gateway/` | `backend/wrapper/` | `frontend/`
 
-`STACK: RUST + PYTHON + REACT` · `RUNTIME: DOCKER REQUIRED` · `LICENSE: UNSET`
+`STACK: RUST + PYTHON + REACT` · `RUNTIME: DOCKER REQUIRED` · `LICENSE: POLYFORM NONCOMMERCIAL 1.0.0`
 
 One workspace, one container, one agent — created and torn down through
 a single control-plane API. No shared state between tenants beyond the
 gateway's own SQLite registry.
+
+> [!WARNING]
+> **There is no authentication gate on the gateway routes yet** —
+> including `agent-config` and `agent-seeder`. Anyone who can reach the
+> gateway can create, inspect, and delete workspaces and their
+> containers. **Do not deploy this on a public network or an untrusted
+> LAN as-is.** Run it on `localhost` or behind your own authenticating
+> reverse proxy. See [Known gaps](#known-gaps).
 
 | A real control-plane API | `POST/GET/DELETE /workspaces`, per-workspace proxy namespaces (`onboarding`, `agent-seeder`, `hermes-webui`, `desktop`), SQLite-backed registry, real `docker` CLI orchestration under `rust_gateway/`. |
 | --- | --- |
@@ -40,7 +48,7 @@ browser ── frontend (React 19 + Vite)
 | `backend/wrapper/` | FastAPI sidecar inside each container: onboarding, agent-config, agent-seeder v1 routes over the upstream WebUI's own modules | `.venv/bin/pytest` |
 | `backend/seeder_kit/` | Library for seeding agent profiles (skills, souls, MCP tool runner) | `python3 -m pytest` |
 | `backend/seeder/` | Mode content (agents, skills, tools) consumed by the seeder | content only |
-| `backend/upstream/` | Pinned upstream Hermes WebUI checkout — do not edit; see `backend/UPSTREAM.md` and `backend/sync-upstream.sh` | upstream's own |
+| `backend/upstream/` | Pinned upstream Hermes WebUI checkout — do not edit; see `backend/UPSTREAM.md` and `backend/bootstrap-upstream.sh` | upstream's own |
 | `backend/workspace-image/` | Dockerfile for the per-workspace container image | `python3 -m pytest backend/workspace-image` |
 | `frontend/` | React app: create/list workspaces, onboarding wizard, mode select, per-workspace chat | `npm run build` (type-checks) |
 
@@ -51,9 +59,21 @@ Docker (only needed later, for real workspace containers — not for the
 dev run below).
 
 ```bash
-git clone git@github.com:sammyview80/aglack.git hermano
+git clone https://github.com/sammyview80/aglack.git hermano
 cd hermano
 ```
+
+`backend/upstream/` is a pinned third-party checkout that is git-ignored,
+so a fresh clone does not include it. Create it before running anything
+that needs the wrapper:
+
+```bash
+./backend/bootstrap-upstream.sh
+```
+
+It clones the upstream project over HTTPS, checks out the pinned commit,
+and verifies the result. It is idempotent — safe to re-run. See
+`backend/UPSTREAM.md`.
 
 ## How to use — one line
 
@@ -82,42 +102,24 @@ which subdirectory a given check lives in.
 
 ### Install
 
-This repo is **private**. A bare
-`curl https://raw.githubusercontent.com/... | sh` does **not** work here
-— GitHub returns 404 for an unauthenticated raw-file fetch on a private
-repo (verified live: plain `curl` on that URL 404s, every time, no
-exception). Pick whichever of these you actually have:
-
-**Option A — you have a GitHub personal access token** (repo scope) —
-this is the real curl one-liner, authenticated:
-
 ```bash
-curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
-  https://raw.githubusercontent.com/sammyview80/aglack/aglack/cli/install.sh \
-  | sh
+curl -fsSL https://raw.githubusercontent.com/sammyview80/aglack/aglack/cli/install.sh | sh
 ```
 
-**Option B — you have the `gh` CLI, already logged in:**
-
-```bash
-gh api repos/sammyview80/aglack/contents/cli/install.sh --branch aglack \
-  --jq '.content' | base64 -d | sh
-```
-
-**Option C — you already have (or are about to make) a checkout via
-SSH** (no token needed, uses the same access `git clone`/`git push`
-already use):
-
-```bash
-git clone git@github.com:sammyview80/aglack.git hermano && sh hermano/cli/install.sh
-```
-
-All three run the exact same `cli/install.sh`. It clones (or updates)
-the repo to `~/.aglack/src` and symlinks
-`cli/aglack` onto your `PATH` (`~/.local/bin` by default). Re-running it
-updates the checkout and re-links the CLI — safe to run again any time.
-See `cli/install.sh`'s own header for every env override
+The installer clones (or updates) the repo to `~/.aglack/src` over HTTPS
+and symlinks `cli/aglack` onto your `PATH` (`~/.local/bin` by default).
+Re-running it updates the checkout and re-links the CLI — safe to run
+again any time. See `cli/install.sh`'s own header for every env override
 (`AGLACK_SRC_DIR`, `AGLACK_BIN_DIR`, `AGLACK_REPO`, `AGLACK_BRANCH`).
+
+Piping a script from the network into a shell is worth reading first.
+To review before running:
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/sammyview80/aglack/aglack/cli/install.sh
+less install.sh
+sh install.sh
+```
 
 Already have a checkout and don't want a second copy under
 `~/.aglack/src`? Skip the installer and just add `cli/` to your `PATH`,
@@ -162,6 +164,8 @@ real containers via `POST /workspaces`.
 
 ## Contributing / conventions
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose a change.
+
 - Read the component's own `AGENTS.md` before changing it
   (`rust_gateway/AGENTS.md`, `backend/wrapper/AGENTS.md`); each states its
   structure rules and test requirements.
@@ -182,22 +186,6 @@ real containers via `POST /workspaces`.
   running process) with a 30-second diagnosis recipe, before you start
   reading gateway/proxy code.
 
-## Pushing changes
-
-```bash
-git checkout aglack        # or your feature branch
-git add -A
-git commit -m "..."
-git push -u origin aglack   # first push of a new branch needs -u; omit after
-```
-
-`origin` is `git@github.com:sammyview80/aglack.git` (private). Verify
-your remote matches before pushing:
-
-```bash
-git remote -v
-```
-
 ## Verifying a change
 
 All suites must stay green:
@@ -217,9 +205,17 @@ container-permissions bug once (see `checkpoints/CHECKPOINT5.md`).
 
 ## Known gaps
 
-- No auth gate yet on gateway routes (including `agent-config` /
-  `agent-seeder`) — do not expose publicly as-is.
+- **No auth gate yet on gateway routes** (including `agent-config` /
+  `agent-seeder`) — do not expose publicly as-is. See the warning at the
+  top of this file.
 - No billing; SQLite single-machine stage (see
   `backend/wrapper/docs/rust-gateway-architecture.md` for the target).
-- No LICENSE file yet in this repository.
-</content>
+
+## License
+
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+This project is **source-available, not open source**. You may use, copy,
+modify, and share it for **noncommercial purposes only**. Commercial use
+is not permitted under this license. See [LICENSE](LICENSE) for the full
+terms.

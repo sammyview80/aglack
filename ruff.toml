@@ -1,0 +1,140 @@
+# Ruff configuration — repo-wide, for every Python package in this repo:
+#   backend/wrapper/         (FastAPI sidecar, src-layout)
+#   backend/seeder_kit/      (library, src-layout)
+#   backend/workspace-image/ (Dockerfile-contract tests)
+#
+# WHY ONE ROOT FILE instead of [tool.ruff] sections in each pyproject.toml:
+# the three packages are developed together and should not drift into three
+# different dialects; a single file also means a contributor runs one command
+# (`ruff check .`) from the repo root and CI checks exactly what they ran.
+# Ruff discovers this file by walking up from each target path, so per-package
+# invocations (`cd backend/wrapper && ruff check .`) pick it up too.
+#
+# STRICTNESS: DELIBERATELY CONSERVATIVE — a baseline the EXISTING code passes.
+# CI fails on `ruff check` and `ruff format --check`, so an aggressive ruleset
+# here would make the first run red for reasons unrelated to any contributor's
+# change and train people to ignore the lint job. The selected set below is
+# limited to unambiguous correctness/consistency rules. Tighten later one rule
+# family at a time, each in its own commit that also carries the fixes.
+
+# Ruff's `target-version` is inferred from `requires-python` when a pyproject
+# is present; both packages declare >=3.11, and it is stated explicitly here so
+# the workspace-image tests (which have no [project] table) get the same target.
+target-version = "py311"
+
+# 120, not ruff's default 88. Measured against the current tree: 110 lines
+# already exceed 88 characters and the longest is 193 (a long assertion literal
+# in backend/wrapper/tests/v1/test_agent_seeder.py). 88 would demand a
+# repo-wide reflow of working code as the price of turning linting on.
+line-length = 120
+indent-width = 4
+
+extend-exclude = [
+    # Pinned read-only third-party checkout — never ours to lint or reformat
+    # (see backend/UPSTREAM.md).
+    "backend/upstream",
+    # Local virtualenvs, caches, build output, and vendored trees.
+    ".venv",
+    "venv",
+    "**/.venv",
+    "**/node_modules",
+    "frontend",
+    "ai-website-cloner-template",
+    # Local git worktrees: full second copies of the tree. Linting them would
+    # report the same finding many times over and gate CI on scratch branches.
+    ".worktrees",
+]
+
+[lint]
+# Conservative baseline. Every rule here is either a real defect detector or a
+# mechanical consistency rule with a safe autofix.
+# VERIFIED GREEN: `ruff check` with exactly this set reports 0 findings against
+# the current tree (verified with ruff 0.16.5 — the version pinned in
+# .github/workflows/python.yml — over backend/wrapper, backend/seeder_kit, and
+# backend/workspace-image). That is the bar for a rule being in this list: it
+# gates CI, so it must pass on day one.
+select = [
+    "E4",  # pycodestyle: import placement/formatting
+    "E7",  # pycodestyle: statement-level issues (e.g. `== None`, ambiguous name)
+    "E9",  # pycodestyle: syntax/IO errors — always fatal, never stylistic
+    "F",   # pyflakes: undefined names, unused imports/variables — real bugs
+    "B",   # flake8-bugbear: likely-wrong constructs (mutable default args, ...)
+]
+
+# DEFERRED — each of these is desirable but currently has findings in code this
+# change is not allowed to touch, so enabling it now would ship a red CI. Counts
+# measured against the tree at the time this file was added:
+#   "I"    isort              —  3 findings (unsorted import blocks). Autofixable
+#                               with `ruff check --select I --fix .`.
+#   "UP"   pyupgrade          — 18 findings, all mechanical: `typing.Callable` →
+#                               `collections.abc.Callable` (UP035), redundant
+#                               quoted annotations (UP037), `Optional[X]` →
+#                               `X | None` (UP045), `open(..., "r")` (UP015).
+#                               Autofixable with `ruff check --select UP --fix .`.
+# Recommended follow-up: land ONE commit that runs those two autofixes and moves
+# the corresponding entry from this comment into `select` above. Doing it as its
+# own commit keeps the mechanical churn out of feature diffs.
+#
+# NOT PLANNED, and why:
+#   E501 (line-too-long) — the formatter owns wrapping; flagging long string
+#     literals and URLs it cannot split is noise. `line-length` above still
+#     drives `ruff format`.
+#   D    (pydocstyle)    — would demand docstrings on every existing symbol.
+#   ANN  (annotations)   — would demand full typing of every existing signature.
+#   S    (bandit)        — high false-positive rate on test code (asserts,
+#                          tempfiles, subprocess in the Dockerfile tests).
+#   PL/PT/SIM/RET/N      — opinionated refactor/naming rules; large diffs.
+
+ignore = [
+    # Bugbear's "function call in default argument" fires on FastAPI's
+    # intended `Depends(...)`/`Query(...)` idiom, which this codebase uses.
+    "B008",
+    # `zip()` without an explicit `strict=` — legitimate signal, but it is a
+    # behavior-changing fix, so it is not a gate for turning linting on.
+    "B905",
+]
+
+[lint.per-file-ignores]
+# Test suites legitimately do things production code should not.
+"**/tests/**/*.py" = [
+    "F401",  # imports kept for fixture/plugin registration side effects
+    "F811",  # pytest fixture shadowing is the framework's own idiom
+]
+# backend/wrapper/tests/conftest.py must set os.environ BEFORE importing the
+# app (it says so in its own module docstring), so its imports cannot all sit
+# at the top of the file. It already carries `# noqa: E402` inline; this makes
+# the intent explicit rather than relying on a per-line escape hatch.
+"backend/wrapper/tests/conftest.py" = ["E402"]
+# workspace-image tests load sibling patch scripts via importlib at runtime.
+"backend/workspace-image/*.py" = ["E402"]
+
+[lint.isort]
+# Pre-staged for when "I" moves into `select` (see the DEFERRED note above).
+# Treat the repo's own distributions as first-party so they sort into their own
+# block instead of being mistaken for third-party packages.
+known-first-party = ["hermes_webui_wrapper", "seeder_kit"]
+
+[format]
+# NOTE ON CI: `ruff format --check` is NOT a blocking gate in this repo yet.
+# Measured when this config was added: `ruff format --check` would rewrite 51 of
+# 71 files across backend/wrapper, backend/seeder_kit, and backend/workspace-image,
+# because the existing code is deliberately hand-wrapped (aligned boolean chains,
+# comment-column alignment) in ways the formatter normalizes. Making that a gate
+# would have meant a 51-file mechanical reformat landing with the CI change and
+# invalidating `git blame` across the Python tree.
+#
+# The CI Python job therefore runs `ruff format --check` in ADVISORY mode
+# (continue-on-error) so the diff is visible without blocking, while
+# `ruff check` IS enforced. To adopt the formatter: run `ruff format .` as a
+# single isolated commit, add it to .git-blame-ignore-revs, then flip that CI
+# step to blocking.
+#
+# The settings below match the existing code's conventions so that when the
+# reformat does happen it is a pure re-wrap, not a quote/indent churn: double
+# quotes (measured ~753 double-quoted vs ~23 single-quoted string literals
+# across the two src trees) and 4-space indents.
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+docstring-code-format = false

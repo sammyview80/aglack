@@ -1,0 +1,48 @@
+# EditorConfig — https://editorconfig.org
+# Codifies the indentation this repo already uses. Deliberately descriptive,
+# not prescriptive: nothing here should reformat existing files.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# Rust — rustfmt's default hard_tabs = false, tab_spaces = 4.
+[*.rs]
+indent_size = 4
+max_line_length = 100
+
+# Python — PEP 8 / ruff default.
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+# Web sources and data/config formats.
+[*.{ts,tsx,js,jsx,mjs,cjs,css,json,jsonc,yml,yaml,html}]
+indent_size = 2
+
+# Markdown: trailing whitespace is significant (two spaces = hard line break),
+# so trimming it would silently rewrite documents.
+[*.md]
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Shell scripts.
+[*.{sh,bash}]
+indent_size = 2
+
+# TOML (Cargo.toml, pyproject.toml, ruff.toml).
+[*.toml]
+indent_size = 4
+
+# Makefiles require literal tabs.
+[Makefile]
+indent_style = tab
+
+# Third-party / generated trees this repo does not own.
+[{**/node_modules/**,backend/upstream/**,frontend/package-lock.json,rust_gateway/Cargo.lock}]
+trim_trailing_whitespace = false
+insert_final_newline = false

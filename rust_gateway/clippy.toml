@@ -1,0 +1,23 @@
+# Clippy configuration for rust_gateway.
+#
+# MINIMAL BY DESIGN. CI runs `cargo clippy -- -D warnings`, which promotes
+# every *enabled-by-default* lint (correctness, suspicious, style, complexity,
+# perf) to a hard error. That default set is the intended baseline. This file
+# therefore only tunes thresholds — it does NOT opt into `clippy::pedantic`,
+# `clippy::nursery`, or `clippy::restriction`, any of which would flag a large
+# amount of existing, correct code and make the first CI run red.
+#
+# Raising strictness later: prefer adding specific `#![warn(clippy::...)]`
+# lints in `src/lib.rs` one at a time (with the cleanup in the same commit)
+# over flipping on a whole group here.
+
+# Keep clippy's suggestions compatible with the crate's declared MSRV in
+# Cargo.toml (`rust-version = "1.75"`), so it never suggests an API that the
+# oldest supported toolchain cannot compile.
+msrv = "1.75"
+
+# The gateway builds axum routers and container-launch argument vectors, where
+# a long literal list is the clearest form. Default is 7; 8 avoids churn on
+# already-readable constructor and boot-script code without hiding genuinely
+# unwieldy signatures.
+too-many-arguments-threshold = 8

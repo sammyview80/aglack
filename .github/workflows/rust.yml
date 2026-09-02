@@ -1,0 +1,119 @@
+# Rust control plane (rust_gateway/).
+#
+# Split into three jobs so a red X names the problem without opening logs:
+#   fmt    — formatting only, seconds, no build
+#   clippy — lints, needs a build
+#   test   — build + test, the correctness gate
+# fmt is intentionally NOT a dependency of the others: a misplaced brace should
+# not hide a real test failure.
+name: Rust
+
+on:
+  push:
+    # Defensive branch list. The README describes `aglack` as the default
+    # branch, development currently happens on `refactor/folder`, and a
+    # source-available release may rename the default to `main`. Listing all
+    # three means CI keeps running through a rename instead of going silent.
+    branches: [main, master, aglack]
+  pull_request:
+
+# Least privilege: these jobs only read the checkout.
+permissions:
+  contents: read
+
+# A new push to a PR cancels the previous, still-running attempt.
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail fast on a warning-free build; also keeps incremental artifacts out of
+  # the cache, which makes the cache smaller and more reusable in CI.
+  CARGO_INCREMENTAL: 0
+
+defaults:
+  run:
+    working-directory: rust_gateway
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (with rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # No cache: rustfmt parses source and never builds dependencies, so a
+      # cache restore would cost more than it saves.
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy -D warnings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (with clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Caches ~/.cargo (registry + git) and rust_gateway/target, keyed on
+      # Cargo.lock. Cargo.lock is tracked, so the key is stable and shared.
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            rust_gateway/target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('rust_gateway/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-
+            ${{ runner.os }}-cargo-
+
+      # --all-targets so tests and both binaries are linted, not just the lib.
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: cargo build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            rust_gateway/target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('rust_gateway/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+            ${{ runner.os }}-cargo-
+
+      # --locked: fail if Cargo.lock would need updating, rather than silently
+      # resolving different versions than a contributor tested against.
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      # The unit suite fakes the Docker boundary (FakeLauncher), so no Docker
+      # daemon is needed here. Container-level changes still require the manual
+      # docker build + POST /workspaces verification described in README.md.
+      - name: Test
+        run: cargo test --locked

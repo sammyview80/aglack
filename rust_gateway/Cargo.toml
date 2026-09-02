@@ -2,6 +2,15 @@
 name = "rust_gateway"
 version = "0.1.0"
 edition = "2021"
+description = "Rust gateway that routes and proxies requests (HTTP, SSE, and WebSocket) to per-workspace backend containers."
+repository = "https://github.com/sammyview80/aglack"
+# Source-available, NOT open source: PolyForm Noncommercial 1.0.0 restricts
+# commercial use, so it has no OSI-approved SPDX id. Cargo accepts the SPDX
+# `LicenseRef-` form for exactly this case; the full text is in ../LICENSE.
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+# Floor set by the declared dependencies: axum 0.7 requires 1.75 (the highest
+# of the direct deps; sqlx 0.8 needs 1.74, tokio-tungstenite 0.24 needs 1.63).
+rust-version = "1.75"
 publish = false
 
 # See AGENTS.md in this directory for project structure and how to extend
@@ -56,7 +65,7 @@ dotenvy = "0.15"
 # src/db/mod.rs and src/workspaces/store.rs.
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
 uuid = { version = "1", features = ["v4"] }
-# ContainerLauncher (src/workspaces/container.rs) is a trait with async
+# ContainerLauncher (src/workspaces/container/mod.rs) is a trait with async
 # methods; async fn in traits needs this until the language feature is
 # fully stable for our MSRV.
 async-trait = "0.1"
@@ -66,7 +75,7 @@ async-trait = "0.1"
 tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 # Real dependency now (not just dev/test): DockerCliLauncher::launch
 # writes the generated boot script to a real temp file before `docker cp`
-# delivers it into a container — see container.rs's `deliver_boot_script`.
+# delivers it into a container — see container/mod.rs's `deliver_boot_script`.
 tempfile = "3"
 
 [dev-dependencies]

@@ -7,6 +7,11 @@
 # path-anchored so it only excludes this exact top-level directory.
 /ai-website-cloner-template/
 
+# Linked git worktrees created under the repo itself. Each contains a full
+# checkout of another branch and must never be tracked by this one.
+# Path-anchored so it only matches this conventional location.
+/.worktrees/
+
 # ---------------------------------------------------------------------------
 # Secrets / credentials — keep *.example files tracked
 # ---------------------------------------------------------------------------
@@ -42,7 +47,13 @@ __pycache__/
 pip-wheel-metadata/
 .venv/
 venv/
-env/
+# Virtualenv named "env" — path-anchored to the repo root (and the two service
+# dirs that may host their own) so it cannot silently swallow a legitimate
+# source directory named "env/" nested anywhere in the tree, e.g. a
+# `src/config/env/` module.
+/env/
+/backend/env/
+/rust_gateway/env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -51,6 +62,9 @@ env/
 .coverage
 .coverage.*
 htmlcov/
+# Deliberately unanchored: tool caches (pytest/mypy/parcel/yarn) appear at
+# varying depths, and ".cache" is a hidden dot-directory nobody uses as a
+# source module, so the broad match is safe here — unlike "env/" above.
 .cache/
 
 # ---------------------------------------------------------------------------

@@ -24,8 +24,12 @@ UPSTREAM_DIR="$ROOT/upstream"
 
 if [ ! -d "$UPSTREAM_DIR/.git" ]; then
   echo "sync-upstream.sh: backend/upstream is missing or not a git repo." >&2
-  echo "Re-create it first (see UPSTREAM.md's 're-create it manually' section):" >&2
-  echo "  git clone git@github.com:nesquena/hermes-webui.git backend/upstream" >&2
+  echo "Create it first with the bootstrap script (clones over HTTPS and pins" >&2
+  echo "the exact upstream commit — see UPSTREAM.md):" >&2
+  echo "  ./backend/bootstrap-upstream.sh" >&2
+  echo "" >&2
+  echo "Or manually:" >&2
+  echo "  git clone https://github.com/nesquena/hermes-webui.git backend/upstream" >&2
   exit 1
 fi
 

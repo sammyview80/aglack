@@ -1,0 +1,65 @@
+# Frontend (frontend/): React 19 + Vite + TypeScript.
+#
+# One job, not four. Unlike the Rust and Python components, every step here
+# shares a single expensive `npm ci`; splitting into parallel jobs would repeat
+# that install three more times for no extra legibility, since the step name in
+# the log already identifies which check failed.
+name: Frontend
+
+on:
+  push:
+    branches: [main, master, aglack]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: frontend
+
+jobs:
+  build:
+    name: lint + build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Vite 8 / Vitest 4 require a modern Node; 22 is the active LTS.
+          node-version: '22'
+          # Caches ~/.npm keyed on the lockfile. package-lock.json is tracked,
+          # so this key is stable across runs.
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci` (not `npm install`) — installs exactly the lockfile and fails
+      # if package.json and package-lock.json have drifted apart.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (oxlint)
+        run: npm run lint
+
+      # `tsc -b && vite build` — this is also the project's typecheck gate.
+      - name: Build
+        run: npm run build
+
+      - name: Test (vitest)
+        run: npm test
+
+      # ADVISORY ONLY (continue-on-error). Prettier config was added in the same
+      # change that added this workflow, but Prettier had never been run on this
+      # code: even with settings inferred from the existing style (single quotes,
+      # no semicolons, printWidth 100 — measured as the lowest-churn choice), it
+      # would still rewrite ~53 of 134 source files. Blocking here would force a
+      # repo-wide reformat to land with the CI change. Flip to blocking after a
+      # dedicated `npm run format` commit.
+      - name: Format check (advisory, non-blocking)
+        continue-on-error: true
+        run: npm run format:check

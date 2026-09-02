@@ -10,9 +10,9 @@ chat shows, and a "New chat" action. Read `CHECKPOINT.md` → `3` → `4` →
 
 ## Working alongside a second agent in the same checkout
 
-This session ran with **Cursor's own agent active in the same working
-tree at the same time** (confirmed by `Co-authored-by: Cursor
-<cursoragent@cursor.com>` on real commits, e.g. `6d3b197`). In practice
+This session ran with **a second AI agent active in the same working
+tree at the same time** (confirmed by a third-party agent
+`Co-authored-by:` trailer on real commits, e.g. `6d3b197`). In practice
 this meant files this session had just written were repeatedly found
 reverted back to an earlier state mid-session — not corruption, just an
 uncoordinated second writer. Everything documented below was re-verified
