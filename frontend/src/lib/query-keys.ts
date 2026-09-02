@@ -31,4 +31,9 @@ export const queryKeys = {
     all: ['onboarding'] as const,
     status: (workspaceId: string) => [...queryKeys.onboarding.all, workspaceId, 'status'] as const,
   },
+  chat: {
+    all: ['chat'] as const,
+    session: (workspaceId: string, agent: string) =>
+      [...queryKeys.chat.all, workspaceId, 'agents', agent, 'session'] as const,
+  },
 } as const
