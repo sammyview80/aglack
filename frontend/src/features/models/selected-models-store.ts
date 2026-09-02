@@ -55,8 +55,10 @@ export function writeSelectedModels(
 /** Toggle one model in/out of the shortlist by `(provider, id)` identity
  * (a model id can repeat across providers — e.g. two custom endpoints
  * both exposing `gpt-4o` — so identity must include `provider`, matching
- * the pair `POST /api/model/set` itself keys on). Returns the resulting
- * list so callers can update in-memory state without a second read. */
+ * the pair `POST /api/session/update` itself keys on via its
+ * `model`/`model_provider` fields — see `api.ts`'s `setActiveModel`).
+ * Returns the resulting list so callers can update in-memory state
+ * without a second read. */
 export function toggleSelectedModel(
   workspaceId: string,
   agent: string,

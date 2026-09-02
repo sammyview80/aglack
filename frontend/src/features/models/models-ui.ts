@@ -22,12 +22,12 @@ export const modelsUi = {
   emptyText: 'py-8 text-center text-sm text-[var(--th-muted)]',
   errorText: 'text-[#d1435b]',
 
-  pickerWrap: 'relative shrink-0',
+  pickerWrap: 'relative z-20 shrink-0',
   pickerTrigger:
     'flex items-center gap-1.5 rounded-lg border border-[var(--th-line)] bg-transparent px-2.5 py-1.5 text-xs font-semibold text-[var(--th-text)] transition-colors hover:bg-[var(--th-hover)] disabled:cursor-default disabled:opacity-50',
   pickerTriggerLabel: 'max-w-[160px] truncate',
   pickerMenu:
-    'absolute right-0 top-full z-40 mt-1.5 w-64 overflow-hidden rounded-lg border border-[var(--th-line)] bg-[var(--th-card)] py-1.5 shadow-[0_8px_24px_#00000026]',
+    'absolute bottom-full left-0 z-50 mb-1.5 max-h-[min(320px,50vh)] w-64 overflow-y-auto rounded-lg border border-[var(--th-line)] bg-[var(--th-card)] py-1.5 shadow-[0_8px_24px_#00000026]',
   pickerGroupLabel:
     'px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--th-muted)]',
   pickerItem:

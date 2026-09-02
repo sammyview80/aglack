@@ -22,12 +22,16 @@ import { PendingInputPanel } from '@/features/chat/components/pending-input-pane
 import { selectPendingInput } from '@/features/chat/components/pending-input'
 import { usePendingInputFocus } from '@/features/chat/components/use-pending-input-focus'
 import { useChatTranscriptScroll } from '@/features/chat/components/use-chat-transcript-scroll'
-import { ModelPicker } from '@/features/models/components/model-picker'
-import type { AgentSession } from '@/features/agent-history/types'
+import { readPendingModel, clearPendingModel } from '@/features/models/pending-model-store'
+import type { AgentSession, ListAgentsResult } from '@/features/agent-history/types'
 
 type WorkspaceChatProps = {
   workspaceId: string
   workspaceName: string
+}
+
+function selectDefaultAgentName(data: ListAgentsResult) {
+  return data.agents[0]?.name ?? ''
 }
 
 /**
@@ -50,8 +54,8 @@ type WorkspaceChatProps = {
  * genuinely new, not a duplicate of agent selection.
  */
 export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps) {
-  const agentsQuery = useAgents(workspaceId, true)
-  const agents = agentsQuery.data?.agents ?? []
+  const agentsQuery = useAgents(workspaceId, true, selectDefaultAgentName)
+  const defaultAgentName = agentsQuery.data ?? ''
   const [searchParams, setSearchParams] = useSearchParams()
   const agent = searchParams.get('agent')
   const [, bumpSessionStore] = useReducer((n: number) => n + 1, 0)
@@ -61,14 +65,14 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
   const pendingInputFocus = usePendingInputFocus()
 
   useEffect(() => {
-    if (!agent && agents.length > 0) {
+    if (!agent && defaultAgentName) {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev)
-        next.set('agent', agents[0].name)
+        next.set('agent', defaultAgentName)
         return next
       }, { replace: true })
     }
-  }, [agent, agents, setSearchParams])
+  }, [agent, defaultAgentName, setSearchParams])
 
   function selectAgent(name: string) {
     setSearchParams((prev) => {
@@ -92,9 +96,30 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
     }
   }
 
+  // A model picked on the still-empty composer (no session yet — see
+  // ModelPicker's own doc comment on this exact case) is written into
+  // `pending-model-store.ts`'s shared module-level map by ModelPicker
+  // (mounted inside ChatComposer, below). `useChat`'s `getPendingModel`
+  // is a GETTER read at the exact moment `send()` creates a session —
+  // reading `readPendingModel` directly here (not a `usePendingModel`
+  // hook snapshot) is what actually honors that contract: a hook
+  // snapshot captured at THIS component's last render would go stale the
+  // instant ModelPicker (a sibling-ish, separately-rendering subtree)
+  // writes a pick without WorkspaceChat itself re-rendering — exactly
+  // the bug this getter indirection exists to avoid (see useChat's own
+  // doc comment on `getPendingModel`). Reading the raw store function
+  // instead guarantees this always sees ModelPicker's LATEST write.
   const chat = useChat(workspaceId, agent, {
     sessionId: selectedSessionId,
     onSessionIdChange: bumpSessionStore,
+    getPendingModel: () => {
+      if (!agent) return null
+      const pending = readPendingModel(workspaceId, agent)
+      return pending ? { model: pending.id, modelProvider: pending.provider } : null
+    },
+    onPendingModelConsumed: () => {
+      if (agent) clearPendingModel(workspaceId, agent)
+    },
   })
   const pendingInput = selectPendingInput(chat.approval, chat.clarify)
   const transcriptScroll = useChatTranscriptScroll({
@@ -159,11 +184,6 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
               )}
               {agent ? (
                 <div className={chatUi.headerActions}>
-                  {/* Per-agent model shortlist + quick-switch — models
-                   * feature, kept out of chat's own state/logic entirely
-                   * (reads localStorage + its own API module). See
-                   * features/models/components/model-picker.tsx. */}
-                  <ModelPicker workspaceId={workspaceId} agent={agent} />
                   <Hint label="Reload messages" side="top">
                     <button
                       type="button"
@@ -197,7 +217,7 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
 
             {agentsQuery.isPending ? (
               <Skeleton className="h-24 w-full" />
-            ) : agents.length === 0 ? (
+            ) : !defaultAgentName ? (
               <p className={threadsUi.emptySearch}>No agents are set up for this workspace yet.</p>
             ) : chat.sessionError ? (
               <p className={chatUi.errorText}>{chat.sessionError}</p>
@@ -274,6 +294,9 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
 
           {agent ? (
             <ChatComposer
+              workspaceId={workspaceId}
+              agent={agent}
+              sessionId={chat.sessionId}
               disabled={chat.isSending || chat.isUploadingAttachments || !agent}
               isStreaming={chat.isStreaming}
               onSend={chat.send}

@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChat } from '@/features/chat/hooks/use-chat'
 import * as api from '@/features/chat/api'
 import * as agentHistoryApi from '@/features/agent-history/api'
+import { queryKeys } from '@/lib/query-keys'
 
 vi.mock('@/features/chat/api', async () => {
   const actual = await vi.importActual<typeof api>('@/features/chat/api')
@@ -24,6 +25,8 @@ vi.mock('@/features/agent-history/api', async () => {
   return {
     ...actual,
     listAgentMessages: vi.fn(),
+    listAgents: vi.fn(),
+    listAgentSessions: vi.fn(),
   }
 })
 
@@ -83,6 +86,8 @@ beforeEach(() => {
   // care about reconnect/seeding override these explicitly.
   mockedApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
   mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
+  mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
+  mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
   // This hook persists session ids to localStorage — clear it so no test
   // leaks a session id into a later, unrelated test via the same
   // workspaceId+agent key.
@@ -115,7 +120,11 @@ describe('useChat agent-switch race', () => {
       void result.current.send('hello from A')
     })
 
-    await waitFor(() => expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a'))
+    // createSession now always carries its (optional) pending-model args —
+    // undefined here since no model was picked before this send.
+    await waitFor(() =>
+      expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a', undefined, undefined),
+    )
 
     // Switch agents before startTurn (issued for agent-a) resolves.
     rerender({ agent: 'agent-b' })
@@ -340,6 +349,89 @@ describe('useChat session selection via sessionStorage', () => {
     await waitFor(() =>
       expect(window.sessionStorage.getItem('hermano.chat.selected.ws-1.agent-a')).toBe('brand-new-session'),
     )
+  })
+
+  // Regression coverage for "add model + new chat fails": a model picked
+  // on the empty composer (no session yet) must ride along with the
+  // session createSession() lazily creates on first send, matching the
+  // real Hermes WebUI's own `window._emptyComposerModelOverride` ->
+  // `POST /api/session/new` flow (see models/api.ts's createSession doc
+  // comment).
+  it('forwards getPendingModel() into createSession when lazily creating a session on first send', async () => {
+    mockedApi.createSession.mockReset()
+    mockedApi.createSession.mockResolvedValue({ sessionId: 'brand-new-session' })
+    mockedApi.startTurn.mockResolvedValueOnce({
+      streamId: 'stream-1',
+      sessionId: 'brand-new-session',
+      pendingStartedAt: 0,
+      turnId: null,
+      title: 'title',
+    })
+    const getPendingModel = vi.fn(() => ({ model: 'gpt-4o', modelProvider: 'openai' }))
+    const onPendingModelConsumed = vi.fn()
+
+    const { result } = renderHook(
+      ({ agent }) => useChat('ws-1', agent, { getPendingModel, onPendingModelConsumed }),
+      { wrapper, initialProps: { agent: 'agent-a' as string | null } },
+    )
+
+    await act(async () => {
+      await result.current.send('hello')
+    })
+
+    expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a', 'gpt-4o', 'openai')
+    expect(onPendingModelConsumed).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not call onPendingModelConsumed when there was nothing pending', async () => {
+    mockedApi.createSession.mockReset()
+    mockedApi.createSession.mockResolvedValue({ sessionId: 'brand-new-session' })
+    mockedApi.startTurn.mockResolvedValueOnce({
+      streamId: 'stream-1',
+      sessionId: 'brand-new-session',
+      pendingStartedAt: 0,
+      turnId: null,
+      title: 'title',
+    })
+    const getPendingModel = vi.fn(() => null)
+    const onPendingModelConsumed = vi.fn()
+
+    const { result } = renderHook(
+      ({ agent }) => useChat('ws-1', agent, { getPendingModel, onPendingModelConsumed }),
+      { wrapper, initialProps: { agent: 'agent-a' as string | null } },
+    )
+
+    await act(async () => {
+      await result.current.send('hello')
+    })
+
+    expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a', undefined, undefined)
+    expect(onPendingModelConsumed).not.toHaveBeenCalled()
+  })
+
+  it('does not consult getPendingModel again once a session already exists', async () => {
+    mockedApi.startTurn.mockResolvedValue({
+      streamId: 'stream-1',
+      sessionId: 'existing-session',
+      pendingStartedAt: 0,
+      turnId: null,
+      title: 'title',
+    })
+    const getPendingModel = vi.fn(() => ({ model: 'gpt-4o', modelProvider: 'openai' }))
+
+    const { result } = renderHook(
+      ({ agent }) => useChat('ws-1', agent, { sessionId: 'existing-session', getPendingModel }),
+      { wrapper, initialProps: { agent: 'agent-a' as string | null } },
+    )
+
+    await act(async () => {
+      await result.current.send('hello')
+    })
+
+    // A session was already bound — createSession must never fire, so the
+    // pending pick (if any) is irrelevant here; that path belongs to
+    // ModelPicker calling setActiveModel directly against the real session.
+    expect(mockedApi.createSession).not.toHaveBeenCalled()
   })
 
   it('reconnects to an already-active stream detected via session status', async () => {
@@ -847,5 +939,72 @@ describe('useChat loadOlderMessages', () => {
     // Only the initial fetch happened — no attempt to page further back
     // from offset 0.
     expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useChat does not refetch agents or sessions on send or stream end', () => {
+  it('patches the cached busy-dot and session row locally instead of refetching', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    function Observers() {
+      useQuery({
+        queryKey: queryKeys.agentHistory.agents('ws-1'),
+        queryFn: () => agentHistoryApi.listAgents('ws-1'),
+      })
+      useQuery({
+        queryKey: queryKeys.agentHistory.sessions('ws-1', 'agent-a'),
+        queryFn: () => agentHistoryApi.listAgentSessions('ws-1', 'agent-a'),
+      })
+      return null
+    }
+    function Harness({ children }: { children: ReactNode }) {
+      return (
+        <QueryClientProvider client={client}>
+          <Observers />
+          {children}
+        </QueryClientProvider>
+      )
+    }
+
+    mockedApi.startTurn.mockResolvedValueOnce({
+      streamId: 'stream-1',
+      sessionId: 'selected-session',
+      pendingStartedAt: 0,
+      turnId: null,
+      title: 'hello',
+    })
+
+    const { result } = renderHook(() => useChat('ws-1', 'agent-a', { sessionId: 'selected-session' }), {
+      wrapper: Harness,
+    })
+
+    await waitFor(() => expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockedAgentHistoryApi.listAgents).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockedAgentHistoryApi.listAgentSessions).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      await result.current.send('hello')
+    })
+
+    expect(mockedAgentHistoryApi.listAgents).toHaveBeenCalledTimes(1)
+    expect(mockedAgentHistoryApi.listAgentSessions).toHaveBeenCalledTimes(1)
+    expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledTimes(1)
+    expect(client.getQueryData(queryKeys.agentHistory.agents('ws-1'))).toEqual({
+      agents: [{ name: 'agent-a', isWorking: true }],
+    })
+
+    const source = latestSource()
+    act(() => source.emit('token', { text: 'hi' }))
+    act(() => source.emit('done', { terminal_state: 'ok' }))
+    act(() => source.emit('stream_end', {}))
+
+    await waitFor(() => expect(result.current.turns.at(-1)?.role).toBe('assistant'))
+    expect(mockedAgentHistoryApi.listAgents).toHaveBeenCalledTimes(1)
+    expect(mockedAgentHistoryApi.listAgentSessions).toHaveBeenCalledTimes(1)
+    expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledTimes(1)
+    expect(client.getQueryData(queryKeys.agentHistory.agents('ws-1'))).toEqual({
+      agents: [{ name: 'agent-a', isWorking: false }],
+    })
   })
 })

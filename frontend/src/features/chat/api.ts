@@ -26,8 +26,19 @@ import type {
 
 /** Hermes nests the session under a `session` key
  * (`{"session":{"session_id":...}}`); a top-level `session_id` is kept as a
- * defensive fallback in case that shape ever changes. */
-type WireSession = { session?: { session_id: string; profile?: string }; session_id?: string; profile?: string }
+ * defensive fallback in case that shape ever changes. `model`/`model_provider`
+ * are read back so a caller that requested an explicit model at creation
+ * time (see `createSession`'s optional params) can confirm what the server
+ * actually resolved and persisted — the same field the real Hermes WebUI
+ * frontend reads back into `S.session.model` right after `POST
+ * /api/session/new` (`static/sessions.js`, `newSession()`, ~line 1508). */
+type WireSession = {
+  session?: { session_id: string; profile?: string; model?: string | null; model_provider?: string | null }
+  session_id?: string
+  profile?: string
+  model?: string | null
+  model_provider?: string | null
+}
 type WireStartTurnResult = {
   stream_id: string
   session_id: string
@@ -95,14 +106,46 @@ async function chatFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** Create a session bound to one agent (Hermes profile). Each agent gets
- * its own session — never share one session across agents. */
-export async function createSession(workspaceId: string, agent: string): Promise<ChatSession> {
+ * its own session — never share one session across agents.
+ *
+ * `model`/`modelProvider` are OPTIONAL and, when given, are forwarded
+ * straight into `POST /api/session/new`'s own `model`/`model_provider`
+ * fields — verified against the real Hermes WebUI frontend
+ * (`backend/upstream/static/sessions.js`, `newSession()`, ~line
+ * 1459-1502) and confirmed server-side
+ * (`backend/upstream/api/routes.py` line 15275,
+ * `_session_model_state_from_request(body.get("model"), body.get("model_provider"))`
+ * feeding straight into `new_session(...)`). This is the ONLY way to pin
+ * a brand-new (not-yet-created) session to a specific model: unlike an
+ * existing session (`setActiveModel` in `features/models/api.ts`, which
+ * calls `POST /api/session/update` against a real `session_id`), there is
+ * no session to update yet — the pick has to ride along with creation
+ * itself. Omitting both params is a no-op for this field (server falls
+ * back to the profile's configured default), so every existing call site
+ * is unaffected. */
+export async function createSession(
+  workspaceId: string,
+  agent: string,
+  model?: string,
+  modelProvider?: string | null,
+): Promise<ChatSession> {
   const data = await chatFetch<WireSession>(
     withAgent(`${chatBase(workspaceId)}/api/session/new`, agent),
-    { method: 'POST', body: JSON.stringify({ profile: agent }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        profile: agent,
+        ...(model ? { model, model_provider: modelProvider ?? null } : {}),
+      }),
+    },
   )
   const session = data.session ?? data
-  return { sessionId: session.session_id as string, profile: session.profile }
+  return {
+    sessionId: session.session_id as string,
+    profile: session.profile,
+    model: session.model ?? null,
+    modelProvider: session.model_provider ?? null,
+  }
 }
 
 export async function startTurn(
@@ -263,6 +306,46 @@ export function attachmentFileUrl(
 ): string {
   return withAgent(
     `${chatBase(workspaceId)}/api/file/raw?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(filename)}`,
+    agent,
+  )
+}
+
+/**
+ * Real, servable URL for a `MEDIA:<absolute-path>` (or bare `file://`)
+ * reference the AGENT emits inline in its own reply text — a separate
+ * mechanism from `attachmentFileUrl` above (that one is for files WE
+ * uploaded; this one is for local files the agent points at in prose,
+ * e.g. `MEDIA:/config/.hermes/webui/attachments/<sid>/router-settings.png`
+ * or a screenshot it wrote to the workspace). Backed by upstream's
+ * existing `GET /api/media` (`backend/upstream/api/routes.py:20508`,
+ * `_handle_media`) — this is the SAME route upstream's own vanilla client
+ * resolves every `MEDIA:`/`file://` token through (see
+ * `_inlineMediaHtmlForRef` in `backend/upstream/static/ui.js:2725`,
+ * `'api/media?path='+encodeURIComponent(ref)+...'&session_id='+sid`).
+ *
+ * Unlike `attachmentFileUrl`, `path` here MUST be the file's full
+ * ABSOLUTE path exactly as the token carries it — `_handle_media` resolves
+ * `path` directly (`Path(raw_path).resolve()`, `api/routes.py:20544`) and
+ * checks it against an allow-list of roots (Hermes home, `/tmp`, the
+ * active workspace, plus this exact session's own previously-emitted
+ * `MEDIA:` refs — see `_session_media_token_allows_path`,
+ * `api/routes.py:20258`), not a per-session relative lookup — passing a
+ * bare filename here would resolve against the WRONG directory (the
+ * gateway process's cwd) and 403/404 instead of finding the file.
+ *
+ * `?inline=1` requests inline (not `Content-Disposition: attachment`)
+ * delivery for the safe preview MIME types `_handle_media` allow-lists —
+ * required for an `<img src>` to actually render instead of triggering a
+ * download prompt.
+ */
+export function mediaFileUrl(
+  workspaceId: string,
+  agent: string,
+  sessionId: string,
+  absolutePath: string,
+): string {
+  return withAgent(
+    `${chatBase(workspaceId)}/api/media?path=${encodeURIComponent(absolutePath)}&session_id=${encodeURIComponent(sessionId)}&inline=1`,
     agent,
   )
 }

@@ -1,20 +1,25 @@
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { WorkspaceChat } from '@/features/chat/components/workspace-chat'
 import { renderWithClient } from '@/test/utils'
+import { writeSelectedModels } from '@/features/models/selected-models-store'
+import { clearPendingModel } from '@/features/models/pending-model-store'
 import * as agentHistoryApi from '@/features/agent-history/api'
 import * as chatApi from '@/features/chat/api'
+import * as modelsApi from '@/features/models/api'
 
 vi.mock('@/features/agent-history/api')
 vi.mock('@/features/chat/api', async () => {
   const actual = await vi.importActual<typeof chatApi>('@/features/chat/api')
   return { ...actual, createSession: vi.fn(), getSessionStatus: vi.fn(), chatStreamUrl: vi.fn(() => 'http://gateway.test/stream') }
 })
+vi.mock('@/features/models/api')
 
 const mockedAgentHistoryApi = vi.mocked(agentHistoryApi)
 const mockedChatApi = vi.mocked(chatApi)
+const mockedModelsApi = vi.mocked(modelsApi)
 
 class MockEventSource {
   addEventListener() {}
@@ -22,11 +27,21 @@ class MockEventSource {
   close() {}
 }
 
+beforeEach(() => {
+  // ModelPicker (mounted inside ChatComposer as part of the real tree
+  // every test here renders) queries this — a default resolved value
+  // keeps unrelated tests quiet instead of hitting React Query's
+  // "query data cannot be undefined" warning from the auto-mock default.
+  mockedModelsApi.fetchSessionModel.mockResolvedValue({ model: null })
+})
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   vi.unstubAllGlobals()
   window.sessionStorage.clear()
+  window.localStorage.clear()
+  clearPendingModel('ws-1', 'agent-a')
 })
 
 function renderChat(initialUrl: string) {
@@ -169,7 +184,11 @@ describe('WorkspaceChat new chat', () => {
 
     await user.type(screen.getByPlaceholderText(/message this agent/i), 'fresh start{enter}')
 
-    await waitFor(() => expect(mockedChatApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a'))
+    // createSession now always carries its (optional) pending-model args —
+    // undefined here since no model was picked before this send.
+    await waitFor(() =>
+      expect(mockedChatApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a', undefined, undefined),
+    )
   })
 
   it('disables the New chat button while a turn is actively streaming', async () => {
@@ -182,5 +201,60 @@ describe('WorkspaceChat new chat', () => {
     renderChat('/workspaces/ws-1/chat?agent=agent-a')
 
     await waitFor(() => expect(screen.getByRole('button', { name: /new chat/i })).toBeDisabled())
+  })
+})
+
+describe('WorkspaceChat model pick before any session exists (real bug report)', () => {
+  // End-to-end regression coverage through the ACTUAL rendered tree
+  // (ModelPicker inside ChatComposer inside WorkspaceChat), not just the
+  // hook in isolation: picking a model on a brand-new agent with no
+  // session yet, then sending the first message, must carry that pick
+  // into createSession — this is the exact "add model + new chat failed"
+  // report this test guards against regressing again.
+  it('renders CHAT above CHANNELS in the sidebar', async () => {
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({
+      agents: [{ name: 'agent-a', isWorking: false }],
+    })
+    mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
+
+    renderChat('/workspaces/ws-1/chat?agent=agent-a')
+
+    const chat = await screen.findByTestId('sidebar-chat-section')
+    const channels = screen.getByText('CHANNELS')
+    expect(chat.compareDocumentPosition(channels) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+  })
+
+  it('a model picked with no session yet rides along with the session created by the first send', async () => {
+    const user = userEvent.setup()
+    writeSelectedModels('ws-1', 'agent-a', [
+      { id: 'gpt-4o', label: 'GPT-4o', provider: 'openai' },
+    ])
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
+    mockedChatApi.createSession.mockResolvedValue({ sessionId: 'brand-new-session', model: 'gpt-4o', modelProvider: 'openai' })
+    mockedChatApi.startTurn = vi.fn().mockResolvedValue({
+      streamId: 'stream-1',
+      sessionId: 'brand-new-session',
+      pendingStartedAt: 0,
+      turnId: null,
+      title: 'title',
+    })
+
+    renderChat('/workspaces/ws-1/chat?agent=agent-a')
+
+    // Pick the model from the compact picker in the composer toolbar —
+    // there is no session yet, so this must NOT call setActiveModel.
+    // ("Model", not "Add model" — a model is already ticked in the
+    // shortlist above, so the trigger shows the generic bound label.)
+    await user.click(await screen.findByRole('button', { name: /^model$/i }))
+    await user.click(screen.getByText('GPT-4o'))
+    expect(mockedModelsApi.setActiveModel).not.toHaveBeenCalled()
+    // The picker reflects the pending pick immediately.
+    expect(await screen.findByRole('button', { name: /^gpt-4o$/i })).toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText(/message this agent/i), 'hello{enter}')
+
+    await waitFor(() =>
+      expect(mockedChatApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a', 'gpt-4o', 'openai'),
+    )
   })
 })

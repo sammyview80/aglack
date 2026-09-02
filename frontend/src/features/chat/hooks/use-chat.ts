@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import {
   cancelTurn,
   createSession,
@@ -10,6 +10,7 @@ import {
   uploadAttachment,
 } from '@/features/chat/api'
 import { listAgentMessages } from '@/features/agent-history/api'
+import { setAgentWorking, touchCachedSession } from '@/features/agent-history/cache'
 import {
   clearSelectedChatSessionId,
   writeSelectedChatSessionId,
@@ -100,6 +101,17 @@ function historyToTurns(sessionKey: string, messages: AgentMessage[], baseOffset
     }))
 }
 
+function abandonLiveStream(
+  workspaceId: string | undefined,
+  agentName: string | null | undefined,
+  streamId: string | null,
+  queryClient: QueryClient,
+) {
+  if (!streamId || !agentName || !workspaceId) return
+  void cancelTurn(workspaceId, agentName, streamId).catch(() => {})
+  setAgentWorking(queryClient, workspaceId, agentName, false)
+}
+
 /**
  * Ties session creation, turn start, and the SSE stream together for one
  * agent. Switching `agent` switches which session the chat is bound to —
@@ -113,14 +125,36 @@ function historyToTurns(sessionKey: string, messages: AgentMessage[], baseOffset
  * Selected session id lives in `sessionStorage` per workspace+agent — one
  * slot, replaced on every history click. Survives reload within the same
  * tab but not across tabs.
+ *
+ * `options.getPendingModel`: a GETTER (not a static value) read at the
+ * exact moment `createSession` actually fires — never read once up front
+ * — so a model picked on an empty composer rides along with the session
+ * that gets created for the very first send, exactly like the real
+ * Hermes WebUI's own `newSession()` consuming
+ * `window._emptyComposerModelOverride`
+ * (`backend/upstream/static/sessions.js` ~line 1446). A getter (rather
+ * than passing the value itself) avoids a stale closure: `useChat` is
+ * called once per render with whatever `options` that render captured,
+ * but `send()` can run much later (after the user actually types and
+ * hits Enter) — a plain value frozen at that render could be arbitrarily
+ * stale by the time a session is actually created. `options.onPendingModelConsumed`
+ * fires right after a pending pick was actually sent to the server, so
+ * the caller can clear it (mirrors `_clearEmptyComposerModelOverride()`).
  */
 export function useChat(
   workspaceId: string | undefined,
   agent: string | null,
-  options?: { sessionId?: string | null; onSessionIdChange?: () => void },
+  options?: {
+    sessionId?: string | null
+    onSessionIdChange?: () => void
+    getPendingModel?: () => { model: string; modelProvider: string | null } | null
+    onPendingModelConsumed?: () => void
+  },
 ) {
   const selectedSessionId = options?.sessionId ?? null
   const onSessionIdChange = options?.onSessionIdChange
+  const getPendingModel = options?.getPendingModel
+  const onPendingModelConsumed = options?.onPendingModelConsumed
   const queryClient = useQueryClient()
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [streamId, setStreamId] = useState<string | null>(null)
@@ -170,7 +204,10 @@ export function useChat(
 
   const sessionQuery = useQuery({
     queryKey: queryKeys.chat.session(workspaceId ?? '', agent ?? ''),
-    queryFn: () => createSession(workspaceId as string, agent as string),
+    queryFn: () => {
+      const pending = getPendingModel?.()
+      return createSession(workspaceId as string, agent as string, pending?.model, pending?.modelProvider)
+    },
     // Lazy — first send creates the session via fetchQuery in send(). Avoids a
     // createSession round trip on every agent open with no stored selection.
     enabled: false,
@@ -262,11 +299,12 @@ export function useChat(
     const shouldReset = agentOrWsChanged || sessionSwitch || sessionCleared
 
     if (shouldReset) {
-      const cancelAgent = agentOrWsChanged ? prev!.agent : agent
-      const abandoned = streamIdRef.current
-      if (abandoned && cancelAgent) {
-        void cancelTurn(workspaceId as string, cancelAgent, abandoned).catch(() => {})
-      }
+      abandonLiveStream(
+        workspaceId,
+        agentOrWsChanged ? prev!.agent : agent,
+        streamIdRef.current,
+        queryClient,
+      )
       setTurns([])
       claimStream(null)
       setIsSending(false)
@@ -276,15 +314,6 @@ export function useChat(
       setOldestLoadedOffset(null)
       setTotalHistoryMessages(0)
       reconnectBindingRef.current = null
-    }
-
-    return () => {
-      if (!shouldReset) return
-      const cancelAgent = agentOrWsChanged ? prev!.agent : agent
-      const abandoned = streamIdRef.current
-      if (abandoned && cancelAgent) {
-        void cancelTurn(workspaceId as string, cancelAgent, abandoned).catch(() => {})
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, agent, boundSessionId, claimStream])
@@ -471,12 +500,12 @@ export function useChat(
       ])
     }
 
-    if (workspaceId && agent) {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agentHistory.sessions(workspaceId, agent) })
-      // The turn just went idle — re-fetch the sidebar's agents list so its
-      // busy dot (AgentSummary.isWorking) clears for this agent. Mirrors
-      // the `send()` invalidation below that lights it in the first place.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agentHistory.agents(workspaceId) })
+    if (workspaceId && agent && sessionId) {
+      setAgentWorking(queryClient, workspaceId, agent, false)
+      touchCachedSession(queryClient, workspaceId, agent, sessionId, {
+        messageCountDelta: stream.assistantText.trim() || stream.terminal === 'error' ? 1 : 0,
+        at: Date.now(),
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.terminal, effectiveStreamId])
@@ -517,15 +546,21 @@ export function useChat(
 
     let activeSessionId = sessionId
     if (!activeSessionId) {
+      // A model picked on the still-empty composer (no session existed to
+      // scope it to) rides along with THIS creation call — read fresh
+      // right here, not at some earlier render, so the very latest pick
+      // wins (see this hook's own doc comment on `getPendingModel`).
+      const pending = getPendingModel?.()
       try {
         const session = await queryClient.fetchQuery({
           queryKey: queryKeys.chat.session(workspaceId, agent),
-          queryFn: () => createSession(workspaceId, agent),
+          queryFn: () => createSession(workspaceId, agent, pending?.model, pending?.modelProvider),
           staleTime: Infinity,
         })
         activeSessionId = session.sessionId
         writeSelectedChatSessionId(workspaceId, agent, activeSessionId)
         onSessionIdChange?.()
+        if (pending) onPendingModelConsumed?.()
       } catch (err) {
         handleError(err, { fallback: 'Could not start a session for this agent' })
         return
@@ -622,11 +657,12 @@ export function useChat(
       }
       claimStream(result.streamId)
       setIsSending(false)
-      // Turn just started server-side — re-fetch the sidebar's agents list
-      // so its busy dot lights immediately rather than waiting for this
-      // agent's OWN turn-settle invalidation above (which only fires once
-      // the turn ends) or another agent's unrelated 30s staleTime to lapse.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agentHistory.agents(sentForWorkspaceId) })
+      setAgentWorking(queryClient, sentForWorkspaceId, sentForAgent, true)
+      touchCachedSession(queryClient, sentForWorkspaceId, sentForAgent, activeSessionId as string, {
+        title: result.title,
+        messageCountDelta: 1,
+        at: Date.now(),
+      })
     } catch {
       /* onError already toasted */
       if (sendSeqRef.current === seq) setIsSending(false)

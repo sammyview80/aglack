@@ -20,7 +20,7 @@ export const threadsUi = {
     'absolute left-[-12px] h-0 w-1 rounded-r-[4px] bg-[#f2f3f5] transition-[height] duration-150 ease-out group-hover:h-5 group-aria-[current=page]:h-10',
 
   sidebar:
-    'flex flex-col overflow-auto rounded-xl border border-[var(--th-sidebar-line)] bg-gradient-to-b from-[var(--th-sidebar)] to-[var(--th-sidebar-2)] px-4 pb-4 pt-4 max-[760px]:hidden',
+    'flex flex-col overflow-auto rounded-xl border border-[var(--th-sidebar-line)] bg-gradient-to-b from-[var(--th-sidebar)] to-[var(--th-sidebar-2)] px-3.5 pb-5 pt-4 max-[760px]:hidden',
   workspaceRow: 'flex h-12 items-center gap-[9px] px-[11px] text-[var(--th-text)] [&_strong]:text-base [&_strong]:tracking-[-0.4px]',
   workspaceHome: 'flex cursor-pointer items-center gap-[9px] bg-transparent p-0 text-inherit',
   workspaceMark:
@@ -29,35 +29,55 @@ export const threadsUi = {
     'grid place-items-center rounded-md bg-transparent p-[5px] text-[var(--th-icon)] transition-[background,transform] duration-200 hover:-translate-y-px hover:bg-[var(--th-icon-hover)]',
   topAction: 'ml-auto',
   composeButton:
-    'mx-3 mb-[22px] mt-6 flex h-[39px] w-[129px] items-center justify-center gap-[9px] rounded-[7px] bg-[var(--th-compose)] font-[650] text-white shadow-[0_5px_10px_#6944ee47] transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_15px_#6944ee59]',
-  primaryNav: 'grid gap-0.5 px-px',
+    'mx-3 mb-5 mt-5 flex h-10 w-[129px] items-center justify-center gap-[9px] rounded-lg bg-[var(--th-compose)] font-[650] text-white shadow-[0_5px_10px_#6944ee47] transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_15px_#6944ee59]',
+  primaryNav: 'grid gap-1 px-px',
   navItem:
-    'flex w-full items-center gap-3 rounded px-[15px] py-2 text-left text-sm font-[560] text-[var(--th-text)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)] [&_svg]:text-[var(--th-icon)]',
+    'flex w-full items-center gap-3 rounded-md px-[15px] py-2 text-left text-sm font-[560] text-[var(--th-text)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)] [&_svg]:text-[var(--th-icon)]',
   navItemActive: 'bg-[var(--th-selected)]',
   countBadge:
     'ml-auto rounded-[5px] bg-[var(--th-badge-bg)] px-1.5 py-[3px] text-xs font-bold text-[var(--th-badge-fg)]',
-  sidebarSection: 'mt-[37px]',
+  sidebarSection: 'mt-6 flex flex-col gap-0.5',
   sectionLabel:
-    'flex items-center gap-2 px-9 pb-[11px] text-xs font-[750] tracking-[1.3px] text-[var(--th-muted)]',
+    'flex items-center gap-1.5 px-[15px] pb-2.5 text-[11px] font-[750] tracking-[1.4px] text-[var(--th-muted)]',
   channelItem:
-    'flex w-full items-center gap-2.5 rounded px-[15px] py-[7px] text-left text-sm font-[560] text-[var(--th-text)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)]',
+    'flex w-full items-center gap-2.5 rounded-md px-[15px] py-1.5 text-left text-sm font-[560] text-[var(--th-text)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)]',
   channelSelected: 'bg-[var(--th-selected)]',
   channelEmoji: 'w-[22px] text-center text-[15px]',
   moreButton:
-    'flex w-full items-center gap-[9px] rounded py-2 pl-[34px] pr-[15px] text-left text-[13px] font-medium text-[var(--th-muted)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)] [&_svg]:transition-transform [&_svg]:duration-200',
+    'flex w-full items-center gap-2 rounded-md py-2 pl-[34px] pr-[15px] text-left text-[13px] font-medium text-[var(--th-muted)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)] [&_svg]:transition-transform [&_svg]:duration-200',
   rotate180: 'rotate-180',
-  extraChannels: 'mt-[3px]',
+  extraChannels: 'mt-0.5',
   extraChannelItem: 'pl-[41px] text-[13px]',
-  chatSection: 'mt-9',
   personItem:
-    'relative flex w-full items-center gap-[9px] rounded py-[5px] pl-[29px] pr-[15px] text-left text-sm font-[560] text-[var(--th-text)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)]',
+    'relative flex w-full items-center gap-2.5 rounded-md py-1 pl-4 pr-[15px] text-left text-sm font-[560] text-[var(--th-text)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)]',
   personSelected: 'bg-[var(--th-selected)]',
   personAvatarWrap: 'relative inline-block h-[31px] w-[31px] shrink-0',
   personName: 'capitalize',
-  sidebarFooter: 'mt-auto flex flex-wrap gap-1 pt-[25px]',
+  sidebarFooter: 'mt-auto flex flex-wrap gap-1 pt-6',
   footerButton:
     'flex w-auto items-center gap-3 rounded px-[13px] py-[7px] text-left text-xs text-[var(--th-muted)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)]',
   companyHeading: 'text-[17px] font-bold tracking-tight',
+
+  desktopPreviewPanel: 'flex flex-1 min-h-0 flex-col pt-4',
+  // Fixed, non-responsive box — same pixel size on every render, never
+  // resized per breakpoint/container width. The iframe inside it renders
+  // the desktop at its REAL native resolution (width/height HTML
+  // attributes — genuine 1024x768 pixel buffer, not a low-res render
+  // upscaled), then a CSS transform: scale() shrinks the desktop MINUS the
+  // KasmVNC control bar's own real pixel width (see
+  // DESKTOP_CONTROL_BAR_REAL_PX/DESKTOP_CROP_LEFT_SCALED_PX in
+  // threads-shell.tsx — that bar can't be hidden via URL param, only
+  // cropped) so the remaining desktop content fills this box edge-to-edge
+  // with no blank gap. Width/height are set inline from
+  // DESKTOP_PREVIEW_WIDTH/HEIGHT in threads-shell.tsx — no static size
+  // here, so there is exactly one place computing it.
+  desktopPreviewThumb:
+    'group relative shrink-0 overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)]',
+  desktopPreviewFrame: 'pointer-events-none absolute left-0 top-0 origin-top-left border-0',
+  desktopPreviewEmpty: 'grid size-full place-items-center text-[var(--th-muted)]',
+  desktopPreviewOpen:
+    'absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full bg-black/80 px-4 py-2.5 text-[13px] font-[650] text-white opacity-0 shadow-[0_8px_20px_#00000040] transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100',
+  desktopPreviewCaption: 'mt-2.5 text-center text-[13px] font-[560] text-[var(--th-text)]',
   contentArea: 'flex justify-between h-full min-h-0 min-w-0 flex-col bg-[var(--th-content)]',
   contentHeader:
     'flex h-[69px] shrink-0 items-center border-b border-[var(--th-header-line)] px-8 max-[760px]:px-4 [&_h1]:m-0 [&_h1]:text-[17px] [&_h1]:tracking-[-0.4px] [&_h1]:text-[var(--th-text)]',

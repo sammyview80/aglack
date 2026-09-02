@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach } from 'vitest'
 import { ChatMessageList } from '@/features/chat/components/chat-message-list'
 import type { ChatTurn } from '@/features/chat/hooks/use-chat'
@@ -265,5 +266,51 @@ describe('ChatMessageList attachments', () => {
     )
 
     expect(screen.queryByLabelText('Attachments')).not.toBeInTheDocument()
+  })
+
+  it('opens a fullscreen in-app lightbox on click instead of navigating to a new tab', async () => {
+    const user = userEvent.setup()
+    render(
+      <ChatMessageList
+        agent="agent-a"
+        turns={[
+          {
+            id: '1',
+            role: 'user',
+            text: 'check this out',
+            at: Date.now(),
+            attachments: [
+              { name: 'photo.png', path: '/state/attachments/s1/photo.png', mime: 'image/png', size: 42, isImage: true },
+            ],
+          },
+        ]}
+        isStreaming={false}
+        streamingText=""
+        reasoningText=""
+        tools={[]}
+        workspaceId="ws-1"
+        sessionId="session-a"
+      />,
+    )
+
+    // The clickable thumbnail is a real <button>, not an anchor — clicking
+    // it must never navigate the browser (no target=_blank/new-tab link)
+    // the way it did before this fix.
+    const trigger = screen.getByRole('button', { name: 'View photo.png' })
+    expect(trigger.tagName).toBe('BUTTON')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    await user.click(trigger)
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toBeInTheDocument()
+    // The lightbox renders its own full-size <img> of the same real URL —
+    // matches upstream Hermes' own click-to-enlarge `.img-lightbox`
+    // behavior, not an external navigation.
+    const lightboxImg = within(dialog).getByAltText('photo.png')
+    expect(lightboxImg.getAttribute('src')).toContain('/api/file/raw')
+
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

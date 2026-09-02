@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { AgentAvatar } from '@/features/chat/components/agent-avatar'
 import { ChatAttachmentList } from '@/features/chat/components/chat-attachments'
 import { ChatEmptyState } from '@/features/chat/components/chat-empty-state'
@@ -23,6 +24,82 @@ function formatMessageTime(at: number): string {
     minute: '2-digit',
   })
 }
+
+const ChatTurnRow = memo(function ChatTurnRow({
+  turn,
+  index,
+  agent,
+  workspaceId,
+  sessionId,
+}: {
+  turn: ChatTurn
+  index: number
+  agent: string
+  workspaceId?: string
+  sessionId?: string | null
+}) {
+  const isUser = turn.role === 'user'
+
+  return (
+    <div
+      className={cn(
+        'flex min-w-0 w-full max-w-full',
+        isUser ? 'justify-end' : 'justify-start',
+        motionPresets.messageEnter,
+      )}
+      style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}
+    >
+      <div className={cn(chatUi.messageBlock, isUser && chatUi.messageBlockUser)}>
+        <div className={chatUi.messageRow}>
+          {!isUser ? <AgentAvatar agent={agent} size="sm" /> : null}
+          <div className={chatUi.messageContent}>
+            {!isUser && turn.reasoning ? <ThinkingCard reasoning={turn.reasoning} /> : null}
+            {!isUser && turn.tools && turn.tools.length > 0 ? (
+              <ToolActivitySummary tools={turn.tools} />
+            ) : null}
+            {turn.attachments && turn.attachments.length > 0 ? (
+              <ChatAttachmentList
+                attachments={turn.attachments}
+                workspaceId={workspaceId}
+                agent={agent}
+                sessionId={sessionId}
+              />
+            ) : null}
+            <div
+              data-bubble-tone={turn.errored ? 'error' : isUser ? 'outgoing' : 'incoming'}
+              className={cn(
+                chatUi.bubbleBase,
+                turn.errored
+                  ? chatUi.bubbleError
+                  : isUser
+                    ? chatUi.bubbleOutgoing
+                    : chatUi.bubbleIncoming,
+              )}
+            >
+              <MarkdownContent
+                text={turn.text}
+                tone={turn.errored ? 'error' : isUser ? 'outgoing' : 'incoming'}
+                workspaceId={workspaceId}
+                agent={agent}
+                sessionId={sessionId}
+              />
+            </div>
+          </div>
+          {isUser ? <AgentAvatar agent="you" size="sm" /> : null}
+        </div>
+        <time
+          className={cn(
+            chatUi.messageTime,
+            isUser ? chatUi.messageTimeUser : chatUi.messageTimeAssistant,
+          )}
+          dateTime={String(messageTimestamp(turn.at))}
+        >
+          {formatMessageTime(turn.at)}
+        </time>
+      </div>
+    </div>
+  )
+})
 
 export function ChatMessageList({
   agent,
@@ -65,67 +142,16 @@ export function ChatMessageList({
           <ChatEmptyState agent={agent} onSuggest={onSuggest} />
         </div>
       ) : null}
-      {turns.map((turn, index) => {
-        const isUser = turn.role === 'user'
-
-        return (
-          <div
-            className={cn(
-              'flex min-w-0 w-full max-w-full',
-              isUser ? 'justify-end' : 'justify-start',
-              motionPresets.messageEnter,
-            )}
-            key={turn.id}
-            style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}
-          >
-            <div className={cn(chatUi.messageBlock, isUser && chatUi.messageBlockUser)}>
-              <div className={chatUi.messageRow}>
-                {!isUser ? <AgentAvatar agent={agent} size="sm" /> : null}
-                <div className={chatUi.messageContent}>
-                  {!isUser && turn.reasoning ? <ThinkingCard reasoning={turn.reasoning} /> : null}
-                  {!isUser && turn.tools && turn.tools.length > 0 ? (
-                    <ToolActivitySummary tools={turn.tools} />
-                  ) : null}
-                  {turn.attachments && turn.attachments.length > 0 ? (
-                    <ChatAttachmentList
-                      attachments={turn.attachments}
-                      workspaceId={workspaceId}
-                      agent={agent}
-                      sessionId={sessionId}
-                    />
-                  ) : null}
-                  <div
-                    data-bubble-tone={turn.errored ? 'error' : isUser ? 'outgoing' : 'incoming'}
-                    className={cn(
-                      chatUi.bubbleBase,
-                      turn.errored
-                        ? chatUi.bubbleError
-                        : isUser
-                          ? chatUi.bubbleOutgoing
-                          : chatUi.bubbleIncoming,
-                    )}
-                  >
-                    <MarkdownContent
-                      text={turn.text}
-                      tone={turn.errored ? 'error' : isUser ? 'outgoing' : 'incoming'}
-                    />
-                  </div>
-                </div>
-                {isUser ? <AgentAvatar agent="you" size="sm" /> : null}
-              </div>
-              <time
-                className={cn(
-                  chatUi.messageTime,
-                  isUser ? chatUi.messageTimeUser : chatUi.messageTimeAssistant,
-                )}
-                dateTime={String(messageTimestamp(turn.at))}
-              >
-                {formatMessageTime(turn.at)}
-              </time>
-            </div>
-          </div>
-        )
-      })}
+      {turns.map((turn, index) => (
+        <ChatTurnRow
+          key={turn.id}
+          turn={turn}
+          index={index}
+          agent={agent}
+          workspaceId={workspaceId}
+          sessionId={sessionId}
+        />
+      ))}
       {isStreaming ? (
         <div className={cn('flex min-w-0 w-full max-w-full justify-start', motionPresets.messageEnter)}>
           <div className={chatUi.messageBlock}>
@@ -141,7 +167,13 @@ export function ChatMessageList({
                 <ToolActivityList tools={tools} />
                 <div className={cn(chatUi.bubbleBase, chatUi.bubbleIncoming, chatUi.bubbleStreaming)}>
                   {streamingText ? (
-                    <MarkdownContent text={streamingText} tone="incoming" />
+                    <MarkdownContent
+                      text={streamingText}
+                      tone="incoming"
+                      workspaceId={workspaceId}
+                      agent={agent}
+                      sessionId={sessionId}
+                    />
                   ) : (
                     <TypingIndicator className="text-[var(--th-muted)]" />
                   )}

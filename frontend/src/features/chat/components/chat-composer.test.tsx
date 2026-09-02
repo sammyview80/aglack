@@ -1,21 +1,33 @@
 import { describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach } from 'vitest'
 import { ChatComposer } from '@/features/chat/components/chat-composer'
+import { renderWithClient } from '@/test/utils'
 
 afterEach(() => cleanup())
 
+// ChatComposer now renders <ModelPicker> in its toolbar (models feature),
+// which reads React Query — every render here needs a QueryClientProvider,
+// hence renderWithClient instead of plain render.
+function renderComposer(props: Partial<Parameters<typeof ChatComposer>[0]> = {}) {
+  return renderWithClient(
+    <ChatComposer
+      workspaceId="ws-1"
+      agent="agent-a"
+      sessionId="sess-1"
+      disabled={false}
+      isStreaming={false}
+      onSend={vi.fn()}
+      onStop={vi.fn()}
+      {...props}
+    />,
+  )
+}
+
 describe('ChatComposer attachments and voice', () => {
   it('renders attach file and voice input controls', () => {
-    render(
-      <ChatComposer
-        disabled={false}
-        isStreaming={false}
-        onSend={vi.fn()}
-        onStop={vi.fn()}
-      />,
-    )
+    renderComposer()
 
     expect(screen.getByRole('button', { name: /attach file/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /voice input/i })).toBeInTheDocument()
@@ -24,14 +36,7 @@ describe('ChatComposer attachments and voice', () => {
 
   it('opens the hidden file input when attach is clicked', async () => {
     const user = userEvent.setup()
-    render(
-      <ChatComposer
-        disabled={false}
-        isStreaming={false}
-        onSend={vi.fn()}
-        onStop={vi.fn()}
-      />,
-    )
+    renderComposer()
 
     const fileInput = document.querySelector('.chat-composer-file-input') as HTMLInputElement
     const clickSpy = vi.spyOn(fileInput, 'click')
@@ -49,9 +54,7 @@ describe('ChatComposer attachments and voice', () => {
   it('passes the real File objects to onSend instead of a text placeholder', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
-    render(
-      <ChatComposer disabled={false} isStreaming={false} onSend={onSend} onStop={vi.fn()} />,
-    )
+    renderComposer({ onSend })
 
     const file = new File(['file contents'], 'report.pdf', { type: 'application/pdf' })
     const fileInput = document.querySelector('.chat-composer-file-input') as HTMLInputElement
@@ -71,9 +74,7 @@ describe('ChatComposer attachments and voice', () => {
   it('clears the attachment chip after a successful send', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
-    render(
-      <ChatComposer disabled={false} isStreaming={false} onSend={onSend} onStop={vi.fn()} />,
-    )
+    renderComposer({ onSend })
 
     const file = new File(['x'], 'notes.txt', { type: 'text/plain' })
     const fileInput = document.querySelector('.chat-composer-file-input') as HTMLInputElement
@@ -81,5 +82,18 @@ describe('ChatComposer attachments and voice', () => {
     await user.click(screen.getByRole('button', { name: /^send$/i }))
 
     expect(screen.queryByText('notes.txt')).not.toBeInTheDocument()
+  })
+})
+
+describe('ChatComposer model picker placement', () => {
+  it('renders the model picker inside the message box toolbar, next to attach/voice', () => {
+    renderComposer()
+
+    // The picker trigger ("Add model" when nothing is ticked yet) lives in
+    // the same toolbar row as Attach file / Voice input, not in the thread
+    // header above the transcript.
+    const attachButton = screen.getByRole('button', { name: /attach file/i })
+    const pickerTrigger = screen.getByRole('button', { name: /add model/i })
+    expect(attachButton.parentElement).toBe(pickerTrigger.closest('.relative')?.parentElement)
   })
 })

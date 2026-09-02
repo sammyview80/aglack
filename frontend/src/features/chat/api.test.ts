@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { attachmentFileUrl, createSession, startTurn, uploadAttachment } from '@/features/chat/api'
+import { attachmentFileUrl, createSession, mediaFileUrl, startTurn, uploadAttachment } from '@/features/chat/api'
 
 function jsonResponse(body: unknown, ok = true) {
   return {
@@ -183,5 +183,29 @@ describe('attachmentFileUrl', () => {
     const url = attachmentFileUrl('ws-1', 'pm', 'session-a', 'my photo (1).png')
 
     expect(url).toContain('path=my%20photo%20(1).png')
+  })
+})
+
+// `mediaFileUrl` builds the URL for a `MEDIA:<path>` token the AGENT
+// emits inline in its own reply text — a SEPARATE real upstream route
+// (`GET /api/media`) from `attachmentFileUrl`'s `/api/file/raw`, taking
+// the full absolute path directly (see that function's own doc comment in
+// `features/chat/api.ts` for exactly why the path shape differs).
+describe('mediaFileUrl', () => {
+  it('builds a /api/media URL with the absolute path, session_id, agent, and inline=1', () => {
+    const url = mediaFileUrl(
+      'ws-1',
+      'pm',
+      '49e0d5e71555',
+      '/config/.hermes/webui/attachments/49e0d5e71555/router-settings.png',
+    )
+
+    expect(url).toContain('/workspaces/ws-1/chat/api/media')
+    expect(url).toContain(
+      'path=%2Fconfig%2F.hermes%2Fwebui%2Fattachments%2F49e0d5e71555%2Frouter-settings.png',
+    )
+    expect(url).toContain('session_id=49e0d5e71555')
+    expect(url).toContain('agent=pm')
+    expect(url).toContain('inline=1')
   })
 })

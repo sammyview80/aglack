@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { FileText } from 'lucide-react'
 import { attachmentFileUrl } from '@/features/chat/api'
 import { chatUi } from '@/features/chat/chat-ui'
+import { ImageLightbox } from '@/features/chat/components/image-lightbox'
 import type { ChatAttachment } from '@/features/chat/types'
 
 /** Human-readable byte size, matching the granularity a file chip needs
@@ -46,6 +48,12 @@ function AttachmentChip({ attachment }: { attachment: ChatAttachment }) {
  * `<img src>` that can only 404. Same fallback for a non-image mime, by
  * design (task scope: images get a thumbnail, everything else gets a
  * chip, never the other way around).
+ *
+ * Clicking the thumbnail opens a fullscreen in-app lightbox
+ * (`ImageLightbox`) instead of navigating to a new browser tab — matches
+ * upstream Hermes' own click-to-enlarge behavior for `.msg-media-img`
+ * (`backend/upstream/static/ui.js`'s `_openImgLightbox`), not a plain
+ * link-out.
  */
 function AttachmentThumbnail({
   attachment,
@@ -58,17 +66,20 @@ function AttachmentThumbnail({
   agent: string
   sessionId: string
 }) {
+  const [open, setOpen] = useState(false)
   const src = attachmentFileUrl(workspaceId, agent, sessionId, attachment.name)
   return (
-    <a
-      href={src}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={chatUi.attachmentImageButton}
-      aria-label={`Open ${attachment.name}`}
-    >
-      <img src={src} alt={attachment.name} className={chatUi.attachmentImage} loading="lazy" />
-    </a>
+    <>
+      <button
+        type="button"
+        className={chatUi.attachmentImageButton}
+        aria-label={`View ${attachment.name}`}
+        onClick={() => setOpen(true)}
+      >
+        <img src={src} alt={attachment.name} className={chatUi.attachmentImage} loading="lazy" />
+      </button>
+      <ImageLightbox src={src} alt={attachment.name} open={open} onOpenChange={setOpen} />
+    </>
   )
 }
 

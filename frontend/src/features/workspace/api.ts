@@ -183,13 +183,29 @@ export function hermesWebuiUrl(workspaceId: string): string {
 /**
  * Webtop desktop UI for this workspace, via the gateway proxy (new tab).
  *
- * `hideControlBar` appends an empty `show_control_bar` query param, which
- * hides KasmVNC's own floating control-bar sidebar (noVNC_control_bar_anchor).
- * KasmVNC's ui.js only hides it when the param is absent or empty-valued —
- * `show_control_bar=false` is truthy as a JS string and does NOT hide it.
- * Pass this only for desktop-viewport users; mobile should keep the bar,
- * so the false branch sets `show_control_bar=true` explicitly rather than
- * omitting the param (omitting it also hides the bar).
+ * `hideControlBar` appends an empty `show_control_bar` query param to
+ * THIS (outer) URL. VERIFIED LIVE: `/desktop/` serves webtop's own
+ * server-rendered EJS shell (`/kclient/public/index.html` inside the
+ * container — title `Alpine IceWM`), which reads no query string of its
+ * own at any layer (confirmed by diffing the response body across
+ * different outer query strings) — so THIS parameter, on THIS outer
+ * URL, has no effect either way; it is kept only because a caller
+ * embedding KasmVNC's own `vnc/index.html` directly (bypassing the
+ * webtop shell) would still benefit from it.
+ *
+ * The shell's OWN inner iframe src hardcodes `show_control_bar=` — fixed
+ * at image-build time by `backend/workspace-image/
+ * patch_kasmvnc_hide_control_bar.py` (see that script's own module doc
+ * for the full trail, including a real regression: an earlier version of
+ * that patch set the literal string `"false"`, which is TRUTHY in
+ * JavaScript once read by KasmVNC's own `WebUtil.getConfigVar()` — an
+ * empty string is the only value that reads as "off"). That patch is
+ * what actually hides the control bar server-side now; this frontend
+ * param is not the mechanism and callers should not rely on it to hide
+ * anything through this particular gateway path. `DesktopPreview` in
+ * `components/threads-shell.tsx` additionally crops the panel-preview
+ * iframe client-side as defense in depth / for the small-preview layout,
+ * independent of whichever workspace image (patched or not) is running.
  */
 export function desktopUrl(workspaceId: string, hideControlBar = false): string {
   const base = `${gatewayUrl()}/workspaces/${encodeURIComponent(workspaceId)}/desktop/`

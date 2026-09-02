@@ -45,7 +45,7 @@ export const chatUi = {
   thinkingBody:
     'm-0 whitespace-pre-wrap break-words px-2.5 pb-2.5 font-[inherit] text-[13px] leading-normal text-[var(--th-muted)]',
   composer:
-    'chat-composer flex min-h-0 flex-col items-stretch gap-0 border-t border-[var(--th-line)] bg-[var(--th-content)] px-6 py-4 max-[760px]:px-4',
+    'chat-composer relative z-20 flex min-h-0 flex-col items-stretch gap-0 overflow-visible border-t border-[var(--th-line)] bg-[var(--th-content)] px-6 py-4 max-[760px]:px-4',
   composerBody: 'flex w-full flex-col gap-2',
   composerInput:
     'w-full min-w-0 rounded-[10px] border border-[var(--th-line)] bg-[var(--th-card)] px-3 py-2.5 text-sm text-[var(--th-text)] transition-[border-color,box-shadow] focus:border-[var(--th-compose)] focus:outline-none focus:shadow-[0_0_0_2px_#6743ed26] disabled:opacity-60 dark:focus:shadow-[0_0_0_2px_#7b5cff33]',
@@ -114,6 +114,30 @@ export const chatUi = {
     'inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--th-line)] bg-[var(--th-search)] px-2.5 py-1.5 text-xs text-[var(--th-text)]',
   attachmentChipName: 'min-w-0 flex-1 truncate',
   attachmentChipSize: 'shrink-0 text-[var(--th-muted)]',
+  // Fullscreen image lightbox (`image-lightbox.tsx`) — mirrors upstream's
+  // own `.img-lightbox`/`.img-lightbox img`/`.img-lightbox-close`
+  // (`backend/upstream/static/*.css`): dark near-opaque backdrop, image
+  // centered and capped to 90% of the viewport with `object-fit:contain`,
+  // a circular close button pinned to the top-right corner.
+  lightboxBackdrop: 'fixed inset-0 z-50 bg-black/[.82]',
+  lightboxPopup:
+    'fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center outline-none',
+  lightboxImage:
+    'max-h-[90vh] max-w-[90vw] cursor-default rounded-lg object-contain shadow-[0_8px_48px_rgba(0,0,0,0.6)]',
+  lightboxClose:
+    'absolute right-5 top-4 grid size-9 place-items-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20',
+  // MEDIA:<path>/file:// tokens the AGENT emits inline in its own reply
+  // text (see `markdown-content.tsx`'s `renderMediaTokens`) — separate
+  // from `attachment*` above (those are files WE uploaded). An inline
+  // thumbnail button for images, or a small download-link chip for
+  // everything else, matching upstream's own `.msg-media-img`/
+  // `.msg-media-link` treatment (`backend/upstream/static/ui.js`'s
+  // `_inlineMediaHtmlForRef`).
+  mediaTokenImageButton: 'mt-1 block cursor-zoom-in border-0 bg-transparent p-0',
+  mediaTokenImage:
+    'block max-h-64 max-w-full rounded-lg border border-[var(--th-line)] object-contain',
+  mediaTokenLink:
+    'mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--th-line)] bg-[var(--th-search)] px-2.5 py-1.5 text-xs text-[var(--th-text)] no-underline hover:bg-[var(--th-hover)]',
 } as const
 
 export type MarkdownTone = 'incoming' | 'outgoing' | 'error'

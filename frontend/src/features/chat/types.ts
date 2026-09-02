@@ -12,6 +12,13 @@
 export type ChatSession = {
   sessionId: string
   profile?: string
+  /** The model this session actually got created with — echoes back
+   * `POST /api/session/new`'s own `model`/`model_provider` response
+   * fields. `null` when the server fell back to the profile default
+   * (no explicit model was requested at creation, or the request left
+   * it unset). See `api.ts`'s `createSession` doc comment. */
+  model?: string | null
+  modelProvider?: string | null
 }
 
 export type StartTurnResult = {

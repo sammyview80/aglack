@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import {
+  Bell,
   CalendarDays,
   ChevronDown,
   CircleHelp,
@@ -8,7 +9,8 @@ import {
   Hash,
   History,
   Laptop,
-  MessageCircle,
+  Maximize2,
+  Monitor,
   Pencil,
   Plus,
   Compass,
@@ -31,6 +33,7 @@ import { RandomAvatar } from '@/components/random-avatar'
 import { PulseDot, motionPresets } from '@/components/motion'
 import { avatarToneStyles, threadsUi, type AvatarTone } from '@/components/threads-ui'
 import { chatUi } from '@/features/chat/chat-ui'
+import { desktopUrl } from '@/features/workspace/api'
 import type { AgentSession } from '@/features/agent-history/types'
 
 export type { AvatarTone }
@@ -158,6 +161,16 @@ export function ThreadsShell({
   const [audienceOpen, setAudienceOpen] = useState(false)
   const [audiencePanelOpen, setAudiencePanelOpen] = useState(false)
   const [audience, setAudience] = useState('DESIGN-WWW')
+  // Replaces the ENTIRE content area (where chat/thread normally renders)
+  // with a full, embedded live desktop (webtop/KasmVNC) for this
+  // workspace — no AUDIENCE/history panel, no sidebar change. Independent
+  // of `section`/`audiencePanelOpen`. Reset on workspace switch, same as
+  // `historyAgentState` above — a desktop view open for workspace A is
+  // meaningless once the shell is showing workspace B.
+  const [desktopPanelOpen, setDesktopPanelOpen] = useState(false)
+  useEffect(() => {
+    setDesktopPanelOpen(false)
+  }, [workspaceId])
 
   useEffect(() => {
     if (!audiencePanelOpen) return
@@ -243,6 +256,20 @@ export function ThreadsShell({
     setHistoryAgentFromPanel(name)
     // Below the three-column breakpoint the AUDIENCE panel is a drawer —
     // open it so the click actually shows the agent's history.
+    if (!isAudienceDesktop) setAudiencePanelOpen(true)
+    // Picking an agent from history is an explicit "show history" action —
+    // drop out of desktop mode so the panel actually displays what was
+    // just clicked instead of staying on the desktop thumbnail.
+    setDesktopPanelOpen(false)
+  }
+
+  /** Toggles the AUDIENCE panel's desktop-preview mode (see `DesktopPreview`
+   * below) — same panel slot `selectAgentHistory` uses for history, just a
+   * different mode flag on the same right-hand panel instead of a second
+   * panel. Below the three-column breakpoint this also has to force the
+   * panel open, same reasoning as `selectAgentHistory`. */
+  function openDesktopPanel() {
+    setDesktopPanelOpen((v) => !v)
     if (!isAudienceDesktop) setAudiencePanelOpen(true)
   }
 
@@ -330,6 +357,41 @@ export function ThreadsShell({
             </button>
           </nav>
 
+          <section
+            className={threadsUi.sidebarSection}
+            data-testid="sidebar-chat-section"
+          >
+            <div className={threadsUi.sectionLabel}>
+              <ChevronDown size={14} /> CHAT
+            </div>
+            {agentsQuery.isError ? (
+              <span className={threadsUi.personItem} aria-disabled="true">
+                Could not load agents
+              </span>
+            ) : null}
+            {!agentsQuery.isError && !agentsQuery.isPending && sidebarAgents.length === 0 ? (
+              <span className={threadsUi.personItem} aria-disabled="true">
+                No agents yet
+              </span>
+            ) : null}
+            {sidebarAgents.map((agent) => (
+              <button
+                key={agent.name}
+                type="button"
+                className={cn(threadsUi.personItem, historyAgent === agent.name && threadsUi.personSelected)}
+                onClick={() => selectAgentHistory(agent.name)}
+              >
+                <span className={threadsUi.personAvatarWrap}>
+                  <RandomAvatar seed={agent.name} size={31} />
+                  {agent.isWorking ? (
+                    <PulseDot size="sm" className={chatUi.activeDotSm} label={`${agent.name} is working`} />
+                  ) : null}
+                </span>
+                <span className={threadsUi.personName}>{agent.name}</span>
+              </button>
+            ))}
+          </section>
+
           <section className={threadsUi.sidebarSection}>
             <div className={threadsUi.sectionLabel}>
               <ChevronDown size={14} /> CHANNELS
@@ -377,41 +439,6 @@ export function ThreadsShell({
               : null}
           </section>
 
-          <section
-            className={cn(threadsUi.sidebarSection, threadsUi.chatSection)}
-            data-testid="sidebar-chat-section"
-          >
-            <div className={threadsUi.sectionLabel}>
-              <ChevronDown size={14} /> CHAT
-            </div>
-            {agentsQuery.isError ? (
-              <span className={threadsUi.personItem} aria-disabled="true">
-                Could not load agents
-              </span>
-            ) : null}
-            {!agentsQuery.isError && !agentsQuery.isPending && sidebarAgents.length === 0 ? (
-              <span className={threadsUi.personItem} aria-disabled="true">
-                No agents yet
-              </span>
-            ) : null}
-            {sidebarAgents.map((agent) => (
-              <button
-                key={agent.name}
-                type="button"
-                className={cn(threadsUi.personItem, historyAgent === agent.name && threadsUi.personSelected)}
-                onClick={() => selectAgentHistory(agent.name)}
-              >
-                <span className={threadsUi.personAvatarWrap}>
-                  <RandomAvatar seed={agent.name} size={31} />
-                  {agent.isWorking ? (
-                    <PulseDot size="sm" className={chatUi.activeDotSm} label={`${agent.name} is working`} />
-                  ) : null}
-                </span>
-                <span className={threadsUi.personName}>{agent.name}</span>
-              </button>
-            ))}
-          </section>
-
           <div className={threadsUi.sidebarFooter}>
             <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Settings')}>
               <Settings2 size={18} /> Settings
@@ -426,8 +453,13 @@ export function ThreadsShell({
           <header className={threadsUi.contentHeader}>
             <h1 className={threadsUi.companyHeading}>{heading}</h1>
             <div className={threadsUi.headerActions}>
-              <button type="button" className={threadsUi.iconButton} aria-label="Comments" onClick={openCompose}>
-                <MessageCircle size={21} />
+              <button
+                type="button"
+                className={threadsUi.iconButton}
+                aria-label="Notifications"
+                onClick={() => openSection('Activity')}
+              >
+                <Bell size={19} />
               </button>
               <button
                 type="button"
@@ -457,8 +489,25 @@ export function ThreadsShell({
               >
                 <History size={20} />
               </button>
+              {workspaceId ? (
+                <button
+                  type="button"
+                  className={threadsUi.iconButton}
+                  aria-pressed={desktopPanelOpen}
+                  aria-label={desktopPanelOpen ? 'Hide desktop' : 'Show desktop'}
+                  title={desktopPanelOpen ? 'Hide desktop' : 'Show desktop'}
+                  onClick={openDesktopPanel}
+                >
+                  <Monitor size={20} />
+                </button>
+              ) : null}
               <ThemeSwitch />
-              <button type="button" className={threadsUi.profileButton} aria-hidden="true">
+              <button
+                type="button"
+                className={threadsUi.profileButton}
+                aria-label="Members"
+                onClick={openCompose}
+              >
                 <PixelAvatar seed="you" tone="gold" small />
                 <PixelAvatar seed="profile-2" tone="lavender" small />
               </button>
@@ -540,13 +589,17 @@ export function ThreadsShell({
               </div>
             ) : null}
           </div>
-          <AgentHistoryPanel
-            workspaceId={workspaceId}
-            open={audienceVisible}
-            selectedAgent={historyAgent}
-            onSelectedAgentChange={setHistoryAgentFromPanel}
-            onSelectSession={onSelectSession}
-          />
+          {desktopPanelOpen ? (
+            <DesktopPreview workspaceId={workspaceId} workspaceName={workspaceName} />
+          ) : (
+            <AgentHistoryPanel
+              workspaceId={workspaceId}
+              open={audienceVisible}
+              selectedAgent={historyAgent}
+              onSelectedAgentChange={setHistoryAgentFromPanel}
+              onSelectSession={onSelectSession}
+            />
+          )}
         </aside>
       </div>
 
@@ -600,6 +653,104 @@ export function ThreadsShell({
       ) : null}
     </main>
     </TooltipProvider>
+  )
+}
+
+/** Replaces the ENTIRE content area with the real live workspace desktop
+ * (webtop/KasmVNC), embedded via `desktopUrl` — the same gateway-proxied
+ * URL the workspace list's "Open desktop" link already opens in a new tab
+ * (see `features/workspace/api.ts`). No new backend surface: purely an
+ * iframe over the existing proxy path. A live but non-interactive
+ * (`pointer-events-none`) preview with a centered "Open" pill that hands
+ * off to the SAME URL in a new tab for actual interaction — mirrors the
+ * workspace list's existing "Open desktop" external link
+ * (`features/workspace/components/workspace-list.tsx`), just reachable
+ * from inside a live chat session too. Not a control surface: this panel
+ * is deliberately too narrow for real desktop use, so it previews rather
+ * than pretends to be interactive. */
+// The workspace container's Xvnc is started with a fixed `-geometry
+// 1024x768` (see backend/workspace-image's svc-kasmvnc run script) — not
+// configurable per-request, so this is the real, exact, unchanging
+// resolution the desktop always renders at. The iframe is given these as
+// HTML width/height attributes (its actual pixel buffer size — genuinely
+// native, not a low-res render upscaled), then CSS-scaled down as a whole
+// so the desktop stays visible inside the fixed thumb box
+// (`desktopPreviewThumb` in threads-ui.ts) — matching a reference mockup
+// that showed the whole desktop, not a 1:1-pixel cropped window.
+//
+// The desktop is served through webtop's own static shell, which
+// hardcodes its inner KasmVNC iframe to `show_control_bar=true` and reads
+// no query string at any layer (confirmed live: identical response body
+// across different query strings) — so hiding KasmVNC's own control bar
+// via a URL param is not possible. Worse: `UI.openControlbar()` in
+// KasmVNC's own `ui.js` runs unconditionally during page init (confirmed
+// by reading the fetched source directly, not assumed) — the bar is
+// ALWAYS rendered open on load, not collapsed to a small handle. Its
+// real (unscaled) width is content-driven (icon + label rows like "Drag
+// Viewport", `.noVNC_button_div` in KasmVNC's own base.css has no fixed
+// width) — DESKTOP_CONTROL_BAR_REAL_PX below is a measured estimate from
+// its own screenshots, not read from a CSS constant that doesn't exist.
+//
+// The fix: crop that real-pixel column off the LEFT before scaling, by
+// scaling the REMAINING desktop width (native minus the bar) up to fill
+// the full preview box, then shifting the iframe left by the bar's own
+// SCALED width so that remaining region lands flush at the box's left
+// edge. This is different from (and replaces) a naive
+// `transform: scale(smallerNumber)` + fixed left-shift: shifting a
+// uniformly-scaled frame only changes which slice of it is visible, it
+// does not additionally EXPAND remaining content to fill the box — this
+// scale is deliberately computed against the cropped width, not the full
+// native width, so the visible box is still exactly filled edge-to-edge
+// with no blank gap on the right.
+const DESKTOP_NATIVE_WIDTH = 1024
+const DESKTOP_NATIVE_HEIGHT = 768
+const DESKTOP_CONTROL_BAR_REAL_PX = 180
+const DESKTOP_VISIBLE_NATIVE_WIDTH = DESKTOP_NATIVE_WIDTH - DESKTOP_CONTROL_BAR_REAL_PX
+const DESKTOP_PREVIEW_WIDTH = 300
+const DESKTOP_PREVIEW_SCALE = DESKTOP_PREVIEW_WIDTH / DESKTOP_VISIBLE_NATIVE_WIDTH
+const DESKTOP_PREVIEW_HEIGHT = Math.round(DESKTOP_NATIVE_HEIGHT * DESKTOP_PREVIEW_SCALE)
+const DESKTOP_CROP_LEFT_SCALED_PX = Math.round(DESKTOP_CONTROL_BAR_REAL_PX * DESKTOP_PREVIEW_SCALE)
+
+function DesktopPreview({ workspaceId, workspaceName }: { workspaceId?: string; workspaceName: string }) {
+  return (
+    <div className={cn(threadsUi.desktopPreviewPanel, motionPresets.contentSwap)}>
+      <div
+        className={threadsUi.desktopPreviewThumb}
+        style={{ width: DESKTOP_PREVIEW_WIDTH, height: DESKTOP_PREVIEW_HEIGHT }}
+      >
+        {workspaceId ? (
+          <>
+            <iframe
+              key={workspaceId}
+              className={threadsUi.desktopPreviewFrame}
+              style={{
+                transform: `scale(${DESKTOP_PREVIEW_SCALE})`,
+                left: -DESKTOP_CROP_LEFT_SCALED_PX,
+              }}
+              width={DESKTOP_NATIVE_WIDTH}
+              height={DESKTOP_NATIVE_HEIGHT}
+              src={desktopUrl(workspaceId, true)}
+              title={`${workspaceName} desktop`}
+              tabIndex={-1}
+              aria-hidden="true"
+            />
+            <a
+              className={threadsUi.desktopPreviewOpen}
+              href={desktopUrl(workspaceId, true)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <Maximize2 size={14} strokeWidth={2.4} /> Open
+            </a>
+          </>
+        ) : (
+          <div className={threadsUi.desktopPreviewEmpty}>
+            <Monitor size={28} strokeWidth={1.5} aria-hidden="true" />
+          </div>
+        )}
+      </div>
+      <p className={threadsUi.desktopPreviewCaption}>{workspaceName}&rsquo;s screen</p>
+    </div>
   )
 }
 

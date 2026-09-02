@@ -2,14 +2,21 @@ import { useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent 
 import { Mic, Paperclip, Square, X } from 'lucide-react'
 import { chatUi } from '@/features/chat/chat-ui'
 import { useSpeechInput } from '@/features/chat/components/use-speech-input'
+import { ModelPicker } from '@/features/models/components/model-picker'
 import { cn } from '@/lib/utils'
 
 export function ChatComposer({
+  workspaceId,
+  agent,
+  sessionId,
   disabled,
   isStreaming,
   onSend,
   onStop,
 }: {
+  workspaceId: string
+  agent: string | null
+  sessionId: string | null
   disabled?: boolean
   isStreaming: boolean
   /**
@@ -109,6 +116,12 @@ export function ChatComposer({
           tabIndex={-1}
           onChange={onFilesSelected}
         />
+        {/* Model shortlist + quick-switch — models feature, kept out of
+         * chat's own state/logic entirely (reads localStorage + its own
+         * API module). Placed with the other input-affecting controls
+         * (attach, voice), before the message is typed/sent — see
+         * features/models/components/model-picker.tsx. */}
+        <ModelPicker workspaceId={workspaceId} agent={agent} sessionId={sessionId} />
         <button
           type="button"
           className={chatUi.composerTool}
