@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kanban Orchestrator"
+  short_description: "Route durable multi-agent Kanban work"
+  default_prompt: "Use $kanban-orchestrator to plan and route this goal across agents."

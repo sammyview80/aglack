@@ -40,11 +40,33 @@ told to allow — not a code bug in either the frontend or the gateway.
    (`ps aux | grep vite`, or any other dev server) instead of letting the
    port drift.
 2. **`127.0.0.1` vs `localhost`.** These are different origins to a
-   browser even though they resolve to the same machine. Whichever one is
-   in your browser's address bar must be the same one configured in
-   `rust_gateway/.env`'s `FRONTEND_ORIGIN`. This project's convention is
-   `localhost` (see `rust_gateway/.env.example`'s own comment on
-   `FRONTEND_ORIGIN` — Vite's dev server binds `localhost` by default).
+   browser even though they resolve to the same machine — a real,
+   repeatedly-hit case of this: a browser tab open at
+   `http://127.0.0.1:5173` while Vite only bound `localhost` (or vice
+   versa), or `FRONTEND_ORIGIN` configured as one spelling while the
+   address bar has the other. **Fixed at the source**:
+   `rust_gateway/src/app.rs`'s `browser_allowed_origins()` now
+   automatically derives BOTH spellings of the same scheme+port whenever
+   `FRONTEND_ORIGIN` is exactly `localhost` or `127.0.0.1` — configuring
+   one accepts the other for free, so this specific pair can no longer
+   cause a mismatch. (Any other host, e.g. a real deployed domain, is
+   left untouched — no sibling is invented for those.) A boundary check
+   makes sure this never over-matches: `127.0.0.11` (a different, real
+   host) and `localhost.evil.com` (a different, attacker-controlled
+   domain) do NOT get a spurious sibling added, even though both are
+   literal string prefixes of `127.0.0.1`/`localhost` — see
+   `browser_allowed_origins_never_matches_a_similar_but_different_host`
+   in `app.rs`'s test module for the exact cases this guards against.
+   **Why not just add a wildcard (`*`) instead?** It was asked, and
+   deliberately not done: the chat proxy always sends
+   `credentials: 'include'` (for its `hermes_profile` cookie), and the
+   CORS spec forbids a browser from accepting
+   `Access-Control-Allow-Origin: *` together with
+   `Access-Control-Allow-Credentials: true` — `tower_http` enforces this
+   too. A wildcard here would not be a looser version of the real fix; it
+   would just trade one broken CORS response for a different, still-broken
+   one. The real fix is always an exact, finite allow-list — wider when
+   genuinely needed (as above), never `*`.
 3. **`http` vs `https`.** Same rule — scheme is part of the origin.
 4. **Stale gateway process.** You fixed `FRONTEND_ORIGIN` (or a CORS
    header bug in the gateway itself) but a still-running OLD gateway
@@ -68,13 +90,13 @@ told to allow — not a code bug in either the frontend or the gateway.
 **How to diagnose fast (30 seconds, no code reading required):**
 
 1. Look at the gateway's own startup log line — it now prints the exact
-   allowed origin on every boot:
+   allowed origin(s) on every boot (the automatic `localhost`/`127.0.0.1`
+   sibling means this can legitimately list two):
    ```
-   CORS: only http://localhost:5173 may make browser (fetch/XHR) requests here — ...
+   CORS: only http://localhost:5173 or http://127.0.0.1:5173 may make browser (fetch/XHR) requests here — ...
    ```
-   Compare that string, character for character, against your browser's
-   actual address bar origin (scheme + host + port). Any difference is
-   the bug.
+   Compare your browser's actual address bar origin (scheme + host +
+   port) against this list. If it matches neither entry, that's the bug.
 2. Reproduce with `curl` using the browser's ACTUAL origin, not the
    expected one:
    ```bash
