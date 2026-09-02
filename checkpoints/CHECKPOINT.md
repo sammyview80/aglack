@@ -21,7 +21,7 @@ Target architecture: `backend/wrapper/docs/rust-gateway-architecture.md`
 
 ## Repository state
 
-- `/Users/saman/Documents/personal/hermano/revamp/`
+- `<repo-root>/`
 - Git: 17 commits, no remote, nothing pushed. **Ask before ever pushing.**
 - Sibling to the ORIGINAL project at `.../hermano/backend` and
   `.../hermano/frontend` — read-only reference only, do not confuse the two.

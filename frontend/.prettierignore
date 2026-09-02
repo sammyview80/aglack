@@ -1,0 +1,21 @@
+# Build output and dependencies
+dist
+build
+node_modules
+coverage
+.vite
+
+# Lockfiles are generated; reformatting them creates enormous diffs and can
+# confuse tooling that parses them.
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Scratch/reference trees that are not part of the app source.
+.tmp-ref
+
+# Generated type shims
+*.d.ts
+
+# Static assets served verbatim
+public

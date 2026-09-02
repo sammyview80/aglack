@@ -7,7 +7,8 @@ name = "seeder-kit"
 version = "0.1.0"
 description = "Framework-agnostic library for declaring MCP tools/skills/agent identity as a folder tree, discovering tools from it, and running them as a stdio MCP server."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "LicenseRef-PolyForm-Noncommercial-1.0.0" }
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # Deliberately ZERO required dependencies — every function that needs
 # something beyond the standard library (`mcp`, `pyyaml`) imports it lazily

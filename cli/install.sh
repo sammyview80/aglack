@@ -4,24 +4,22 @@
 #   curl -fsSL <raw-url-to-this-file> | sh
 #
 # What this does:
-#   1. Clones (or updates, if already cloned) this private repo to
-#      ~/.aglack/src via SSH — this repo is PRIVATE, so an unauthenticated
-#      "curl a raw file" install of the CLI's own source is not possible;
-#      your existing git/SSH access to the repo is what authenticates
-#      this step (same as any `git clone` you already run).
+#   1. Clones (or updates, if already cloned) this repo to ~/.aglack/src
+#      over HTTPS. No credentials, token, or SSH key is required — the
+#      repository is public, so an anonymous `git clone` is all this needs.
 #   2. Symlinks cli/aglack from that checkout to a directory on your PATH
 #      (tries, in order: $AGLACK_BIN_DIR, ~/.local/bin, /usr/local/bin).
 #
 # Re-running this script is safe (updates the checkout, re-links the CLI).
 #
 # Env overrides:
-#   AGLACK_REPO      git remote to clone (default: the SSH URL below)
+#   AGLACK_REPO      git remote to clone (default: the HTTPS URL below)
 #   AGLACK_SRC_DIR   where to clone/update the checkout (default: ~/.aglack/src)
 #   AGLACK_BIN_DIR   where to link the `aglack` binary (default: first of
 #                    ~/.local/bin / /usr/local/bin that exists or can be made)
 set -eu
 
-REPO="${AGLACK_REPO:-git@github.com:sammyview80/aglack.git}"
+REPO="${AGLACK_REPO:-https://github.com/sammyview80/aglack.git}"
 SRC_DIR="${AGLACK_SRC_DIR:-$HOME/.aglack/src}"
 BRANCH="${AGLACK_BRANCH:-aglack}"
 
@@ -46,8 +44,7 @@ fi
 # cli/aglack's resolve_root()), so linking the file in-place is enough —
 # no copying.
 CLI_SRC="$SRC_DIR/cli/aglack"
-[ -f "$CLI_SRC" ] || CLI_SRC="$SRC_DIR/revamp/cli/aglack"
-[ -f "$CLI_SRC" ] || die "cli/aglack not found in checkout at $SRC_DIR (looked under cli/ and revamp/cli)."
+[ -f "$CLI_SRC" ] || die "cli/aglack not found in checkout at $SRC_DIR."
 chmod +x "$CLI_SRC"
 
 pick_bin_dir() {

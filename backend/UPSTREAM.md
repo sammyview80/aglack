@@ -14,18 +14,33 @@ local pinned checkout, excluded from this repository's git tracking (see
 treat it as a read-only vendored dependency. Only the wrapper's pin metadata
 in this file gets committed.
 
-There is currently no automated script that re-clones `backend/upstream/`
-from scratch. If it is ever deleted or a fresh checkout of this repo is
-made, re-create it manually:
+## Bootstrapping a fresh clone
+
+Because `backend/upstream/` is git-ignored, a fresh clone of this
+repository starts with it absent — the wrapper cannot run until it exists.
+Create it with the bootstrap script:
 
 ```bash
-git clone git@github.com:nesquena/hermes-webui.git backend/upstream
-git -C backend/upstream checkout e168b67e4278df618d1cab61fdb3a8dc55b29a81
+./backend/bootstrap-upstream.sh
 ```
 
-A scripted/CI-verified version of this step (clone URL + pinned SHA + hash
-check) is a known gap — add one before relying on this in CI or a fresh
-production build.
+It clones the upstream project over **HTTPS** (no credentials, token, or
+SSH key required), checks out the pinned commit above, and verifies that
+the resulting `HEAD` matches that SHA exactly, failing loudly if it does
+not. It is safe to re-run:
+
+- directory missing → clone + check out the pin + verify
+- directory already at the pinned commit → reports so and changes nothing
+- directory at a **different** commit → reports the mismatch and exits
+  non-zero without resetting anything (moving a pin is a deliberate act,
+  see "Safely updating the pinned commit" below)
+
+The equivalent manual steps, if you prefer to run them yourself:
+
+```bash
+git clone https://github.com/nesquena/hermes-webui.git backend/upstream
+git -C backend/upstream checkout e168b67e4278df618d1cab61fdb3a8dc55b29a81
+```
 
 ## Verifying the pin
 
@@ -34,6 +49,9 @@ cd backend/upstream
 git rev-parse HEAD
 # must print e168b67e4278df618d1cab61fdb3a8dc55b29a81
 ```
+
+`./backend/bootstrap-upstream.sh` performs this same check (and reports a
+mismatch as a non-zero exit) so it can be used as a CI gate.
 
 If it doesn't match, someone has moved the upstream checkout without
 updating this file (or without going through the update procedure below) —

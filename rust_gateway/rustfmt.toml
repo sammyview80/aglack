@@ -1,0 +1,22 @@
+# rustfmt configuration for rust_gateway.
+#
+# DELIBERATELY NEAR-DEFAULT. Every key below is either rustfmt's own default
+# stated explicitly (so the formatting contract is visible and pinned against
+# future default drift) or an edition declaration. No exotic or nightly-only
+# option is enabled, because `cargo fmt --check` runs in CI: an opinionated
+# setting here would rewrite the whole tree and turn the first CI run red for
+# reasons unrelated to any contributor's change.
+#
+# Tighten later if the team wants it — but do it as its own commit that also
+# carries the resulting reformat, never bundled into a feature PR.
+
+# Must match Cargo.toml's `edition = "2021"`; rustfmt parses some syntax
+# (notably `async`/`gen` blocks and disjoint closure captures) per edition.
+edition = "2021"
+
+# rustfmt defaults, pinned explicitly:
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_small_heuristics = "Default"

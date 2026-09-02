@@ -9,7 +9,9 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{json,ts}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{json,ts}\""
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -42,6 +44,7 @@
     "@vitejs/plugin-react": "^6.0.4",
     "jsdom": "^30.0.1",
     "oxlint": "^1.75.0",
+    "prettier": "^3.9.6",
     "typescript": "~6.0.2",
     "vite": "^8.2.0",
     "vitest": "^4.1.11"

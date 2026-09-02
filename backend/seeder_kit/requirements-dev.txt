@@ -1,0 +1,44 @@
+# Pinned TEST toolchain for backend/seeder_kit.
+#
+# Purpose: make the test run reproducible. Today `pyproject.toml` declares its
+# dev extra as `pytest>=8.0` (a floor with no ceiling), so two runs a month
+# apart can resolve different pytest majors and disagree. This file pins the
+# exact set so CI and a contributor's laptop collect and run identically.
+#
+# SCOPE — test toolchain ONLY. This does NOT pin seeder_kit's runtime
+# dependencies, because it deliberately has none: `pyproject.toml` declares
+# `dependencies = []` and every optional import (`mcp`, `pyyaml`) is done lazily
+# inside the function that needs it. The one optional runtime dep, `mcp>=1.28,<2`
+# (the `[mcp]` extra, needed only to run runner.py as a live stdio server), is
+# NOT pinned here — see the note at the bottom.
+#
+# Every version below was read from an actual working environment
+# (`backend/wrapper/.venv`, Python 3.11.14) rather than guessed.
+#
+# Usage:
+#   python -m pip install -r requirements-dev.txt
+#   python -m pip install -e .
+#   python -m pytest
+#
+# Regenerate after an intentional upgrade:
+#   python -m pip install --upgrade pytest && python -m pip freeze
+
+# --- test runner ---
+pytest==9.1.1
+
+# pytest's own runtime dependencies, pinned so a resolver cannot drift them
+# independently of the pinned pytest.
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.21.0
+
+# NOT PINNED, deliberately:
+#
+#   mcp — the `[mcp]` optional extra (`mcp>=1.28,<2`). It is not installed in
+#   any environment available here, so there is no verified version to record
+#   and this file will not invent one. It is also not needed to run the test
+#   suite: no test imports `mcp` (verified — the full 38-test suite passes with
+#   it absent). If you need to exercise runner.py against a live MCP client,
+#   install the extra explicitly (`pip install -e '.[mcp]'`) and pin it here
+#   once a known-good version has actually been run.

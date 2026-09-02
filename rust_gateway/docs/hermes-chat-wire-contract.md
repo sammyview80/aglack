@@ -1,6 +1,6 @@
 # Hermes WebUI — Chat Wire Contract
 
-**Scope:** `/Users/saman/Documents/personal/hermano/revamp/backend/upstream`
+**Scope:** `<repo-root>/backend/upstream`
 **Sources read:** `api/routes.py` (29390 lines), `api/streaming.py` (13389), `api/clarify.py` (255, read in full), `api/route_approvals.py`, `api/todo_state.py`, `api/background_process.py`, `api/profiles.py`, `api/auth.py`, `api/run_journal.py`, `server.py`, `static/messages.js` (9328).
 **Nothing was modified.** Every claim below carries a `file:line` citation. Claims I could not verify are marked **NOT CONFIRMED**.
 

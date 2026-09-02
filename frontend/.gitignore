@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Agent/design scratch space — throwaway reference screenshots and notes that
+# must never reach a public clone. Both patterns are intentional: `.tmp-ref/`
+# names the directory we actually use, `.tmp*` catches future ad-hoc variants.
+.tmp-ref/
+.tmp*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

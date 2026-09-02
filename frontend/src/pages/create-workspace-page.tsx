@@ -22,10 +22,13 @@ export function CreateWorkspacePage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const draft = loadCreateDraft()
+  // No `password` here on purpose: the draft is a password-free type (see
+  // draft-storage.ts's module doc — the credential is never persisted), so
+  // a restored draft always starts the form with an empty password field
+  // and the user re-enters it.
   const initial = {
     ownerName: draft?.ownerName || loadOwnerName(),
     workspaceName: draft?.workspaceName || '',
-    password: draft?.password,
     kind: draft?.kind,
   }
 

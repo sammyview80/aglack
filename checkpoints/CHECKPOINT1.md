@@ -32,12 +32,12 @@ is "where it's going."
 
 ## Repository state
 
-- Location: `/Users/saman/Documents/personal/hermano/revamp/`
+- Location: `<repo-root>/`
 - Git: 16 commits, no remote configured, nothing pushed anywhere (explicit
   user choice — commit locally only, for now). Ask before ever pushing.
 - Sibling to the ORIGINAL, separate project at
-  `/Users/saman/Documents/personal/hermano/backend` and
-  `/Users/saman/Documents/personal/hermano/frontend` — untouched by this
+  `<repo-root>/../backend` and
+  `<repo-root>/../frontend` — untouched by this
   work except as a read-only reference (e.g. the original
   `_server_workspace_boot_command` boot-script pattern, the original
   create-workspace UI). Do not confuse the two — `revamp/` is the new one.

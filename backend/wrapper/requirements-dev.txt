@@ -1,0 +1,68 @@
+# Pinned TEST toolchain for backend/wrapper.
+#
+# Purpose: make the test run reproducible. Today `pyproject.toml` declares its
+# dev extra as `pytest>=8.0` / `httpx>=0.27` — floors with no ceilings — so two
+# runs a month apart can resolve different majors and disagree. This file pins
+# the exact set so CI and a contributor's laptop collect and run identically.
+#
+# Every version below was read from the actual working environment
+# (`backend/wrapper/.venv`, Python 3.11.14) rather than guessed.
+#
+# INSTALL ORDER MATTERS. The wrapper depends on a bare, unversioned
+# `seeder-kit` name that has NO PyPI package behind it (see the long comment in
+# pyproject.toml). It is satisfied only by whatever is already in the
+# environment, so seeder_kit must be installed from its sibling checkout FIRST:
+#
+#   python -m pip install -r backend/wrapper/requirements-dev.txt
+#   python -m pip install -e backend/seeder_kit      # <-- FIRST
+#   python -m pip install -e backend/wrapper         # <-- THEN this
+#
+# Running the wrapper suite additionally requires the pinned upstream checkout
+# (`./backend/bootstrap-upstream.sh`) — 6 of its 10 test modules import the real
+# upstream `api.*` package and fail at COLLECTION time without it.
+#
+# SCOPE — test toolchain ONLY. Runtime dependencies (fastapi, uvicorn, pydantic,
+# pyyaml, cryptography) remain UNPINNED in pyproject.toml; that is a known
+# reproducibility gap, documented in CONTRIBUTING.md. Their currently-installed
+# versions are recorded at the bottom of this file as a reference point, but are
+# intentionally not installed from here — pinning runtime deps belongs in
+# pyproject.toml, which this change does not own.
+#
+# Regenerate after an intentional upgrade:
+#   python -m pip install --upgrade pytest httpx && python -m pip freeze
+
+# --- test runner ---
+pytest==9.1.1
+
+# pytest's own runtime dependencies, pinned so a resolver cannot drift them
+# independently of the pinned pytest.
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.21.0
+
+# --- HTTP client used by fastapi.testclient / starlette.testclient ---
+httpx==0.28.1
+
+# httpx's transitive stack, pinned for the same reason.
+httpcore==1.0.9
+h11==0.16.0
+anyio==4.14.2
+certifi==2026.7.22
+idna==3.19
+
+# ---------------------------------------------------------------------------
+# REFERENCE ONLY — currently-installed runtime versions, NOT installed by this
+# file. Recorded so a future "pin the runtime deps" change starts from a known
+# working set instead of guessing. Verified in backend/wrapper/.venv:
+#
+#   fastapi==0.141.1
+#   starlette==1.6.0
+#   uvicorn==0.52.4
+#   pydantic==2.13.5
+#   pydantic_core==2.46.5
+#   PyYAML==6.0.3
+#   cryptography==50.0.1
+#   click==8.5.0
+#   typing_extensions==4.16.0
+# ---------------------------------------------------------------------------

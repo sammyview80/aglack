@@ -15,7 +15,7 @@ type ConsoleShellProps = {
 
 /**
  * Product chrome for workspaces + onboarding (Google Drive / console).
- * Threads 3-column chrome lives in ChatShell, used only by per-workspace chat.
+ * Threads 3-column chrome lives in ThreadsShell, used only by per-workspace chat.
  */
 export function ConsoleShell({
   title,

@@ -1,0 +1,88 @@
+# Upstream pin consistency check.
+#
+# backend/UPSTREAM.md documents a pinned third-party commit, and
+# backend/bootstrap-upstream.sh hardcodes the SHA it actually checks out. Those
+# two are maintained by hand, in different files, in different languages. If
+# they drift, the documented provenance stops describing what a fresh clone
+# gets — UPSTREAM.md itself flags this as a known gap that needs a CI gate.
+#
+# WHY THIS DOES NOT CLONE THE UPSTREAM REPOSITORY
+# ------------------------------------------------
+# The invariant being tested is purely local: "do these two tracked files agree
+# on one string?" That is answerable by reading two files in this checkout.
+# Cloning github.com/nesquena/hermes-webui (a full history, tens of MB) to
+# answer it would add a network dependency and a third-party outage as a
+# failure mode for a question that has nothing to do with the network — a red X
+# here would then mean "GitHub was slow", not "the pin is wrong". The wrapper
+# job in python.yml already runs bootstrap-upstream.sh for real, so the
+# "does that SHA actually exist upstream?" question IS covered — by the job
+# that genuinely needs the checkout. This job stays cheap (seconds, no network)
+# and answers only the consistency question.
+name: Upstream pin
+
+on:
+  push:
+    branches: [main, master, aglack]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-pin-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-pin:
+    name: UPSTREAM.md pin matches bootstrap-upstream.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare recorded SHAs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DOC="backend/UPSTREAM.md"
+          SCRIPT="backend/bootstrap-upstream.sh"
+
+          for f in "$DOC" "$SCRIPT"; do
+            [ -f "$f" ] || { echo "::error::missing required file: $f"; exit 1; }
+          done
+
+          # Extract every full 40-character hex SHA from each file, deduplicated.
+          # Both files are expected to reference exactly one commit. Requiring
+          # uniqueness is the point: if someone updates the pin in one place in
+          # a file but leaves a stale copy elsewhere in that same file, the
+          # count check below catches it even though a naive "first match"
+          # comparison would pass.
+          doc_shas="$(grep -oiE '\b[0-9a-f]{40}\b' "$DOC" | tr 'A-F' 'a-f' | sort -u || true)"
+          script_shas="$(grep -oiE '\b[0-9a-f]{40}\b' "$SCRIPT" | tr 'A-F' 'a-f' | sort -u || true)"
+
+          doc_count="$(printf '%s' "$doc_shas" | grep -c . || true)"
+          script_count="$(printf '%s' "$script_shas" | grep -c . || true)"
+
+          if [ "$doc_count" -ne 1 ]; then
+            echo "::error file=$DOC::expected exactly 1 distinct 40-hex commit SHA, found $doc_count"
+            printf '%s\n' "$doc_shas"
+            exit 1
+          fi
+
+          if [ "$script_count" -ne 1 ]; then
+            echo "::error file=$SCRIPT::expected exactly 1 distinct 40-hex commit SHA, found $script_count"
+            printf '%s\n' "$script_shas"
+            exit 1
+          fi
+
+          if [ "$doc_shas" != "$script_shas" ]; then
+            echo "::error::upstream pin MISMATCH — the documented pin and the pin the bootstrap script checks out disagree."
+            echo "  $DOC    -> $doc_shas"
+            echo "  $SCRIPT -> $script_shas"
+            echo ""
+            echo "Update both, following UPSTREAM.md's 'Safely updating the pinned commit' procedure."
+            exit 1
+          fi
+
+          echo "OK: upstream pin is consistent ($doc_shas)"
+          echo "upstream pin consistent: \`$doc_shas\`" >> "$GITHUB_STEP_SUMMARY"
