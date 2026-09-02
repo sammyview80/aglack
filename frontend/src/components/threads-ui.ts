@@ -29,7 +29,7 @@ export const threadsUi = {
     'grid place-items-center rounded-md bg-transparent p-[5px] text-[var(--th-icon)] transition-[background,transform] duration-200 hover:-translate-y-px hover:bg-[var(--th-icon-hover)]',
   topAction: 'ml-auto',
   composeButton:
-    'mx-3 mb-5 mt-5 flex h-10 w-[129px] items-center justify-center gap-[9px] rounded-lg bg-[var(--th-compose)] font-[650] text-white shadow-[0_5px_10px_#6944ee47] transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_15px_#6944ee59]',
+    'mb-5 mt-5 flex h-11 min-h-11 w-full shrink-0 cursor-pointer items-center justify-center gap-[9px] rounded-lg bg-[var(--th-compose)] text-sm font-[650] text-white transition-colors duration-200 hover:bg-[var(--th-compose-hover)]',
   primaryNav: 'grid gap-1 px-px',
   navItem:
     'flex w-full items-center gap-3 rounded-md px-[15px] py-2 text-left text-sm font-[560] text-[var(--th-text)] transition-[background,color] duration-150 hover:bg-[var(--th-hover)] [&_svg]:text-[var(--th-icon)]',
@@ -59,25 +59,33 @@ export const threadsUi = {
   companyHeading: 'text-[17px] font-bold tracking-tight',
 
   desktopPreviewPanel: 'flex flex-1 min-h-0 flex-col pt-4',
-  // Fixed, non-responsive box — same pixel size on every render, never
-  // resized per breakpoint/container width. The iframe inside it renders
-  // the desktop at its REAL native resolution (width/height HTML
-  // attributes — genuine 1024x768 pixel buffer, not a low-res render
-  // upscaled), then a CSS transform: scale() shrinks the desktop MINUS the
-  // KasmVNC control bar's own real pixel width (see
-  // DESKTOP_CONTROL_BAR_REAL_PX/DESKTOP_CROP_LEFT_SCALED_PX in
-  // threads-shell.tsx — that bar can't be hidden via URL param, only
-  // cropped) so the remaining desktop content fills this box edge-to-edge
-  // with no blank gap. Width/height are set inline from
-  // DESKTOP_PREVIEW_WIDTH/HEIGHT in threads-shell.tsx — no static size
-  // here, so there is exactly one place computing it.
+  // w-full so the thumb never overflows the audience column (327px /
+  // 300px drawer, both px-8). aspect-[1024/768] matches native Xvnc
+  // geometry — width > height. Iframe is the real 1024×768 buffer,
+  // CSS-scaled in threads-shell.tsx. Control bar is hidden in the
+  // workspace image, so the full desktop is shown.
   desktopPreviewThumb:
-    'group relative shrink-0 overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)]',
+    'group relative w-full aspect-[1024/768] shrink-0 overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)]',
   desktopPreviewFrame: 'pointer-events-none absolute left-0 top-0 origin-top-left border-0',
   desktopPreviewEmpty: 'grid size-full place-items-center text-[var(--th-muted)]',
-  desktopPreviewOpen:
-    'absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full bg-black/80 px-4 py-2.5 text-[13px] font-[650] text-white opacity-0 shadow-[0_8px_20px_#00000040] transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100',
+  desktopPreviewHit:
+    'absolute inset-0 z-[1] cursor-pointer bg-transparent group-hover:bg-black/20',
+  desktopPreviewActions:
+    'absolute inset-0 z-[1] flex items-center justify-center gap-2 bg-black/55',
+  desktopPreviewAction:
+    'flex h-11 min-w-11 items-center gap-1.5 rounded-full bg-black/85 px-4 text-[13px] font-[650] text-white shadow-[0_8px_20px_#00000040] hover:bg-black',
   desktopPreviewCaption: 'mt-2.5 text-center text-[13px] font-[560] text-[var(--th-text)]',
+  desktopExpandBackdrop: 'fixed inset-0 z-50 bg-black/[.82]',
+  desktopExpandPopup:
+    'fixed inset-0 z-50 flex flex-col bg-[#0b0b0d] outline-none',
+  desktopExpandHeader:
+    'flex shrink-0 items-center gap-2 border-b border-white/10 px-4 py-2.5 text-white',
+  desktopExpandTitle: 'min-w-0 flex-1 truncate text-[13px] font-[560]',
+  desktopExpandHeaderBtn:
+    'grid size-11 place-items-center rounded-full text-white hover:bg-white/10',
+  desktopExpandStage: 'relative min-h-0 flex-1',
+  desktopExpandScreen: 'absolute overflow-hidden bg-black',
+  desktopExpandFrame: 'absolute left-0 top-0 origin-top-left border-0',
   contentArea: 'flex justify-between h-full min-h-0 min-w-0 flex-col bg-[var(--th-content)]',
   contentHeader:
     'flex h-[69px] shrink-0 items-center border-b border-[var(--th-header-line)] px-8 max-[760px]:px-4 [&_h1]:m-0 [&_h1]:text-[17px] [&_h1]:tracking-[-0.4px] [&_h1]:text-[var(--th-text)]',

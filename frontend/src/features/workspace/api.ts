@@ -203,9 +203,8 @@ export function hermesWebuiUrl(workspaceId: string): string {
  * what actually hides the control bar server-side now; this frontend
  * param is not the mechanism and callers should not rely on it to hide
  * anything through this particular gateway path. `DesktopPreview` in
- * `components/threads-shell.tsx` additionally crops the panel-preview
- * iframe client-side as defense in depth / for the small-preview layout,
- * independent of whichever workspace image (patched or not) is running.
+ * `components/threads-shell.tsx` embeds this URL scaled to the panel; it
+ * does not crop the iframe.
  */
 export function desktopUrl(workspaceId: string, hideControlBar = false): string {
   const base = `${gatewayUrl()}/workspaces/${encodeURIComponent(workspaceId)}/desktop/`

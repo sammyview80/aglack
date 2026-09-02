@@ -1,10 +1,11 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react'
 import {
   Bell,
   CalendarDays,
   ChevronDown,
   CircleHelp,
   Ellipsis,
+  ExternalLink,
   FileText,
   Hash,
   History,
@@ -21,6 +22,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
+import { Dialog } from '@base-ui/react/dialog'
 import { useNavigate } from 'react-router-dom'
 import { ThemeSwitch } from '@/features/theme/theme-switch'
 import { Hint, TooltipProvider } from '@/components/ui/tooltip'
@@ -656,92 +658,204 @@ export function ThreadsShell({
   )
 }
 
-/** Replaces the ENTIRE content area with the real live workspace desktop
- * (webtop/KasmVNC), embedded via `desktopUrl` — the same gateway-proxied
- * URL the workspace list's "Open desktop" link already opens in a new tab
- * (see `features/workspace/api.ts`). No new backend surface: purely an
- * iframe over the existing proxy path. A live but non-interactive
- * (`pointer-events-none`) preview with a centered "Open" pill that hands
- * off to the SAME URL in a new tab for actual interaction — mirrors the
- * workspace list's existing "Open desktop" external link
- * (`features/workspace/components/workspace-list.tsx`), just reachable
- * from inside a live chat session too. Not a control surface: this panel
- * is deliberately too narrow for real desktop use, so it previews rather
- * than pretends to be interactive. */
-// The workspace container's Xvnc is started with a fixed `-geometry
-// 1024x768` (see backend/workspace-image's svc-kasmvnc run script) — not
-// configurable per-request, so this is the real, exact, unchanging
-// resolution the desktop always renders at. The iframe is given these as
-// HTML width/height attributes (its actual pixel buffer size — genuinely
-// native, not a low-res render upscaled), then CSS-scaled down as a whole
-// so the desktop stays visible inside the fixed thumb box
-// (`desktopPreviewThumb` in threads-ui.ts) — matching a reference mockup
-// that showed the whole desktop, not a 1:1-pixel cropped window.
-//
-// The desktop is served through webtop's own static shell, which
-// hardcodes its inner KasmVNC iframe to `show_control_bar=true` and reads
-// no query string at any layer (confirmed live: identical response body
-// across different query strings) — so hiding KasmVNC's own control bar
-// via a URL param is not possible. Worse: `UI.openControlbar()` in
-// KasmVNC's own `ui.js` runs unconditionally during page init (confirmed
-// by reading the fetched source directly, not assumed) — the bar is
-// ALWAYS rendered open on load, not collapsed to a small handle. Its
-// real (unscaled) width is content-driven (icon + label rows like "Drag
-// Viewport", `.noVNC_button_div` in KasmVNC's own base.css has no fixed
-// width) — DESKTOP_CONTROL_BAR_REAL_PX below is a measured estimate from
-// its own screenshots, not read from a CSS constant that doesn't exist.
-//
-// The fix: crop that real-pixel column off the LEFT before scaling, by
-// scaling the REMAINING desktop width (native minus the bar) up to fill
-// the full preview box, then shifting the iframe left by the bar's own
-// SCALED width so that remaining region lands flush at the box's left
-// edge. This is different from (and replaces) a naive
-// `transform: scale(smallerNumber)` + fixed left-shift: shifting a
-// uniformly-scaled frame only changes which slice of it is visible, it
-// does not additionally EXPAND remaining content to fill the box — this
-// scale is deliberately computed against the cropped width, not the full
-// native width, so the visible box is still exactly filled edge-to-edge
-// with no blank gap on the right.
+/** Live workspace desktop (webtop/KasmVNC) via `desktopUrl` — same
+ * gateway-proxied URL the workspace list's "Open desktop" link already
+ * opens in a new tab (`features/workspace/api.ts`). No new backend
+ * surface. The AUDIENCE-panel thumb is a non-interactive preview; click
+ * it for Fullscreen (in-app stretch, pointer events on) or Open in new
+ * tab. */
+// Native desktop is 1024×768 (Xvnc -geometry). Iframe uses those as HTML
+// width/height so KasmVNC renders the full desktop, then CSS scale()
+// shrinks it to the box. Thumb is w-full + aspect-[1024/768]. Scale is
+// measured (ResizeObserver): Chrome rejects cqi inside transform:scale().
+// Control bar is hidden server-side by patch_kasmvnc_hide_control_bar.py.
 const DESKTOP_NATIVE_WIDTH = 1024
 const DESKTOP_NATIVE_HEIGHT = 768
-const DESKTOP_CONTROL_BAR_REAL_PX = 180
-const DESKTOP_VISIBLE_NATIVE_WIDTH = DESKTOP_NATIVE_WIDTH - DESKTOP_CONTROL_BAR_REAL_PX
-const DESKTOP_PREVIEW_WIDTH = 300
-const DESKTOP_PREVIEW_SCALE = DESKTOP_PREVIEW_WIDTH / DESKTOP_VISIBLE_NATIVE_WIDTH
-const DESKTOP_PREVIEW_HEIGHT = Math.round(DESKTOP_NATIVE_HEIGHT * DESKTOP_PREVIEW_SCALE)
-const DESKTOP_CROP_LEFT_SCALED_PX = Math.round(DESKTOP_CONTROL_BAR_REAL_PX * DESKTOP_PREVIEW_SCALE)
 
-function DesktopPreview({ workspaceId, workspaceName }: { workspaceId?: string; workspaceName: string }) {
+function useDesktopScale(fit: 'width' | 'contain') {
+  const [el, setEl] = useState<HTMLDivElement | null>(null)
+  const [scale, setScale] = useState(0)
+
+  useLayoutEffect(() => {
+    if (!el) {
+      setScale(0)
+      return
+    }
+    const update = () => {
+      if (fit === 'width') {
+        setScale(el.clientWidth / DESKTOP_NATIVE_WIDTH)
+        return
+      }
+      const next = Math.min(el.clientWidth / DESKTOP_NATIVE_WIDTH, el.clientHeight / DESKTOP_NATIVE_HEIGHT)
+      setScale(Number.isFinite(next) && next > 0 ? next : 0)
+    }
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [el, fit])
+
+  return { ref: setEl, scale }
+}
+
+function DesktopFrame({
+  workspaceId,
+  workspaceName,
+  scale,
+  interactive,
+  className,
+}: {
+  workspaceId: string
+  workspaceName: string
+  scale: number
+  interactive: boolean
+  className: string
+}) {
   return (
-    <div className={cn(threadsUi.desktopPreviewPanel, motionPresets.contentSwap)}>
-      <div
-        className={threadsUi.desktopPreviewThumb}
-        style={{ width: DESKTOP_PREVIEW_WIDTH, height: DESKTOP_PREVIEW_HEIGHT }}
-      >
-        {workspaceId ? (
-          <>
-            <iframe
-              key={workspaceId}
-              className={threadsUi.desktopPreviewFrame}
-              style={{
-                transform: `scale(${DESKTOP_PREVIEW_SCALE})`,
-                left: -DESKTOP_CROP_LEFT_SCALED_PX,
-              }}
-              width={DESKTOP_NATIVE_WIDTH}
-              height={DESKTOP_NATIVE_HEIGHT}
-              src={desktopUrl(workspaceId, true)}
-              title={`${workspaceName} desktop`}
-              tabIndex={-1}
-              aria-hidden="true"
-            />
+    <iframe
+      key={workspaceId}
+      className={className}
+      style={scale ? { transform: `scale(${scale})` } : { visibility: 'hidden' }}
+      width={DESKTOP_NATIVE_WIDTH}
+      height={DESKTOP_NATIVE_HEIGHT}
+      src={desktopUrl(workspaceId, true)}
+      title={`${workspaceName} desktop`}
+      tabIndex={interactive ? 0 : -1}
+      aria-hidden={interactive ? undefined : true}
+      allow={interactive ? 'clipboard-read; clipboard-write' : undefined}
+    />
+  )
+}
+
+function DesktopExpandDialog({
+  workspaceId,
+  workspaceName,
+  open,
+  onOpenChange,
+}: {
+  workspaceId: string
+  workspaceName: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const { ref: stageRef, scale } = useDesktopScale('contain')
+  const href = desktopUrl(workspaceId, true)
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className={threadsUi.desktopExpandBackdrop} />
+        <Dialog.Popup className={threadsUi.desktopExpandPopup} aria-label={`${workspaceName} desktop`}>
+          <div className={threadsUi.desktopExpandHeader}>
+            <p className={threadsUi.desktopExpandTitle}>{workspaceName}&rsquo;s screen</p>
             <a
-              className={threadsUi.desktopPreviewOpen}
-              href={desktopUrl(workspaceId, true)}
+              className={threadsUi.desktopExpandHeaderBtn}
+              href={href}
               target="_blank"
               rel="noopener noreferrer"
+              aria-label="Open in new tab"
+              title="Open in new tab"
             >
-              <Maximize2 size={14} strokeWidth={2.4} /> Open
+              <ExternalLink size={18} strokeWidth={2.2} />
             </a>
+            <Dialog.Close className={threadsUi.desktopExpandHeaderBtn} aria-label="Close desktop">
+              <X size={18} />
+            </Dialog.Close>
+          </div>
+          <div ref={stageRef} className={threadsUi.desktopExpandStage}>
+            {scale > 0 ? (
+              <div
+                className={threadsUi.desktopExpandScreen}
+                style={{
+                  width: DESKTOP_NATIVE_WIDTH * scale,
+                  height: DESKTOP_NATIVE_HEIGHT * scale,
+                  left: '50%',
+                  top: '50%',
+                  transform: 'translate(-50%, -50%)',
+                }}
+              >
+                <DesktopFrame
+                  workspaceId={workspaceId}
+                  workspaceName={workspaceName}
+                  scale={scale}
+                  interactive
+                  className={threadsUi.desktopExpandFrame}
+                />
+              </div>
+            ) : null}
+          </div>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
+function DesktopPreview({ workspaceId, workspaceName }: { workspaceId?: string; workspaceName: string }) {
+  const { ref: thumbRef, scale } = useDesktopScale('width')
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const href = workspaceId ? desktopUrl(workspaceId, true) : ''
+
+  useEffect(() => {
+    if (!actionsOpen || expanded) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setActionsOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [actionsOpen, expanded])
+
+  return (
+    <div className={cn(threadsUi.desktopPreviewPanel, motionPresets.contentSwap)}>
+      <div ref={thumbRef} className={threadsUi.desktopPreviewThumb}>
+        {workspaceId ? (
+          <>
+            {!expanded ? (
+              <DesktopFrame
+                workspaceId={workspaceId}
+                workspaceName={workspaceName}
+                scale={scale}
+                interactive={false}
+                className={threadsUi.desktopPreviewFrame}
+              />
+            ) : null}
+            {actionsOpen ? (
+              <div className={threadsUi.desktopPreviewActions}>
+                <button
+                  type="button"
+                  className={threadsUi.desktopPreviewAction}
+                  onClick={() => {
+                    setActionsOpen(false)
+                    setExpanded(true)
+                  }}
+                >
+                  <Maximize2 size={14} strokeWidth={2.4} /> Fullscreen
+                </button>
+                <a
+                  className={threadsUi.desktopPreviewAction}
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setActionsOpen(false)}
+                >
+                  <ExternalLink size={14} strokeWidth={2.4} /> New tab
+                </a>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className={threadsUi.desktopPreviewHit}
+                aria-label="Desktop actions"
+                onClick={() => setActionsOpen(true)}
+              />
+            )}
+            <DesktopExpandDialog
+              workspaceId={workspaceId}
+              workspaceName={workspaceName}
+              open={expanded}
+              onOpenChange={setExpanded}
+            />
           </>
         ) : (
           <div className={threadsUi.desktopPreviewEmpty}>
