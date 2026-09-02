@@ -4,75 +4,59 @@ import { Hint } from '@/components/ui/tooltip'
 import { RandomAvatar } from '@/components/random-avatar'
 import { errorMessage } from '@/lib/api'
 import { handleError } from '@/lib/handle-error'
-import type { AgentMessage, AgentSession } from '@/features/agent-history/types'
+import type { AgentSession } from '@/features/agent-history/types'
 import { relativeTime } from '@/features/agent-history/components/relative-time'
 import { AgentsSkeleton } from '@/features/agent-history/components/agents-skeleton'
 import { SessionsSkeleton } from '@/features/agent-history/components/sessions-skeleton'
-import { MessagesSkeleton } from '@/features/agent-history/components/messages-skeleton'
-import {
-  useAgentHistoryPrefetch,
-  useAgentMessages,
-  useAgentSessions,
-  useAgents,
-} from '@/features/agent-history/hooks/use-agent-history'
-
-type View = 'sessions' | 'messages'
+import { useAgentHistoryPrefetch, useAgentSessions, useAgents } from '@/features/agent-history/hooks/use-agent-history'
 
 export function AgentHistoryPanel({
   workspaceId,
   open,
   selectedAgent: selectedAgentProp,
   onSelectedAgentChange,
+  onSelectSession,
 }: {
   workspaceId?: string
   open: boolean
   /** Optional external selection (e.g. the sidebar's real agent list in
    * threads-shell). When provided, clicking an agent there drives this
-   * panel; the panel still owns view/session state and reports its own
-   * agent changes back through onSelectedAgentChange. */
+   * panel; the panel still owns its own agent selection and reports
+   * changes back through onSelectedAgentChange. */
   selectedAgent?: string | null
   onSelectedAgentChange?: (name: string | null) => void
+  /** Fired when a session row is clicked — lets a parent (the real chat
+   * pane) load that exact session as the live, sendable conversation.
+   * This panel itself only ever shows the sessions LIST, never a
+   * transcript of its own — clicking a row does not navigate anywhere
+   * inside this panel, only reports the click outward. */
+  onSelectSession?: (agentName: string, session: AgentSession) => void
 }) {
   const [selectedAgent, setSelectedAgentState] = useState<string | null>(null)
-  const [view, setView] = useState<View>('sessions')
-  const [selectedSession, setSelectedSession] = useState<AgentSession | null>(null)
 
   function setSelectedAgent(name: string | null) {
     setSelectedAgentState(name)
     onSelectedAgentChange?.(name)
   }
 
-  // Sync an externally-driven selection (sidebar click). Resets to the
-  // sessions view exactly like an in-panel agent click would.
+  // Sync an externally-driven selection (sidebar click).
   useEffect(() => {
     if (selectedAgentProp === undefined) return
     if (selectedAgentProp === selectedAgent) return
     setSelectedAgentState(selectedAgentProp)
-    setView('sessions')
-    setSelectedSession(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAgentProp])
 
   const agentsQuery = useAgents(workspaceId, open)
   const sessionsQuery = useAgentSessions(workspaceId, selectedAgent, open)
-  const messagesQuery = useAgentMessages(
-    workspaceId,
-    selectedAgent,
-    selectedSession?.sessionId ?? null,
-    open,
-  )
   const { prefetchSessions, prefetchMessages } = useAgentHistoryPrefetch(workspaceId)
 
   const agents = agentsQuery.data?.agents ?? []
   const sessions = sessionsQuery.data?.sessions ?? []
-  const messages = messagesQuery.data?.messages ?? []
 
   const agentsError = agentsQuery.isError ? errorMessage(agentsQuery.error, 'Could not load agents') : null
   const sessionsError = sessionsQuery.isError
     ? errorMessage(sessionsQuery.error, 'Could not load sessions')
-    : null
-  const messagesError = messagesQuery.isError
-    ? errorMessage(messagesQuery.error, 'Could not load messages')
     : null
 
   useEffect(() => {
@@ -85,13 +69,12 @@ export function AgentHistoryPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionsQuery.isError, sessionsQuery.error])
 
-  useEffect(() => {
-    if (messagesQuery.isError) handleError(messagesQuery.error, { toast: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messagesQuery.isError, messagesQuery.error])
-
   // Prefetch the most-likely-next click once a session list resolves: the
   // first (newest) session's messages — never fan out to every session.
+  // Still useful even though this panel no longer shows a transcript
+  // itself: the real chat pane (WorkspaceChat) reads from the SAME
+  // agent-history query cache when a session is selected, so this
+  // prefetch still saves it a real network round trip.
   useEffect(() => {
     if (!selectedAgent || sessions.length === 0) return
     prefetchMessages(selectedAgent, sessions[0].sessionId)
@@ -100,32 +83,19 @@ export function AgentHistoryPanel({
 
   function selectAgent(agentName: string) {
     setSelectedAgent(agentName)
-    setView('sessions')
-    setSelectedSession(null)
   }
 
   function selectSession(session: AgentSession) {
-    setSelectedSession(session)
-    setView('messages')
-  }
-
-  function backToSessions() {
-    setView('sessions')
-    setSelectedSession(null)
+    if (selectedAgent) onSelectSession?.(selectedAgent, session)
   }
 
   function closeAgent() {
     setSelectedAgent(null)
-    setSelectedSession(null)
   }
 
   function refresh() {
     if (!selectedAgent) return
-    if (view === 'sessions') {
-      void sessionsQuery.refetch()
-      return
-    }
-    void messagesQuery.refetch()
+    void sessionsQuery.refetch()
   }
 
   if (!workspaceId) {
@@ -140,13 +110,8 @@ export function AgentHistoryPanel({
     return (
       <div className="audience-history">
         <div className="audience-history-header">
-          <button
-            type="button"
-            className="audience-history-back"
-            onClick={view === 'messages' ? backToSessions : closeAgent}
-            aria-label={view === 'messages' ? 'Back to sessions' : 'Back to agents'}
-          >
-            <ArrowLeft size={14} /> {view === 'messages' ? 'Sessions' : selectedAgent}
+          <button type="button" className="audience-history-back" onClick={closeAgent} aria-label="Back to agents">
+            <ArrowLeft size={14} /> {selectedAgent}
           </button>
           <div className="audience-history-actions">
             <Hint label="Refresh" side="top">
@@ -162,22 +127,13 @@ export function AgentHistoryPanel({
           </div>
         </div>
 
-        {view === 'sessions' ? (
-          <SessionsList
-            sessions={sessions}
-            loading={sessionsQuery.isPending}
-            error={sessionsError}
-            onSelect={selectSession}
-            onHoverSession={(session) => prefetchMessages(selectedAgent, session.sessionId)}
-          />
-        ) : (
-          <MessagesList
-            title={selectedSession?.title ?? ''}
-            messages={messages}
-            loading={messagesQuery.isPending}
-            error={messagesError}
-          />
-        )}
+        <SessionsList
+          sessions={sessions}
+          loading={sessionsQuery.isPending}
+          error={sessionsError}
+          onSelect={selectSession}
+          onHoverSession={(session) => prefetchMessages(selectedAgent, session.sessionId)}
+        />
       </div>
     )
   }
@@ -272,36 +228,4 @@ function SessionsList({
   )
 }
 
-function MessagesList({
-  title,
-  messages,
-  loading,
-  error,
-}: {
-  title: string
-  messages: AgentMessage[]
-  loading: boolean
-  error: string | null
-}) {
-  return (
-    <div className="audience-messages">
-      {title ? <p className="audience-messages-title">{title}</p> : null}
-      {loading ? <MessagesSkeleton /> : null}
-      {!loading && error ? <p className="audience-empty">{error}</p> : null}
-      {!loading && !error && messages.length === 0 ? (
-        <p className="audience-empty">No history yet.</p>
-      ) : null}
-      {!loading && !error && messages.length > 0 ? (
-        <ul className="audience-message-list">
-          {messages.map((message, index) => (
-            <li key={index} className="audience-message-item">
-              <span className="audience-message-role">{message.role}</span>
-              <p className="audience-message-content">{message.content}</p>
-              <span className="audience-message-time">{relativeTime(message.timestamp)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  )
-}
+
