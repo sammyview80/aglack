@@ -187,13 +187,20 @@ hop. Wrapper codes after a successful forward: `agent_history_profile_not_found`
 
 Freshness is deliberately fresh-on-open + manual refresh only — no
 polling, no websockets, no timers. Opening an agent or session re-fetches
-once; a visible refresh control re-fetches on demand. The three queries are
-gated on the panel actually being open (`panelOpen` ANDed into `enabled`),
-so nothing is fetched while the AUDIENCE panel is closed — **do not
-reintroduce a prefetch of agent history from another screen**: the
-workspace dashboard did exactly that once (hover a workspace card →
-`listAgents`) and it silently defeated the gate. Prefetch agent history
-only from inside the panel, on hover/focus of an agent or session.
+once; a visible refresh control re-fetches on demand. Sessions and
+messages queries are gated on the AUDIENCE panel actually being open
+(`panelOpen` ANDed into `enabled`), so no transcript data is fetched
+while the panel is closed. The agents list is the one deliberate
+exception: threads-shell's CHAT sidebar renders the real agent list on
+the chat screen itself, so `useAgents` is enabled whenever the shell is
+mounted (the sidebar and the panel share one query key, so this is a
+single fetch). Clicking a sidebar agent selects it in the panel via
+`AgentHistoryPanel`'s controlled `selectedAgent`/`onSelectedAgentChange`
+props, opening the drawer below the three-column breakpoint. **Do not
+fetch agent history from any OTHER screen**: the workspace dashboard did
+exactly that once (hover a workspace card → `listAgents`) and it
+silently defeated the gate. Prefetch sessions/messages only from inside
+the panel, on hover/focus of an agent or session.
 
 ## Server state: TanStack Query (React Query v5)
 

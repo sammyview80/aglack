@@ -18,10 +18,40 @@ import {
 
 type View = 'sessions' | 'messages'
 
-export function AgentHistoryPanel({ workspaceId, open }: { workspaceId?: string; open: boolean }) {
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
+export function AgentHistoryPanel({
+  workspaceId,
+  open,
+  selectedAgent: selectedAgentProp,
+  onSelectedAgentChange,
+}: {
+  workspaceId?: string
+  open: boolean
+  /** Optional external selection (e.g. the sidebar's real agent list in
+   * threads-shell). When provided, clicking an agent there drives this
+   * panel; the panel still owns view/session state and reports its own
+   * agent changes back through onSelectedAgentChange. */
+  selectedAgent?: string | null
+  onSelectedAgentChange?: (name: string | null) => void
+}) {
+  const [selectedAgent, setSelectedAgentState] = useState<string | null>(null)
   const [view, setView] = useState<View>('sessions')
   const [selectedSession, setSelectedSession] = useState<AgentSession | null>(null)
+
+  function setSelectedAgent(name: string | null) {
+    setSelectedAgentState(name)
+    onSelectedAgentChange?.(name)
+  }
+
+  // Sync an externally-driven selection (sidebar click). Resets to the
+  // sessions view exactly like an in-panel agent click would.
+  useEffect(() => {
+    if (selectedAgentProp === undefined) return
+    if (selectedAgentProp === selectedAgent) return
+    setSelectedAgentState(selectedAgentProp)
+    setView('sessions')
+    setSelectedSession(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAgentProp])
 
   const agentsQuery = useAgents(workspaceId, open)
   const sessionsQuery = useAgentSessions(workspaceId, selectedAgent, open)

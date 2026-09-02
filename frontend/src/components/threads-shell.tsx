@@ -27,6 +27,7 @@ import { BrandLogo } from '@/components/brand-mark'
 import { cn } from '@/lib/utils'
 import { useWorkspaceList } from '@/features/workspace/hooks/use-workspace-list'
 import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
+import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import '@/styles/threads-app.css'
 
 export type ThreadsWorkspaceIcon = {
@@ -61,14 +62,6 @@ const PLACEHOLDER_CHANNELS = [
 const EXTRA_CHANNELS = [
   { icon: 'hash' as const, label: 'product-feedback' },
   { icon: 'hash' as const, label: 'team-updates' },
-]
-
-const PLACEHOLDER_PEOPLE: { name: string; tone: AvatarTone; badge?: string }[] = [
-  { name: 'abdul, mehdi', tone: 'gold', badge: '2' },
-  { name: 'abdul', tone: 'gold' },
-  { name: 'adam', tone: 'aqua' },
-  { name: 'addie', tone: 'pink' },
-  { name: 'courtney', tone: 'gold' },
 ]
 
 const THREAD_SECTIONS = new Set(['Inbox', 'Thread', 'design-www', 'Setup'])
@@ -167,9 +160,22 @@ export function ThreadsShell({
   }, [])
   const audienceVisible = isAudienceDesktop || audiencePanelOpen
   const [query, setQuery] = useState(search ?? '')
-  const [badges, setBadges] = useState<Record<string, string | undefined>>(() =>
-    Object.fromEntries(PLACEHOLDER_PEOPLE.map((row) => [row.name, row.badge])),
-  )
+
+  // Real agents for the CHAT sidebar section. Deliberate scope extension of
+  // the agent-history "fetch only while the panel is open" gate: the sidebar
+  // IS an agent-history consumer on this same screen, so the agents query is
+  // enabled whenever the shell is mounted. Sessions/messages stay gated on
+  // the AUDIENCE panel being open (inside AgentHistoryPanel).
+  const agentsQuery = useAgents(workspaceId, true)
+  const sidebarAgents = agentsQuery.data?.agents ?? []
+  // Which agent's history is shown in the AUDIENCE panel; the sidebar and
+  // the panel share this selection.
+  const [historyAgent, setHistoryAgent] = useState<string | null>(null)
+  // A selection is only meaningful within one workspace — switching
+  // workspaces must not query the previous workspace's agent name.
+  useEffect(() => {
+    setHistoryAgent(null)
+  }, [workspaceId])
 
   useEffect(() => {
     if (search !== undefined) setQuery(search)
@@ -203,9 +209,11 @@ export function ThreadsShell({
     openSection('Inbox')
   }
 
-  function selectPerson(name: string) {
-    setBadges((prev) => ({ ...prev, [name]: undefined }))
-    openSection(name)
+  function selectAgentHistory(name: string) {
+    setHistoryAgent(name)
+    // Below the three-column breakpoint the AUDIENCE panel is a drawer —
+    // open it so the click actually shows the agent's history.
+    if (!isAudienceDesktop) setAudiencePanelOpen(true)
   }
 
   async function copyLink() {
@@ -317,19 +325,27 @@ export function ThreadsShell({
             <div className="section-label">
               <ChevronDown size={14} /> CHAT
             </div>
-            {PLACEHOLDER_PEOPLE.map((person) => (
+            {agentsQuery.isError ? (
+              <span className="person-item" aria-disabled="true">
+                Could not load agents
+              </span>
+            ) : null}
+            {!agentsQuery.isError && !agentsQuery.isPending && sidebarAgents.length === 0 ? (
+              <span className="person-item" aria-disabled="true">
+                No agents yet
+              </span>
+            ) : null}
+            {sidebarAgents.map((agent) => (
               <button
-                key={person.name}
+                key={agent.name}
                 type="button"
-                className={section === person.name ? 'person-item channel-selected' : 'person-item'}
-                onClick={() => selectPerson(person.name)}
+                className={historyAgent === agent.name ? 'person-item channel-selected' : 'person-item'}
+                onClick={() => selectAgentHistory(agent.name)}
               >
                 <span className="person-avatar-wrap">
-                  <PixelAvatar seed={person.name} tone={person.tone} small />
-                  {person.name === 'abdul' ? <i className="online-dot" /> : null}
+                  <PixelAvatar seed={agent.name} small />
                 </span>
-                <span>{person.name}</span>
-                {badges[person.name] ? <span className="person-badge">{badges[person.name]}</span> : null}
+                <span>{agent.name}</span>
               </button>
             ))}
           </section>
@@ -461,7 +477,12 @@ export function ThreadsShell({
               </div>
             ) : null}
           </div>
-          <AgentHistoryPanel workspaceId={workspaceId} open={audienceVisible} />
+          <AgentHistoryPanel
+            workspaceId={workspaceId}
+            open={audienceVisible}
+            selectedAgent={historyAgent}
+            onSelectedAgentChange={setHistoryAgent}
+          />
         </aside>
       </div>
 
