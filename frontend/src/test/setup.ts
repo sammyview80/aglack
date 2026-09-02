@@ -18,3 +18,16 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
     dispatchEvent: () => false,
   })
 }
+
+// jsdom does not implement scrollIntoView — the "scroll to required input"
+// affordance (workspace-chat.tsx) calls it directly on a ref'd element, so
+// every test that mounts that flow would otherwise throw
+// `element.scrollIntoView is not a function`.
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView() {}
+}
+
+// jsdom does not implement scrollTo — chat transcript auto-scroll uses it.
+if (typeof Element !== 'undefined' && !Element.prototype.scrollTo) {
+  Element.prototype.scrollTo = function scrollTo() {}
+}

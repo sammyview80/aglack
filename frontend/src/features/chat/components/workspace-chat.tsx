@@ -1,16 +1,22 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { SquarePen } from 'lucide-react'
+import { ArrowDown, RefreshCw, SquarePen } from 'lucide-react'
 import { ThreadsShell } from '@/components/threads-shell'
 import { Skeleton } from '@/components/ui/skeleton'
-import { RandomAvatar } from '@/components/random-avatar'
+import { AgentAvatar } from '@/features/chat/components/agent-avatar'
+import { chatUi } from '@/features/chat/chat-ui'
+import { threadsUi } from '@/components/threads-ui'
 import { Hint } from '@/components/ui/tooltip'
+import { AGENT_STATUS_WORDS, CyclingWords, PulseDot, motionPresets } from '@/components/motion'
+import { cn } from '@/lib/utils'
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { useChat } from '@/features/chat/hooks/use-chat'
 import { ChatMessageList } from '@/features/chat/components/chat-message-list'
 import { ChatComposer } from '@/features/chat/components/chat-composer'
-import { ApprovalPrompt } from '@/features/chat/components/approval-prompt'
-import { ClarifyPrompt } from '@/features/chat/components/clarify-prompt'
+import { PendingInputPanel } from '@/features/chat/components/pending-input-panel'
+import { selectPendingInput } from '@/features/chat/components/pending-input'
+import { usePendingInputFocus } from '@/features/chat/components/use-pending-input-focus'
+import { useChatTranscriptScroll } from '@/features/chat/components/use-chat-transcript-scroll'
 import type { AgentSession } from '@/features/agent-history/types'
 
 type WorkspaceChatProps = {
@@ -48,6 +54,7 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
   const [searchParams, setSearchParams] = useSearchParams()
   const agent = searchParams.get('agent')
   const sessionId = searchParams.get('session')
+  const pendingInputFocus = usePendingInputFocus()
 
   // Default to the first real agent only once the list loads AND the URL
   // doesn't already name one — never override an explicit `?agent=` (e.g.
@@ -88,6 +95,16 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
   }
 
   const chat = useChat(workspaceId, agent, { sessionId })
+  const pendingInput = selectPendingInput(chat.approval, chat.clarify)
+  const transcriptScroll = useChatTranscriptScroll({
+    turnCount: chat.turns.length,
+    isStreaming: chat.isStreaming,
+    streamingText: chat.assistantText,
+    reasoningText: chat.reasoningText,
+    toolCount: chat.tools.length,
+    agent,
+    sessionId,
+  })
 
   /** Starts a genuinely new, separate session for the CURRENT agent —
    * clears this hook's own persisted/cached session state (`chat.newChat`)
@@ -115,66 +132,121 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
       selectedAgent={agent}
       onSelectAgent={selectAgent}
     >
-      <div className="thread-scroll">
-        <article className="thread-card">
-          <div className="thread-main">
-            <div className="post-author chat-header-row">
-              {agent ? <RandomAvatar seed={agent} size={40} /> : null}
-              <div>
-                <div className="author-line">
-                  <strong>{agent ?? 'Chat'}</strong>
-                </div>
-                <div className="meta-line">
-                  {chat.isStreaming
-                    ? 'Streaming…'
-                    : chat.turns.length > 0
-                      ? `${chat.turns.length} message${chat.turns.length === 1 ? '' : 's'}`
-                      : 'No messages yet'}
-                </div>
-              </div>
+      <div className={chatUi.threadScroll}>
+        <article className={chatUi.threadCard}>
+          <div className={chatUi.threadMain}>
+            <div className={chatUi.headerRow}>
               {agent ? (
-                <Hint label="New chat" side="top">
-                  <button
-                    type="button"
-                    className="chat-new-button"
-                    onClick={newChat}
-                    disabled={chat.isStreaming}
-                    aria-label="Start a new chat"
-                  >
-                    <SquarePen size={16} />
-                    New chat
-                  </button>
-                </Hint>
+                <>
+                  <div className="relative shrink-0">
+                    <AgentAvatar agent={agent} size="md" />
+                    {chat.isStreaming ? (
+                      <PulseDot className={chatUi.activeDotMd} label="Agent is responding" />
+                    ) : null}
+                  </div>
+                  <div className={chatUi.headerIdentity}>
+                    <strong className={chatUi.headerName}>{agent}</strong>
+                    <span className={chatUi.headerMeta}>
+                      {chat.isStreaming ? (
+                        <CyclingWords words={AGENT_STATUS_WORDS} className="text-xs not-italic" />
+                      ) : chat.turns.length > 0 ? (
+                        `${chat.turns.length} message${chat.turns.length === 1 ? '' : 's'}`
+                      ) : (
+                        'New conversation'
+                      )}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <span className={chatUi.headerMeta}>Chat</span>
+              )}
+              {agent ? (
+                <div className={chatUi.headerActions}>
+                  <Hint label="Reload messages" side="top">
+                    <button
+                      type="button"
+                      className={chatUi.headerButton}
+                      onClick={chat.reloadMessages}
+                      disabled={chat.isStreaming || chat.isReloadingMessages}
+                      aria-label="Reload messages"
+                    >
+                      <RefreshCw
+                        size={16}
+                        className={cn(chat.isReloadingMessages && motionPresets.spin)}
+                      />
+                    </button>
+                  </Hint>
+                  <Hint label="New chat" side="top">
+                    <button
+                      type="button"
+                      className={cn(chatUi.headerButton, 'px-3')}
+                      onClick={newChat}
+                      disabled={chat.isStreaming}
+                      aria-label="Start a new chat"
+                    >
+                      <SquarePen size={16} />
+                      New chat
+                    </button>
+                  </Hint>
+                </div>
               ) : null}
             </div>
-            <div className="divider" />
+            <div className={chatUi.divider} />
 
             {agentsQuery.isPending ? (
               <Skeleton className="h-24 w-full" />
             ) : agents.length === 0 ? (
-              <p className="empty-search">No agents are set up for this workspace yet.</p>
+              <p className={threadsUi.emptySearch}>No agents are set up for this workspace yet.</p>
             ) : chat.sessionError ? (
-              <p className="chat-message-error">{chat.sessionError}</p>
+              <p className={chatUi.errorText}>{chat.sessionError}</p>
             ) : agent ? (
               <>
-                <ChatMessageList
-                  agent={agent}
-                  turns={chat.turns}
-                  isStreaming={chat.isStreaming}
-                  streamingText={chat.assistantText}
-                  reasoningText={chat.reasoningText}
-                  tools={chat.tools}
-                />
-                {chat.approval ? (
-                  <ApprovalPrompt prompt={chat.approval} onRespond={chat.respondApproval} />
-                ) : null}
-                {chat.clarify ? (
-                  <ClarifyPrompt prompt={chat.clarify} onRespond={chat.respondClarify} />
+                <div className={chatUi.transcript} ref={transcriptScroll.ref}>
+                  <div className={chatUi.transcriptInner}>
+                    <ChatMessageList
+                      agent={agent}
+                      turns={chat.turns}
+                      isStreaming={chat.isStreaming}
+                      streamingText={chat.assistantText}
+                      reasoningText={chat.reasoningText}
+                      tools={chat.tools}
+                      onSuggest={chat.send}
+                    />
+                    {pendingInput?.kind === 'clarify' ? (
+                      <button
+                        type="button"
+                        className={chatUi.scrollFab}
+                        onClick={pendingInputFocus.scrollToAndFocus}
+                        aria-label="Scroll to required clarification input"
+                      >
+                        Answer required
+                        <ArrowDown size={14} />
+                      </button>
+                    ) : transcriptScroll.showScrollButton ? (
+                      <button
+                        type="button"
+                        className={chatUi.scrollFab}
+                        onClick={() => transcriptScroll.scrollToBottom('smooth')}
+                        aria-label="Scroll to latest messages"
+                      >
+                        Latest
+                        <ArrowDown size={14} />
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                {pendingInput ? (
+                  <PendingInputPanel
+                    pendingInput={pendingInput}
+                    focusRef={pendingInputFocus.ref}
+                    onRespondApproval={chat.respondApproval}
+                    onRespondClarify={chat.respondClarify}
+                  />
                 ) : null}
                 {chat.canRetry ? (
-                  <p className="chat-message-error">
+                  <p className={chatUi.errorText}>
                     Connection lost.{' '}
-                    <button type="button" className="chat-retry-button" onClick={chat.retry}>
+                    <button type="button" className={chatUi.retryButton} onClick={chat.retry}>
                       Retry
                     </button>
                   </p>

@@ -56,6 +56,17 @@ function isDisplayableHistoryMessage(message: AgentMessage): boolean {
   return true
 }
 
+function historyToTurns(sessionKey: string, messages: AgentMessage[]): ChatTurn[] {
+  return messages
+    .filter(isDisplayableHistoryMessage)
+    .map((message, index) => ({
+      id: `history-${sessionKey}-${index}`,
+      role: message.role === 'user' ? 'user' : 'assistant',
+      text: message.content,
+      at: message.timestamp,
+    }))
+}
+
 const SESSION_STORAGE_PREFIX = 'hermano.chat.session'
 
 function sessionStorageKey(workspaceId: string, agent: string): string {
@@ -222,16 +233,7 @@ export function useChat(
     if (!boundSessionId || !historyQuery.data) return
     if (seededRef.current === boundSessionId) return
     seededRef.current = boundSessionId
-    setTurns(
-      historyQuery.data.messages
-        .filter(isDisplayableHistoryMessage)
-        .map((message, index) => ({
-          id: `history-${boundSessionId}-${index}`,
-          role: message.role === 'user' ? 'user' : 'assistant',
-          text: message.content,
-          at: message.timestamp,
-        })),
-    )
+    setTurns(historyToTurns(boundSessionId, historyQuery.data.messages))
   }, [boundSessionId, historyQuery.data])
 
   // Detect a turn already running server-side for this exact session — a
@@ -280,6 +282,21 @@ export function useChat(
       respondToClarify(workspaceId as string, agent as string, sessionId as string, response, clarifyId),
     onSuccess: () => stream.clearClarify(),
     onError: (err) => handleError(err, { fallback: 'Could not send that answer' }),
+  })
+
+  const reloadMutation = useMutation({
+    mutationFn: () => {
+      if (!workspaceId || !agent || !sessionId) {
+        return Promise.reject(new Error('No active session to reload'))
+      }
+      return listAgentMessages(workspaceId, agent, sessionId)
+    },
+    onSuccess: (data) => {
+      if (!sessionId) return
+      seededRef.current = sessionId
+      setTurns(historyToTurns(sessionId, data.messages))
+    },
+    onError: (err) => handleError(err, { fallback: 'Could not reload messages' }),
   })
 
   // Snapshot the assembled assistant reply into turn history once content
@@ -422,6 +439,12 @@ export function useChat(
     if (lastMessageRef.current) void send(lastMessageRef.current)
   }
 
+  /** Re-fetch session history from the server — user-triggered refresh. */
+  function reloadMessages() {
+    if (streamId) return
+    void reloadMutation.mutate()
+  }
+
   function respondApproval(choice: ApprovalChoice, approvalId?: string) {
     void approvalMutation.mutateAsync({ choice, approvalId })
   }
@@ -445,6 +468,8 @@ export function useChat(
     stop,
     retry,
     newChat,
+    reloadMessages,
+    isReloadingMessages: reloadMutation.isPending,
     respondApproval,
     respondClarify,
   }

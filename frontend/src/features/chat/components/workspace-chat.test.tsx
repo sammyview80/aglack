@@ -86,10 +86,10 @@ describe('WorkspaceChat URL-driven agent/session', () => {
     // this screen has no agent picker of its own anymore) — wait for the
     // sidebar list to actually be populated before scoping into it.
     await waitFor(() => {
-      const section = document.querySelector('.chat-section')
-      expect(section && within(section as HTMLElement).queryByText('agent-b')).not.toBeNull()
+      const section = screen.getByTestId('sidebar-chat-section')
+      expect(within(section).queryByText('agent-b')).not.toBeNull()
     })
-    const sidebarChatSection = document.querySelector('.chat-section') as HTMLElement
+    const sidebarChatSection = screen.getByTestId('sidebar-chat-section')
     await user.click(within(sidebarChatSection).getByText('agent-b'))
 
     // agent-b must get its OWN session, never agent-a's stale session id.
@@ -116,9 +116,9 @@ describe('WorkspaceChat URL-driven agent/session', () => {
 
     await screen.findByText('hello from agent-a')
 
-    // Scope to the sidebar's CHAT list explicitly (.chat-section) since
-    // the header also renders the agent's name as plain text now.
-    const sidebarChatSection = document.querySelector('.chat-section') as HTMLElement
+    // Scope to the sidebar's CHAT list explicitly since the header also
+    // renders the agent's name as plain text now.
+    const sidebarChatSection = screen.getByTestId('sidebar-chat-section')
     await user.click(within(sidebarChatSection).getByText('agent-b'))
 
     // The real chat pane switched to agent-b's OWN session (not agent-a's

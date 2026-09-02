@@ -1,3 +1,7 @@
+import type { RefObject } from 'react'
+import { ChatPromptCard } from '@/features/chat/components/chat-prompt-card'
+import { chatUi } from '@/features/chat/chat-ui'
+import { cn } from '@/lib/utils'
 import type { ApprovalChoice, ApprovalPrompt as ApprovalPromptType } from '@/features/chat/types'
 
 const CHOICES: { value: ApprovalChoice; label: string }[] = [
@@ -10,27 +14,37 @@ const CHOICES: { value: ApprovalChoice; label: string }[] = [
 export function ApprovalPrompt({
   prompt,
   onRespond,
+  panelRef,
 }: {
   prompt: ApprovalPromptType
   onRespond: (choice: ApprovalChoice, approvalId?: string) => void
+  panelRef?: RefObject<HTMLDivElement | null>
 }) {
   return (
-    <div className="chat-prompt chat-prompt-approval">
-      <p className="chat-prompt-title">Approval requested</p>
-      {prompt.description ? <p className="chat-prompt-description">{prompt.description}</p> : null}
-      {prompt.command ? <pre className="chat-prompt-command">{prompt.command}</pre> : null}
-      <div className="chat-prompt-actions">
+    <ChatPromptCard
+      ref={panelRef}
+      title="Approval requested"
+      description={prompt.description}
+      role="region"
+      ariaLabel="Approval requested"
+      ariaLive="polite"
+      tabIndex={panelRef ? -1 : undefined}
+    >
+      {prompt.command ? <pre className={chatUi.promptCommand}>{prompt.command}</pre> : null}
+      <div className={chatUi.promptChoices}>
         {CHOICES.map((choice) => (
           <button
             key={choice.value}
             type="button"
-            className={choice.value === 'deny' ? 'chat-prompt-deny' : 'chat-prompt-approve'}
+            className={cn(
+              choice.value === 'deny' ? chatUi.promptDeny : chatUi.promptApprove,
+            )}
             onClick={() => onRespond(choice.value, prompt.approvalId)}
           >
             {choice.label}
           </button>
         ))}
       </div>
-    </div>
+    </ChatPromptCard>
   )
 }

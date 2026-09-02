@@ -1,17 +1,26 @@
-import { PixelAvatar, avatarTone } from '@/components/threads-shell'
-import { RandomAvatar } from '@/components/random-avatar'
+import { AgentAvatar } from '@/features/chat/components/agent-avatar'
+import { ChatEmptyState } from '@/features/chat/components/chat-empty-state'
 import { MarkdownContent } from '@/features/chat/components/markdown-content'
 import { ThinkingCard } from '@/features/chat/components/thinking-card'
 import { ToolActivityList, ToolActivitySummary } from '@/features/chat/components/tool-activity'
+import { chatUi } from '@/features/chat/chat-ui'
 import type { ChatTurn } from '@/features/chat/hooks/use-chat'
 import type { ToolActivity } from '@/features/chat/types'
+import { AGENT_STATUS_WORDS, CyclingWords, PulseDot, TypingIndicator } from '@/components/motion'
+import { cn } from '@/lib/utils'
 
-function timeAgo(at: number): string {
-  const mins = Math.max(1, Math.round((Date.now() - at) / 60000))
-  if (mins < 60) return `${mins}m`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.round(hours / 24)}d`
+function messageTimestamp(at: number): number {
+  if (!Number.isFinite(at) || at <= 0) return Date.now()
+  return at < 1_000_000_000_000 ? at * 1000 : at
+}
+
+function formatMessageTime(at: number): string {
+  return new Date(messageTimestamp(at)).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
 }
 
 export function ChatMessageList({
@@ -21,6 +30,7 @@ export function ChatMessageList({
   streamingText,
   reasoningText,
   tools,
+  onSuggest,
 }: {
   agent: string
   turns: ChatTurn[]
@@ -28,51 +38,87 @@ export function ChatMessageList({
   streamingText: string
   reasoningText: string
   tools: ToolActivity[]
+  onSuggest?: (text: string) => void
 }) {
+  const isEmpty = turns.length === 0 && !isStreaming
+
   return (
-    <div className="comments-list chat-message-list">
-      {turns.length === 0 && !isStreaming ? (
-        <p className="empty-search">Say something to {agent} to start the conversation.</p>
-      ) : null}
-      {turns.map((turn) => (
-        <div className={turn.role === 'user' ? 'comment comment-outgoing' : 'comment'} key={turn.id}>
-          {turn.role === 'user' ? (
-            <PixelAvatar seed="you" tone={avatarTone('you')} />
-          ) : (
-            // Same RandomAvatar + same seed (agent name) as every other
-            // agent-identity avatar in the app (threads-shell.tsx's agent
-            // sidebar, agent-history-panel.tsx) — a chat message bubble is
-            // not a separate avatar system just because it renders inline.
-            <RandomAvatar seed={agent} size={54} />
-          )}
-          <div className="comment-content">
-            <div className="comment-name">
-              <strong>{turn.role === 'user' ? 'You' : agent}</strong>
-              <span>·</span>
-              <span>{timeAgo(turn.at)}</span>
-            </div>
-            {turn.role === 'assistant' && turn.reasoning ? <ThinkingCard reasoning={turn.reasoning} /> : null}
-            {turn.role === 'assistant' && turn.tools && turn.tools.length > 0 ? (
-              <ToolActivitySummary tools={turn.tools} />
-            ) : null}
-            <div className={turn.errored ? 'chat-message-error' : undefined}>
-              <MarkdownContent text={turn.text} />
+    <div
+      className={cn(chatUi.messageList, isEmpty && chatUi.messageListEmpty)}
+    >
+      {isEmpty ? <ChatEmptyState agent={agent} onSuggest={onSuggest} /> : null}
+      {turns.map((turn) => {
+        const isUser = turn.role === 'user'
+
+        return (
+          <div className={cn('flex w-full max-w-full', isUser ? 'justify-end' : 'justify-start')} key={turn.id}>
+            <div className={cn(chatUi.messageBlock, isUser && chatUi.messageBlockUser)}>
+              <div className={chatUi.messageRow}>
+                {!isUser ? <AgentAvatar agent={agent} size="sm" /> : null}
+                <div className={chatUi.messageContent}>
+                  {!isUser && turn.reasoning ? <ThinkingCard reasoning={turn.reasoning} /> : null}
+                  {!isUser && turn.tools && turn.tools.length > 0 ? (
+                    <ToolActivitySummary tools={turn.tools} />
+                  ) : null}
+                  <div
+                    data-bubble-tone={turn.errored ? 'error' : isUser ? 'outgoing' : 'incoming'}
+                    className={cn(
+                      chatUi.bubbleBase,
+                      turn.errored
+                        ? chatUi.bubbleError
+                        : isUser
+                          ? chatUi.bubbleOutgoing
+                          : chatUi.bubbleIncoming,
+                    )}
+                  >
+                    <MarkdownContent
+                      text={turn.text}
+                      tone={turn.errored ? 'error' : isUser ? 'outgoing' : 'incoming'}
+                    />
+                  </div>
+                </div>
+                {isUser ? <AgentAvatar agent="you" size="sm" /> : null}
+              </div>
+              <time
+                className={cn(
+                  chatUi.messageTime,
+                  isUser ? chatUi.messageTimeUser : chatUi.messageTimeAssistant,
+                )}
+                dateTime={String(messageTimestamp(turn.at))}
+              >
+                {formatMessageTime(turn.at)}
+              </time>
             </div>
           </div>
-        </div>
-      ))}
+        )
+      })}
       {isStreaming ? (
-        <div className="comment">
-          <RandomAvatar seed={agent} size={54} />
-          <div className="comment-content">
-            <div className="comment-name">
-              <strong>{agent}</strong>
-              <span>·</span>
-              <span>now</span>
+        <div className="flex w-full justify-start">
+          <div className={chatUi.messageBlock}>
+            <div className={chatUi.messageRow}>
+              <div className="relative shrink-0">
+                <AgentAvatar agent={agent} size="sm" />
+                <PulseDot size="sm" className={chatUi.activeDotSm} label="Agent is responding" />
+              </div>
+              <div className={chatUi.messageContent}>
+                {reasoningText ? (
+                  <p className="my-1 text-sm italic text-[var(--th-muted)]">{reasoningText}</p>
+                ) : null}
+                <ToolActivityList tools={tools} />
+                <div className={cn(chatUi.bubbleBase, chatUi.bubbleIncoming, chatUi.bubbleStreaming)}>
+                  {streamingText ? (
+                    <MarkdownContent text={streamingText} tone="incoming" />
+                  ) : (
+                    <TypingIndicator className="text-[var(--th-muted)]" />
+                  )}
+                </div>
+              </div>
             </div>
-            {reasoningText ? <p className="chat-reasoning">{reasoningText}</p> : null}
-            <ToolActivityList tools={tools} />
-            {streamingText ? <MarkdownContent text={streamingText} /> : <p>…</p>}
+            <span
+              className={cn(chatUi.messageTime, chatUi.messageTimeAssistant, 'inline-flex items-baseline')}
+            >
+              <CyclingWords words={AGENT_STATUS_WORDS} className="text-[11px]" />
+            </span>
           </div>
         </div>
       ) : null}
