@@ -17,6 +17,25 @@ use std::sync::Arc;
 
 use super::ProxyState;
 
+/// Hop-by-hop headers (RFC 9110 §7.6.1) that describe THIS connection, not
+/// the resource — a proxy must not relay them onto the next hop in either
+/// direction. `forward_to` never goes through the WebSocket upgrade path
+/// (see `desktop_proxy.rs`'s `relay_websocket`, which dials its own
+/// connection instead), so dropping `Connection`/`Upgrade` here cannot
+/// break WebSocket upgrades.
+const HOP_BY_HOP_HEADERS: &[axum::http::HeaderName] = &[
+    axum::http::header::CONNECTION,
+    axum::http::header::PROXY_AUTHENTICATE,
+    axum::http::header::PROXY_AUTHORIZATION,
+    axum::http::header::TE,
+    axum::http::header::TRAILER,
+    axum::http::header::UPGRADE,
+];
+
+fn is_hop_by_hop(name: &axum::http::HeaderName) -> bool {
+    HOP_BY_HOP_HEADERS.contains(name) || name.as_str().eq_ignore_ascii_case("keep-alive")
+}
+
 /// Forward `req` to `state`'s configured backend address and return its
 /// response verbatim (status + body). A backend that cannot be reached, or
 /// a request whose body cannot be read, produces a clear error response
@@ -73,7 +92,10 @@ pub async fn forward_to(
     // request that doesn't match its own frame.
     let mut forwarded_headers = axum::http::HeaderMap::new();
     for (name, value) in req.headers() {
-        if name == axum::http::header::HOST || name == axum::http::header::CONTENT_LENGTH {
+        if name == axum::http::header::HOST
+            || name == axum::http::header::CONTENT_LENGTH
+            || is_hop_by_hop(name)
+        {
             continue;
         }
         forwarded_headers.insert(name.clone(), value.clone());
@@ -105,32 +127,45 @@ pub async fn forward_to(
             // the same way for every route that shares this function
             // (hermes-webui, desktop, onboarding proxies).
             //
-            // `Content-Length` and `Transfer-Encoding` are skipped —
-            // recomputed by axum itself from the real outgoing `Body`;
-            // forwarding the upstream's original values for either would
-            // describe a body that doesn't match what's actually sent
-            // (mirrors the SAME skip-list reasoning already applied to
-            // the outgoing REQUEST's headers above).
+            // `Content-Length` and `Transfer-Encoding` are skipped — with a
+            // streamed `Body`, axum cannot recompute a `Content-Length` at
+            // all (it doesn't know the total size up front), so a finite
+            // response that previously carried an accurate `Content-Length`
+            // now goes downstream as HTTP/1.1 chunked / unknown-length
+            // instead. That's fine — chunked is valid HTTP/1.1 and every
+            // browser handles it — but forwarding the upstream's original
+            // `Content-Length` verbatim would describe a body that doesn't
+            // match what's actually sent. Hop-by-hop headers (`Connection`,
+            // `Upgrade`, etc. — see `is_hop_by_hop`) are dropped for the
+            // same reason they're dropped on the request side above: they
+            // describe THIS connection, not the resource, and must not
+            // cross a proxy boundary (RFC 9110 §7.6.1).
             let mut response_headers = axum::http::HeaderMap::new();
             for (name, value) in upstream_response.headers() {
                 if name == axum::http::header::CONTENT_LENGTH
                     || name == axum::http::header::TRANSFER_ENCODING
+                    || is_hop_by_hop(name)
                 {
                     continue;
                 }
                 response_headers.insert(name.clone(), value.clone());
             }
-            let body_bytes = upstream_response
-                .bytes()
-                .await
-                .unwrap_or_else(|_| axum::body::Bytes::new());
+            // Stream the body through rather than `.bytes().await`-ing it
+            // whole: an SSE response never ends, so waiting for "the whole
+            // body" means waiting forever — nothing reaches the caller
+            // until the stream closes (see docs/streaming-proxy-plan.md).
+            // A mid-stream upstream failure can no longer become a clean
+            // 502 once headers are already sent; that tradeoff is
+            // unavoidable once the body is streamed, not buffered.
             let mut builder = Response::builder().status(status);
             if let Some(headers) = builder.headers_mut() {
                 *headers = response_headers;
             }
-            builder.body(Body::from(body_bytes)).unwrap_or_else(|_| {
-                (StatusCode::BAD_GATEWAY, "failed to build response").into_response()
-            })
+            builder
+                .body(Body::from_stream(upstream_response.bytes_stream()))
+                .unwrap_or_else(|_| {
+                    (StatusCode::BAD_GATEWAY, "failed to build response").into_response()
+                })
         }
         Err(err) => {
             eprintln!("rust_gateway: failed to reach backend {target_addr}: {err}");
@@ -262,6 +297,124 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("no-cache"),
             "every upstream response header must survive, not just Content-Type specifically"
+        );
+    }
+
+    /// Backend emits one SSE event, waits, then emits a second and closes
+    /// the connection. Used to prove `forward_to` relays the first event
+    /// before the backend has sent the second — i.e. it streams the body
+    /// rather than buffering the whole response.
+    async fn spawn_sse_backend() -> u16 {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind SSE backend");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            // Hand-written HTTP/1.1 response written in two chunked writes
+            // (with a delay between them) instead of going through axum, so
+            // the test doesn't need a new streaming-body dependency to prove
+            // the bytes really arrive incrementally over the wire.
+            let head = b"HTTP/1.1 200 OK\r\n\
+                Content-Type: text/event-stream\r\n\
+                Transfer-Encoding: chunked\r\n\
+                Connection: close\r\n\
+                \r\n";
+            if socket.write_all(head).await.is_err() {
+                return;
+            }
+            let first = b"data: first\n\n";
+            let chunk = format!("{:x}\r\n", first.len());
+            if socket.write_all(chunk.as_bytes()).await.is_err() {
+                return;
+            }
+            if socket.write_all(first).await.is_err() {
+                return;
+            }
+            if socket.write_all(b"\r\n").await.is_err() {
+                return;
+            }
+            let _ = socket.flush().await;
+
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            let second = b"data: second\n\n";
+            let chunk = format!("{:x}\r\n", second.len());
+            let _ = socket.write_all(chunk.as_bytes()).await;
+            let _ = socket.write_all(second).await;
+            let _ = socket.write_all(b"\r\n").await;
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+            let _ = socket.shutdown().await;
+        });
+        port
+    }
+
+    /// The regression test for the fix: the OLD `.bytes().await` buffering
+    /// implementation cannot produce anything until the backend finishes
+    /// its full 2s gap (it waits for the whole body before returning from
+    /// `forward_to` at all). This test wraps BOTH the `forward_to(...)`
+    /// call and the first-chunk read in a single 1s deadline — comfortably
+    /// under the backend's 2s gap — so buffered code blows the deadline
+    /// and fails, while the streaming implementation clears it easily. The
+    /// content assertion is kept as a secondary check, but timing is the
+    /// actual property under test.
+    #[tokio::test]
+    async fn forward_to_streams_response_body_incrementally() {
+        let backend_port = spawn_sse_backend().await;
+        let target_addr = format!("127.0.0.1:{backend_port}");
+
+        let started = std::time::Instant::now();
+        let first_chunk = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            use futures_util::StreamExt;
+
+            let request = HttpRequest::builder()
+                .uri("/events")
+                .body(Body::empty())
+                .unwrap();
+            let response =
+                forward_to(&reqwest::Client::new(), &target_addr, request, None).await;
+            assert_eq!(response.status(), StatusCode::OK);
+
+            let mut stream = response.into_body().into_data_stream();
+            stream.next().await
+        })
+        .await
+        .expect("forward_to + first chunk must complete well before the backend's 2s gap")
+        .expect("stream ended before yielding a chunk")
+        .expect("chunk read error");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "first chunk arrived after the backend's 2s gap — body was buffered, not streamed"
+        );
+        assert_eq!(&first_chunk[..], b"data: first\n\n");
+    }
+
+    /// An ordinary (non-streaming) response must still relay its full body
+    /// correctly through the new streamed-body path.
+    #[tokio::test]
+    async fn forward_to_relays_ordinary_response_body() {
+        let backend_port = spawn_fixed_header_backend().await;
+        let target_addr = format!("127.0.0.1:{backend_port}");
+
+        let request = HttpRequest::builder()
+            .uri("/static/style.css")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = forward_to(&reqwest::Client::new(), &target_addr, request, None).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).unwrap(),
+            "body { color: red }"
         );
     }
 }
