@@ -32,6 +32,14 @@ type WireStartTurnResult = {
   effective_model_provider?: string
 }
 type WireCancelTurnResult = { ok: boolean; cancelled: boolean; stream_id: string }
+/** Only the fields this app actually uses from upstream's much larger
+ * `session_status()` response (api/session_ops.py) — the rest (title,
+ * model, token counts, ...) is intentionally not modeled, matching this
+ * file's existing partial-view pattern (WireStartTurnResult etc.).
+ * `active_stream_id` is upstream's own liveness-checked value (see
+ * `_live_active_stream_id`'s doc comment in session_ops.py) — never a raw
+ * possibly-stale persisted value, so no staleness check is needed here. */
+type WireSessionStatus = { agent_running: boolean; active_stream_id: string | null }
 
 function chatBase(workspaceId: string): string {
   return `${gatewayUrl()}/workspaces/${encodeURIComponent(workspaceId)}/chat`
@@ -104,6 +112,24 @@ export async function startTurn(
     effectiveModel: data.effective_model,
     effectiveModelProvider: data.effective_model_provider,
   }
+}
+
+/** Whether this session already has a turn running server-side right now
+ * — used to reconnect to an in-flight stream after a page reload instead
+ * of the reload silently losing track of it. Backed by upstream's
+ * existing `GET /api/session/status` (`api/session_ops.py::session_status`)
+ * — no new backend endpoint needed, already reachable through the
+ * proxied chat namespace. */
+export async function getSessionStatus(
+  workspaceId: string,
+  agent: string,
+  sessionId: string,
+): Promise<{ activeStreamId: string | null }> {
+  const data = await chatFetch<WireSessionStatus>(
+    withAgent(`${chatBase(workspaceId)}/api/session/status?session_id=${encodeURIComponent(sessionId)}`, agent),
+    { method: 'GET' },
+  )
+  return { activeStreamId: data.agent_running ? data.active_stream_id : null }
 }
 
 /** Stream URL for `EventSource` — kept here so the SSE hook never builds

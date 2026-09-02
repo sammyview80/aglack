@@ -35,5 +35,7 @@ export const queryKeys = {
     all: ['chat'] as const,
     session: (workspaceId: string, agent: string) =>
       [...queryKeys.chat.all, workspaceId, 'agents', agent, 'session'] as const,
+    sessionStatus: (workspaceId: string, agent: string, sessionId: string) =>
+      [...queryKeys.chat.all, workspaceId, 'agents', agent, 'sessions', sessionId, 'status'] as const,
   },
 } as const
