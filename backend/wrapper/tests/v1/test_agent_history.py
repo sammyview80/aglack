@@ -204,6 +204,59 @@ def test_messages_returns_projected_messages_for_valid_session(client: TestClien
     ]
 
 
+def test_messages_with_no_params_returns_newest_page(client: TestClient) -> None:
+    """No real frontend call site ever sends limit/offset. Without an
+    explicit offset, the default page must be the newest DEFAULT_LIMIT
+    messages (the live tail), still chronological, not the oldest page."""
+    from hermes_webui_wrapper.features.agent_history.service import DEFAULT_LIMIT
+
+    _create_profile(client, "history-agent-tail")
+    total = DEFAULT_LIMIT + 56
+    messages = [
+        {"role": "user", "content": f"msg-{i}", "timestamp": float(i)}
+        for i in range(total)
+    ]
+    session = _make_session("history-agent-tail", messages=messages)
+
+    response = client.get(
+        f"/api/wrapper/v1/agent-history/agents/history-agent-tail/sessions/{session.session_id}/messages"
+    )
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["total"] == total
+    assert len(body["messages"]) == DEFAULT_LIMIT
+    expected_contents = [f"msg-{i}" for i in range(total - DEFAULT_LIMIT, total)]
+    assert [m["content"] for m in body["messages"]] == expected_contents
+    assert body["offset"] == total - DEFAULT_LIMIT
+
+
+def test_messages_with_explicit_offset_zero_returns_oldest_page(client: TestClient) -> None:
+    """Contract for a future 'load older messages' UI: an explicit
+    offset=0 must still mean from-the-start, unaffected by the no-params
+    tail default."""
+    from hermes_webui_wrapper.features.agent_history.service import DEFAULT_LIMIT
+
+    _create_profile(client, "history-agent-explicit-zero")
+    total = DEFAULT_LIMIT + 56
+    messages = [
+        {"role": "user", "content": f"msg-{i}", "timestamp": float(i)}
+        for i in range(total)
+    ]
+    session = _make_session("history-agent-explicit-zero", messages=messages)
+
+    response = client.get(
+        f"/api/wrapper/v1/agent-history/agents/history-agent-explicit-zero/sessions/{session.session_id}/messages",
+        params={"offset": 0},
+    )
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["offset"] == 0
+    expected_contents = [f"msg-{i}" for i in range(DEFAULT_LIMIT)]
+    assert [m["content"] for m in body["messages"]] == expected_contents
+
+
 def test_messages_404s_for_session_owned_by_different_agent(client: TestClient) -> None:
     _create_profile(client, "history-agent-owner")
     _create_profile(client, "history-agent-intruder")

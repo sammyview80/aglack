@@ -26,7 +26,7 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   vi.unstubAllGlobals()
-  window.localStorage.clear()
+  window.sessionStorage.clear()
 })
 
 function renderChat(initialUrl: string) {
@@ -42,8 +42,9 @@ function renderChat(initialUrl: string) {
   return { router, ...renderWithClient(<RouterProvider router={router} />) }
 }
 
-describe('WorkspaceChat URL-driven agent/session', () => {
-  it('picks up ?agent= and ?session= from the URL instead of always defaulting to the first agent', async () => {
+describe('WorkspaceChat agent + sessionStorage selection', () => {
+  it('loads messages for the session stored in sessionStorage for the URL agent', async () => {
+    window.sessionStorage.setItem('hermano.chat.selected.ws-1.agent-b', 'sess-from-store')
     mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }] })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({
       messages: [{ role: 'assistant', content: 'restored from history', timestamp: 1 }],
@@ -53,11 +54,10 @@ describe('WorkspaceChat URL-driven agent/session', () => {
     })
     mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
 
-    renderChat('/workspaces/ws-1/chat?agent=agent-b&session=sess-from-url')
+    renderChat('/workspaces/ws-1/chat?agent=agent-b')
 
     await screen.findByText('restored from history')
-    // agent-b, not agent-a (the list's own first entry) — the URL wins.
-    expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledWith('ws-1', 'agent-b', 'sess-from-url')
+    expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledWith('ws-1', 'agent-b', 'sess-from-store')
     expect(mockedChatApi.createSession).not.toHaveBeenCalled()
   })
 
@@ -72,15 +72,26 @@ describe('WorkspaceChat URL-driven agent/session', () => {
     await waitFor(() => expect(screen.getByText('agent-a')).toBeInTheDocument())
   })
 
-  it('switching agent via the sidebar clears any session bound to the previous agent', async () => {
+  it('shows the new-chat empty state when the agent has no sessionStorage entry', async () => {
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
+
+    renderChat('/workspaces/ws-1/chat?agent=agent-a')
+
+    await screen.findByText(/Start a new conversation/i)
+    expect(mockedAgentHistoryApi.listAgentMessages).not.toHaveBeenCalled()
+    expect(mockedChatApi.getSessionStatus).not.toHaveBeenCalled()
+  })
+
+  it('switching agent via the sidebar uses each agent own sessionStorage entry', async () => {
     const user = userEvent.setup()
+    window.sessionStorage.setItem('hermano.chat.selected.ws-1.agent-a', 'agent-a-session')
+    window.sessionStorage.setItem('hermano.chat.selected.ws-1.agent-b', 'agent-b-session')
     mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
-    mockedChatApi.createSession.mockResolvedValue({ sessionId: 'agent-b-fresh-session' })
     mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
 
-    renderChat('/workspaces/ws-1/chat?agent=agent-a&session=agent-a-session')
+    renderChat('/workspaces/ws-1/chat?agent=agent-a')
 
     // "agent-a" now appears twice (sidebar item + plain header text, since
     // this screen has no agent picker of its own anymore) — wait for the
@@ -92,14 +103,16 @@ describe('WorkspaceChat URL-driven agent/session', () => {
     const sidebarChatSection = screen.getByTestId('sidebar-chat-section')
     await user.click(within(sidebarChatSection).getByText('agent-b'))
 
-    // agent-b must get its OWN session, never agent-a's stale session id.
     await waitFor(() =>
-      expect(mockedAgentHistoryApi.listAgentMessages).not.toHaveBeenCalledWith('ws-1', 'agent-b', 'agent-a-session'),
+      expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledWith('ws-1', 'agent-b', 'agent-b-session'),
     )
+    expect(mockedAgentHistoryApi.listAgentMessages).not.toHaveBeenCalledWith('ws-1', 'agent-b', 'agent-a-session')
   })
 
-  it('clicking an agent in the sidebar CHAT list also switches the real chat + updates the URL', async () => {
+  it('clicking an agent in the sidebar switches the real chat to that agent stored session', async () => {
     const user = userEvent.setup()
+    window.sessionStorage.setItem('hermano.chat.selected.ws-1.agent-a', 'agent-a-session')
+    window.sessionStorage.setItem('hermano.chat.selected.ws-1.agent-b', 'agent-b-session')
     mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockImplementation((_ws, agentName) =>
@@ -112,7 +125,7 @@ describe('WorkspaceChat URL-driven agent/session', () => {
     )
     mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
 
-    renderChat('/workspaces/ws-1/chat?agent=agent-a&session=agent-a-session')
+    renderChat('/workspaces/ws-1/chat?agent=agent-a')
 
     await screen.findByText('hello from agent-a')
 
@@ -131,8 +144,9 @@ describe('WorkspaceChat URL-driven agent/session', () => {
 })
 
 describe('WorkspaceChat new chat', () => {
-  it('clears the URL session param and starts a genuinely new session on the next send', async () => {
+  it('clears sessionStorage and starts a genuinely new session on the next send', async () => {
     const user = userEvent.setup()
+    window.sessionStorage.setItem('hermano.chat.selected.ws-1.agent-a', 'old-session')
     mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({
@@ -144,60 +158,28 @@ describe('WorkspaceChat new chat', () => {
     mockedChatApi.createSession.mockResolvedValue({ sessionId: 'brand-new-session' })
     mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
 
-    const { router } = renderChat('/workspaces/ws-1/chat?agent=agent-a&session=old-session')
+    renderChat('/workspaces/ws-1/chat?agent=agent-a')
 
     await screen.findByText('old conversation')
-    expect(router.state.location.search).toContain('session=old-session')
 
     await user.click(screen.getByRole('button', { name: /new chat/i }))
 
-    // Old conversation content is gone from the transcript immediately —
-    // starting a new chat must not leave stale turns visible.
     expect(screen.queryByText('old conversation')).not.toBeInTheDocument()
-    // The URL no longer carries the old (or any) session id — the very
-    // next message creates a real new session via createSession.
-    expect(router.state.location.search).not.toContain('session=')
+    expect(window.sessionStorage.getItem('hermano.chat.selected.ws-1.agent-a')).toBeNull()
+
+    await user.type(screen.getByPlaceholderText(/message this agent/i), 'fresh start{enter}')
 
     await waitFor(() => expect(mockedChatApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a'))
   })
 
-  it('clears the persisted localStorage session id, not only the URL', async () => {
-    const user = userEvent.setup()
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
-    mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
-    mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
-    // Deliberately never resolves — isolates the click's IMMEDIATE effect
-    // (does newChat clear the stale persisted id right away?) from
-    // whatever a subsequent createSession call would separately persist,
-    // which is a different, already-covered behavior.
-    mockedChatApi.createSession.mockReturnValue(new Promise(() => {}))
-    mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
-
-    // No explicit `?session=` here — this is the persisted-session path
-    // (the default chat tab), which is the one clicking New chat must
-    // actually clear. If newChat only cleared the URL and not
-    // localStorage, this exact case (no `?session=` to begin with) would
-    // rebind to the stale persisted id on the very next mount regardless.
-    window.localStorage.setItem('hermano.chat.session.ws-1.agent-a', 'persisted-old-session')
-
-    renderChat('/workspaces/ws-1/chat?agent=agent-a')
-    await waitFor(() => expect(screen.getByRole('button', { name: /new chat/i })).toBeInTheDocument())
-    await user.click(screen.getByRole('button', { name: /new chat/i }))
-
-    await waitFor(() =>
-      expect(window.localStorage.getItem('hermano.chat.session.ws-1.agent-a')).toBeNull(),
-    )
-  })
-
   it('disables the New chat button while a turn is actively streaming', async () => {
+    window.sessionStorage.setItem('hermano.chat.selected.ws-1.agent-a', 'some-session')
     mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
     mockedAgentHistoryApi.listAgentSessions.mockResolvedValue({ sessions: [], limit: 50, offset: 0 })
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({ messages: [], limit: 50, offset: 0, total: 0 })
-    // agent_running: true (an already-active stream) — reconnects on
-    // mount without any local send(), matching the reload-recovery path.
     mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: 'live-stream' })
 
-    renderChat('/workspaces/ws-1/chat?agent=agent-a&session=some-session')
+    renderChat('/workspaces/ws-1/chat?agent=agent-a')
 
     await waitFor(() => expect(screen.getByRole('button', { name: /new chat/i })).toBeDisabled())
   })

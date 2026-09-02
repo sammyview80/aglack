@@ -112,7 +112,7 @@ export const threadsUi = {
     'grid place-items-center rounded-md bg-transparent p-[5px] text-[var(--th-icon)] hover:bg-[var(--th-icon-hover)]',
   audienceSessionList: 'flex flex-col gap-0.5 overflow-auto',
   audienceSessionItem:
-    'flex w-full flex-col gap-0.5 rounded-md bg-transparent px-[9px] py-2 text-left hover:bg-[var(--th-hover)]',
+    'flex w-full flex-col gap-0.5 rounded-md bg-transparent px-[9px] py-2 text-left transition-[background,color,transform] duration-150 hover:bg-[var(--th-hover)]',
   audienceSessionTitle: 'text-[13.5px] font-semibold text-[var(--th-text)]',
   audienceSessionMeta: 'text-xs text-[var(--th-muted)]',
 

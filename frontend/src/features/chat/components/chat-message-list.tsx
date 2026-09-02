@@ -6,7 +6,7 @@ import { ToolActivityList, ToolActivitySummary } from '@/features/chat/component
 import { chatUi } from '@/features/chat/chat-ui'
 import type { ChatTurn } from '@/features/chat/hooks/use-chat'
 import type { ToolActivity } from '@/features/chat/types'
-import { AGENT_STATUS_WORDS, CyclingWords, PulseDot, TypingIndicator } from '@/components/motion'
+import { AGENT_STATUS_WORDS, CyclingWords, PulseDot, TypingIndicator, motionPresets } from '@/components/motion'
 import { cn } from '@/lib/utils'
 
 function messageTimestamp(at: number): number {
@@ -46,12 +46,24 @@ export function ChatMessageList({
     <div
       className={cn(chatUi.messageList, isEmpty && chatUi.messageListEmpty)}
     >
-      {isEmpty ? <ChatEmptyState agent={agent} onSuggest={onSuggest} /> : null}
-      {turns.map((turn) => {
+      {isEmpty ? (
+        <div className={motionPresets.panelEnter}>
+          <ChatEmptyState agent={agent} onSuggest={onSuggest} />
+        </div>
+      ) : null}
+      {turns.map((turn, index) => {
         const isUser = turn.role === 'user'
 
         return (
-          <div className={cn('flex w-full max-w-full', isUser ? 'justify-end' : 'justify-start')} key={turn.id}>
+          <div
+            className={cn(
+              'flex w-full max-w-full',
+              isUser ? 'justify-end' : 'justify-start',
+              motionPresets.messageEnter,
+            )}
+            key={turn.id}
+            style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}
+          >
             <div className={cn(chatUi.messageBlock, isUser && chatUi.messageBlockUser)}>
               <div className={chatUi.messageRow}>
                 {!isUser ? <AgentAvatar agent={agent} size="sm" /> : null}
@@ -93,7 +105,7 @@ export function ChatMessageList({
         )
       })}
       {isStreaming ? (
-        <div className="flex w-full justify-start">
+        <div className={cn('flex w-full justify-start', motionPresets.messageEnter)}>
           <div className={chatUi.messageBlock}>
             <div className={chatUi.messageRow}>
               <div className="relative shrink-0">

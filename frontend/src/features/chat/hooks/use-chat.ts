@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   cancelTurn,
@@ -9,6 +9,10 @@ import {
   startTurn,
 } from '@/features/chat/api'
 import { listAgentMessages } from '@/features/agent-history/api'
+import {
+  clearSelectedChatSessionId,
+  writeSelectedChatSessionId,
+} from '@/features/chat/chat-session-store'
 import { useChatStream } from '@/features/chat/hooks/use-chat-stream'
 import { queryKeys } from '@/lib/query-keys'
 import { errorMessage } from '@/lib/api'
@@ -67,41 +71,6 @@ function historyToTurns(sessionKey: string, messages: AgentMessage[]): ChatTurn[
     }))
 }
 
-const SESSION_STORAGE_PREFIX = 'hermano.chat.session'
-
-function sessionStorageKey(workspaceId: string, agent: string): string {
-  return `${SESSION_STORAGE_PREFIX}.${workspaceId}.${agent}`
-}
-
-/** Reads a previously-persisted session id for this exact workspace+agent
- * pair, if any. `localStorage` access is wrapped defensively — private
- * browsing / storage-disabled contexts throw on read/write in some
- * browsers, and this feature degrading to "no persistence" is strictly
- * better than a crash. */
-function readPersistedSessionId(workspaceId: string, agent: string): string | null {
-  try {
-    return window.localStorage.getItem(sessionStorageKey(workspaceId, agent))
-  } catch {
-    return null
-  }
-}
-
-function writePersistedSessionId(workspaceId: string, agent: string, sessionId: string): void {
-  try {
-    window.localStorage.setItem(sessionStorageKey(workspaceId, agent), sessionId)
-  } catch {
-    /* storage unavailable — persistence is best-effort, never fatal */
-  }
-}
-
-function clearPersistedSessionId(workspaceId: string, agent: string): void {
-  try {
-    window.localStorage.removeItem(sessionStorageKey(workspaceId, agent))
-  } catch {
-    /* storage unavailable — persistence is best-effort, never fatal */
-  }
-}
-
 /**
  * Ties session creation, turn start, and the SSE stream together for one
  * agent. Switching `agent` switches which session the chat is bound to —
@@ -109,32 +78,20 @@ function clearPersistedSessionId(workspaceId: string, agent: string): void {
  * `workspaceId` + `agent` so one agent's session can never leak into
  * another's (see AGENTS.md's chat-key rule).
  *
- * `options.sessionId`: bind explicitly to an already-existing session
- * (e.g. opened from agent history) instead of creating/reusing this
- * agent's default session.
+ * `options.sessionId`: the tab's selected session (from sessionStorage via
+ * WorkspaceChat). When absent, `createSession` runs once on first send.
  *
- * Session id + in-flight turn both survive a hard page reload:
- * - The resolved session id is persisted to `localStorage` per
- *   workspace+agent (`readPersistedSessionId`/`writePersistedSessionId`)
- *   so a reload binds back to the SAME session instead of `createSession`
- *   minting a brand new one and silently orphaning the old one — upstream's
- *   `/api/session/new` always creates a new session, it never returns an
- *   existing one, so nothing but explicit persistence recovers this.
- * - Whichever session id is bound to (explicit OR persisted OR freshly
- *   created), its history is seeded via agent-history so a reload never
- *   shows an empty transcript for a session that already has messages.
- * - Once bound to a known session id, a one-shot `GET /api/session/status`
- *   check (`getSessionStatus`) detects a turn already running server-side
- *   and reconnects this tab's SSE stream to it, instead of the reload
- *   silently losing track of a still-in-flight turn until its result
- *   shows up in history on the NEXT reload.
+ * Selected session id lives in `sessionStorage` per workspace+agent — one
+ * slot, replaced on every history click. Survives reload within the same
+ * tab but not across tabs.
  */
 export function useChat(
   workspaceId: string | undefined,
   agent: string | null,
-  options?: { sessionId?: string | null },
+  options?: { sessionId?: string | null; onSessionIdChange?: () => void },
 ) {
-  const explicitSessionId = options?.sessionId ?? null
+  const selectedSessionId = options?.sessionId ?? null
+  const onSessionIdChange = options?.onSessionIdChange
   const queryClient = useQueryClient()
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [streamId, setStreamId] = useState<string | null>(null)
@@ -143,6 +100,7 @@ export function useChat(
   // immediately on agent switch so the new agent's composer is never stuck
   // showing the old agent's in-flight state.
   const [isSending, setIsSending] = useState(false)
+  const [seededSessionId, setSeededSessionId] = useState<string | null>(null)
   const processedStreamId = useRef<string | null>(null)
   const sendSeqRef = useRef(0)
   const streamIdRef = useRef<string | null>(null)
@@ -152,80 +110,127 @@ export function useChat(
   const activeRef = useRef({ workspaceId, agent })
   activeRef.current = { workspaceId, agent }
 
-  const persistedSessionId =
-    !explicitSessionId && workspaceId && agent ? readPersistedSessionId(workspaceId, agent) : null
-  // The session id actually bound to right now, whichever source it came
-  // from — used for history seeding and the status/reconnect check below,
-  // both of which apply identically regardless of provenance.
-  const boundSessionId = explicitSessionId ?? persistedSessionId
+  const boundSessionId = selectedSessionId
 
   const sessionQuery = useQuery({
     queryKey: queryKeys.chat.session(workspaceId ?? '', agent ?? ''),
     queryFn: () => createSession(workspaceId as string, agent as string),
-    // A persisted session id from a prior visit is bound to directly
-    // (below), same as an explicit one — never mint a new session when a
-    // perfectly good one is already known for this exact workspace+agent.
-    enabled: Boolean(workspaceId && agent) && !boundSessionId,
+    // Lazy — first send creates the session via fetchQuery in send(). Avoids a
+    // createSession round trip on every agent open with no stored selection.
+    enabled: false,
     staleTime: Infinity,
     retry: false,
   })
   const sessionId = boundSessionId ?? sessionQuery.data?.sessionId ?? null
 
-  // Persist a freshly-created session id the moment it's known, so the
-  // VERY NEXT reload binds back to it instead of creating another one.
   useEffect(() => {
     if (workspaceId && agent && sessionQuery.data?.sessionId) {
-      writePersistedSessionId(workspaceId, agent, sessionQuery.data.sessionId)
+      writeSelectedChatSessionId(workspaceId, agent, sessionQuery.data.sessionId)
+      onSessionIdChange?.()
     }
-  }, [workspaceId, agent, sessionQuery.data?.sessionId])
+  }, [workspaceId, agent, sessionQuery.data?.sessionId, onSessionIdChange])
 
-  // Seed turn history from the bound session's past messages once loaded
-  // — a one-shot fetch, never polled, per this feature's no-polling rule.
-  // Runs for ANY known session id (explicit, persisted, or otherwise),
-  // not only an explicit one: a persisted session across a reload needs
-  // its transcript loaded exactly the same way an explicitly-opened one
-  // does — the previous session-id-only-explicit rule left a persisted
-  // reload showing an empty chat despite real history existing.
+  const messagesQueryKey = queryKeys.agentHistory.messages(
+    workspaceId ?? '',
+    agent ?? '',
+    boundSessionId ?? '',
+  )
+
   const historyQuery = useQuery({
-    queryKey: queryKeys.agentHistory.messages(workspaceId ?? '', agent ?? '', boundSessionId ?? ''),
+    queryKey: messagesQueryKey,
     queryFn: () => listAgentMessages(workspaceId as string, agent as string, boundSessionId as string),
     enabled: Boolean(workspaceId && agent && boundSessionId),
+    initialData: () => queryClient.getQueryData(messagesQueryKey),
+    staleTime: 30_000,
   })
   const seededRef = useRef<string | null>(null)
 
   // Backs the reconnect effect further below — see its own comment for why
   // this exists. One-shot (no polling), fired once `sessionId` resolves.
+  const statusQueryKey = queryKeys.chat.sessionStatus(workspaceId ?? '', agent ?? '', sessionId ?? '')
+
   const sessionStatusQuery = useQuery({
-    queryKey: queryKeys.chat.sessionStatus(workspaceId ?? '', agent ?? '', sessionId ?? ''),
+    queryKey: statusQueryKey,
     queryFn: () => getSessionStatus(workspaceId as string, agent as string, sessionId as string),
     enabled: Boolean(workspaceId && agent && sessionId),
-    staleTime: Infinity,
+    staleTime: 0,
+    refetchOnMount: 'always',
     retry: false,
   })
+  const awaitingActiveStreamCheck = Boolean(
+    boundSessionId &&
+      sessionId &&
+      !streamId &&
+      (sessionStatusQuery.isPending || sessionStatusQuery.isFetching),
+  )
+  const isLoadingTranscript = Boolean(
+    boundSessionId &&
+      !streamId &&
+      (awaitingActiveStreamCheck ||
+        (seededSessionId !== boundSessionId &&
+          (historyQuery.isPending || historyQuery.isFetching || Boolean(historyQuery.data)))),
+  )
   const reconnectedRef = useRef<string | null>(null)
+  const prevBindingRef = useRef<{
+    workspaceId?: string
+    agent: string | null
+    session: string | null
+  } | undefined>(undefined)
 
   useEffect(() => {
     streamIdRef.current = streamId
   }, [streamId])
 
   useEffect(() => {
-    setTurns([])
-    setStreamId(null)
-    setIsSending(false)
-    processedStreamId.current = null
-    seededRef.current = null
-    reconnectedRef.current = null
-    // Switching agents mid-turn does not stop the backend turn on its own —
-    // closing the browser EventSource only drops OUR connection. Explicitly
-    // cancel the outgoing agent's turn so returning to it later doesn't hit
-    // Hermes' active-stream 409. (Chosen over "leave it running": simpler
-    // and avoids surfacing that 409 at all.)
-    return () => {
+    const prev = prevBindingRef.current
+    const isInitialMount = prev === undefined
+    prevBindingRef.current = { workspaceId, agent, session: boundSessionId }
+
+    const agentOrWsChanged = Boolean(
+      prev && !isInitialMount && (prev.workspaceId !== workspaceId || prev.agent !== agent),
+    )
+    const sessionSwitch = Boolean(
+      prev &&
+        !isInitialMount &&
+        prev.agent === agent &&
+        prev.session !== boundSessionId &&
+        prev.session !== null &&
+        boundSessionId !== null,
+    )
+    const sessionCleared = Boolean(
+      prev &&
+        !isInitialMount &&
+        prev.agent === agent &&
+        prev.session !== null &&
+        boundSessionId === null,
+    )
+    const shouldReset = agentOrWsChanged || sessionSwitch || sessionCleared
+
+    if (shouldReset) {
+      const cancelAgent = agentOrWsChanged ? prev!.agent : agent
       const abandoned = streamIdRef.current
-      if (abandoned) void cancelTurn(workspaceId as string, agent as string, abandoned).catch(() => {})
+      if (abandoned && cancelAgent) {
+        void cancelTurn(workspaceId as string, cancelAgent, abandoned).catch(() => {})
+      }
+      setTurns([])
+      setStreamId(null)
+      setIsSending(false)
+      processedStreamId.current = null
+      seededRef.current = null
+      setSeededSessionId(null)
+      reconnectedRef.current = null
+    }
+
+    return () => {
+      if (!shouldReset) return
+      const cancelAgent = agentOrWsChanged ? prev!.agent : agent
+      const abandoned = streamIdRef.current
+      if (abandoned && cancelAgent) {
+        void cancelTurn(workspaceId as string, cancelAgent, abandoned).catch(() => {})
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, agent, explicitSessionId])
+  }, [workspaceId, agent, boundSessionId])
 
   // Seed turn history from the bound session's past messages once loaded,
   // before any new turn is sent on top of it.
@@ -233,6 +238,7 @@ export function useChat(
     if (!boundSessionId || !historyQuery.data) return
     if (seededRef.current === boundSessionId) return
     seededRef.current = boundSessionId
+    setSeededSessionId(boundSessionId)
     setTurns(historyToTurns(boundSessionId, historyQuery.data.messages))
   }, [boundSessionId, historyQuery.data])
 
@@ -244,6 +250,17 @@ export function useChat(
   // the agent/session reset effect above (declaration order = commit
   // order for same-render effects) so switching agents can never leave a
   // stale `setStreamId` racing the reset's own `setStreamId(null)`.
+  const bindActiveStream = useCallback((activeStreamId: string | null) => {
+    if (!activeStreamId) return
+    const current = streamIdRef.current
+    if (current === activeStreamId) {
+      setStreamId(null)
+      requestAnimationFrame(() => setStreamId(activeStreamId))
+      return
+    }
+    setStreamId(activeStreamId)
+  }, [])
+
   useEffect(() => {
     if (!sessionId || !sessionStatusQuery.data) return
     if (reconnectedRef.current === sessionId) return
@@ -252,10 +269,8 @@ export function useChat(
     // send in flight) — this effect exists only to RECOVER a turn this
     // tab has no local memory of.
     if (streamIdRef.current) return
-    if (sessionStatusQuery.data.activeStreamId) {
-      setStreamId(sessionStatusQuery.data.activeStreamId)
-    }
-  }, [sessionId, sessionStatusQuery.data])
+    bindActiveStream(sessionStatusQuery.data.activeStreamId)
+  }, [sessionId, sessionStatusQuery.data, bindActiveStream])
 
   const stream = useChatStream({ workspaceId, agent, sessionId, streamId })
 
@@ -285,16 +300,24 @@ export function useChat(
   })
 
   const reloadMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!workspaceId || !agent || !sessionId) {
-        return Promise.reject(new Error('No active session to reload'))
+        throw new Error('No active session to reload')
       }
-      return listAgentMessages(workspaceId, agent, sessionId)
+      const [messages, status] = await Promise.all([
+        listAgentMessages(workspaceId, agent, sessionId),
+        getSessionStatus(workspaceId, agent, sessionId),
+      ])
+      return { messages, status }
     },
-    onSuccess: (data) => {
+    onSuccess: ({ messages, status }) => {
       if (!sessionId) return
       seededRef.current = sessionId
-      setTurns(historyToTurns(sessionId, data.messages))
+      setSeededSessionId(sessionId)
+      setTurns(historyToTurns(sessionId, messages.messages))
+      queryClient.setQueryData(messagesQueryKey, messages)
+      queryClient.setQueryData(statusQueryKey, status)
+      bindActiveStream(status.activeStreamId)
     },
     onError: (err) => handleError(err, { fallback: 'Could not reload messages' }),
   })
@@ -329,11 +352,6 @@ export function useChat(
       // busy dot (AgentSummary.isWorking) clears for this agent. Mirrors
       // the `send()` invalidation below that lights it in the first place.
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentHistory.agents(workspaceId) })
-      if (sessionId) {
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.agentHistory.messages(workspaceId, agent, sessionId),
-        })
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.terminal, streamId])
@@ -363,7 +381,8 @@ export function useChat(
           staleTime: Infinity,
         })
         activeSessionId = session.sessionId
-        writePersistedSessionId(workspaceId, agent, activeSessionId)
+        writeSelectedChatSessionId(workspaceId, agent, activeSessionId)
+        onSessionIdChange?.()
       } catch (err) {
         handleError(err, { fallback: 'Could not start a session for this agent' })
         return
@@ -430,13 +449,14 @@ export function useChat(
   function newChat() {
     if (streamId) return
     if (workspaceId && agent) {
-      clearPersistedSessionId(workspaceId, agent)
+      clearSelectedChatSessionId(workspaceId, agent)
       void queryClient.invalidateQueries({ queryKey: queryKeys.chat.session(workspaceId, agent) })
       queryClient.removeQueries({ queryKey: queryKeys.chat.session(workspaceId, agent) })
     }
     setTurns([])
     processedStreamId.current = null
     seededRef.current = null
+    setSeededSessionId(null)
     reconnectedRef.current = null
     lastMessageRef.current = null
   }
@@ -448,9 +468,9 @@ export function useChat(
     if (lastMessageRef.current) void send(lastMessageRef.current)
   }
 
-  /** Re-fetch session history from the server — user-triggered refresh. */
+  /** Re-fetch session history and re-check for a live server-side stream. */
   function reloadMessages() {
-    if (streamId) return
+    if (streamIdRef.current) return
     void reloadMutation.mutate()
   }
 
@@ -472,6 +492,7 @@ export function useChat(
     approval: stream.approval,
     clarify: stream.clarify,
     canRetry: stream.canRetry,
+    isLoadingTranscript,
     sessionError: sessionQuery.isError ? errorMessage(sessionQuery.error, 'Could not start a chat session') : null,
     send,
     stop,

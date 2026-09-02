@@ -9,6 +9,7 @@ import { relativeTime } from '@/features/agent-history/components/relative-time'
 import { AgentsSkeleton } from '@/features/agent-history/components/agents-skeleton'
 import { SessionsSkeleton } from '@/features/agent-history/components/sessions-skeleton'
 import { useAgentHistoryPrefetch, useAgentSessions, useAgents } from '@/features/agent-history/hooks/use-agent-history'
+import { AnimatedPanel, motionPresets } from '@/components/motion'
 import { threadsUi } from '@/components/threads-ui'
 
 export function AgentHistoryPanel({
@@ -109,7 +110,8 @@ export function AgentHistoryPanel({
 
   if (selectedAgent) {
     return (
-      <div className={threadsUi.audienceHistory} data-testid="audience-history">
+      <AnimatedPanel swapKey={selectedAgent} className={threadsUi.audienceHistory} animation={motionPresets.contentSwap}>
+        <div data-testid="audience-history">
         <div className={threadsUi.audienceHistoryHeader}>
           <button type="button" className={threadsUi.audienceHistoryBack} onClick={closeAgent} aria-label="Back to agents">
             <ArrowLeft size={14} /> {selectedAgent}
@@ -135,7 +137,8 @@ export function AgentHistoryPanel({
           onSelect={selectSession}
           onHoverSession={(session) => prefetchMessages(selectedAgent, session.sessionId)}
         />
-      </div>
+        </div>
+      </AnimatedPanel>
     )
   }
 
@@ -208,8 +211,12 @@ function SessionsList({
 
   return (
     <ul className={threadsUi.audienceSessionList}>
-      {sessions.map((session) => (
-        <li key={session.sessionId}>
+      {sessions.map((session, index) => (
+        <li
+          key={session.sessionId}
+          className={motionPresets.messageEnter}
+          style={{ animationDelay: `${Math.min(index, 10) * 35}ms` }}
+        >
           <button
             type="button"
             className={threadsUi.audienceSessionItem}

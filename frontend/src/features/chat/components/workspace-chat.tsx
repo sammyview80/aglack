@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useReducer } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ArrowDown, RefreshCw, SquarePen } from 'lucide-react'
 import { ThreadsShell } from '@/components/threads-shell'
@@ -7,11 +7,16 @@ import { AgentAvatar } from '@/features/chat/components/agent-avatar'
 import { chatUi } from '@/features/chat/chat-ui'
 import { threadsUi } from '@/components/threads-ui'
 import { Hint } from '@/components/ui/tooltip'
-import { AGENT_STATUS_WORDS, CyclingWords, PulseDot, motionPresets } from '@/components/motion'
+import { AGENT_STATUS_WORDS, AnimatedPanel, CyclingWords, PulseDot, motionPresets } from '@/components/motion'
 import { cn } from '@/lib/utils'
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { useChat } from '@/features/chat/hooks/use-chat'
+import {
+  readSelectedChatSessionId,
+  writeSelectedChatSessionId,
+} from '@/features/chat/chat-session-store'
 import { ChatMessageList } from '@/features/chat/components/chat-message-list'
+import { ChatTranscriptSkeleton } from '@/features/chat/components/chat-transcript-skeleton'
 import { ChatComposer } from '@/features/chat/components/chat-composer'
 import { PendingInputPanel } from '@/features/chat/components/pending-input-panel'
 import { selectPendingInput } from '@/features/chat/components/pending-input'
@@ -29,17 +34,12 @@ type WorkspaceChatProps = {
  * session and SSE stream — `useChat` threads `agent` through every gateway
  * call as `?agent=<name>`, never a hidden global.
  *
- * Which agent + session is active is reflected in the URL as
- * `?agent=<name>&session=<id>` (see `useSearchParams` below), so a reload
- * lands back on the exact same conversation instead of silently falling
- * back to the first agent's default session. This URL is the SINGLE
- * source of truth for "which agent is this chat showing" — both of
- * ThreadsShell's own agent-selection surfaces (the CHAT sidebar list AND
- * the AUDIENCE panel) are wired as CONTROLLED views of this same state
- * (`selectedAgent`/`onSelectAgent`, `onSelectSession`), not independent
- * selections of their own. Clicking an agent in either the sidebar or
- * AUDIENCE, or a session in AUDIENCE, all funnel through the same
- * `selectAgent`/`selectSession` functions below and update the same URL.
+ * Which agent is active is in the URL as `?agent=<name>` only.
+ * Each agent's selected session id lives in tab `sessionStorage` under
+ * its own key (`hermano.chat.selected.<workspace>.<agent>`). On agent
+ * click we read THAT agent's slot synchronously — never reuse another
+ * agent's session. Stored session → load messages + reconnect stream.
+ * No stored session → new-chat empty state until first send or history pick.
  *
  * This screen itself has NO agent picker of its own anymore — the
  * sidebar/AUDIENCE ARE the picker, and duplicating that choice here
@@ -53,12 +53,12 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
   const agents = agentsQuery.data?.agents ?? []
   const [searchParams, setSearchParams] = useSearchParams()
   const agent = searchParams.get('agent')
-  const sessionId = searchParams.get('session')
+  const [, bumpSessionStore] = useReducer((n: number) => n + 1, 0)
+  // Read synchronously from the CURRENT agent's sessionStorage slot every
+  // render — never hold a stale session id across agent switches.
+  const selectedSessionId = agent ? readSelectedChatSessionId(workspaceId, agent) : null
   const pendingInputFocus = usePendingInputFocus()
 
-  // Default to the first real agent only once the list loads AND the URL
-  // doesn't already name one — never override an explicit `?agent=` (e.g.
-  // from a reload or a shared link) with the list's own ordering.
   useEffect(() => {
     if (!agent && agents.length > 0) {
       setSearchParams((prev) => {
@@ -73,28 +73,28 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev)
       next.set('agent', name)
-      // Switching agents leaves the old agent's session behind — a
-      // different agent's session id is meaningless once bound here.
-      next.delete('session')
       return next
     })
   }
 
-  /** Wired to ThreadsShell's `onSelectSession` (-> AgentHistoryPanel).
-   * Clicking a session in AUDIENCE both switches this chat pane to that
-   * exact agent+session AND updates the URL to match — the two were
-   * previously disconnected: clicking a session only changed the panel's
-   * own separate read-only viewer, never the real, sendable chat. */
+  /** Replaces this agent's sessionStorage slot, then binds chat the same
+   * way as clicking the agent when that slot already had a value. */
   function selectSession(agentName: string, session: AgentSession) {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev)
-      next.set('agent', agentName)
-      next.set('session', session.sessionId)
-      return next
-    })
+    writeSelectedChatSessionId(workspaceId, agentName, session.sessionId)
+    bumpSessionStore()
+    if (agentName !== agent) {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev)
+        next.set('agent', agentName)
+        return next
+      })
+    }
   }
 
-  const chat = useChat(workspaceId, agent, { sessionId })
+  const chat = useChat(workspaceId, agent, {
+    sessionId: selectedSessionId,
+    onSessionIdChange: bumpSessionStore,
+  })
   const pendingInput = selectPendingInput(chat.approval, chat.clarify)
   const transcriptScroll = useChatTranscriptScroll({
     turnCount: chat.turns.length,
@@ -103,25 +103,16 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
     reasoningText: chat.reasoningText,
     toolCount: chat.tools.length,
     agent,
-    sessionId,
+    sessionId: selectedSessionId,
+    isLoadingTranscript: chat.isLoadingTranscript,
   })
 
-  /** Starts a genuinely new, separate session for the CURRENT agent —
-   * clears this hook's own persisted/cached session state (`chat.newChat`)
-   * AND this component's own `?session=` URL param together, since
-   * `useChat` binds an explicit `options.sessionId` at higher priority
-   * than anything it clears internally (see `useChat`'s own doc comment
-   * on `newChat`) — clearing only one half would leave the chat still
-   * bound to the old session. The old session itself is not deleted; it
-   * remains fully visible via AUDIENCE, just no longer the active one. */
   function newChat() {
     chat.newChat()
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev)
-      next.delete('session')
-      return next
-    })
+    bumpSessionStore()
   }
+
+  const transcriptKey = `${agent ?? ''}:${selectedSessionId ?? 'new'}`
 
   return (
     <ThreadsShell
@@ -138,24 +129,26 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
             <div className={chatUi.headerRow}>
               {agent ? (
                 <>
-                  <div className="relative shrink-0">
+                  <AnimatedPanel swapKey={agent} animation={motionPresets.contentSwap} className="relative shrink-0">
                     <AgentAvatar agent={agent} size="md" />
                     {chat.isStreaming ? (
                       <PulseDot className={chatUi.activeDotMd} label="Agent is responding" />
                     ) : null}
-                  </div>
-                  <div className={chatUi.headerIdentity}>
+                  </AnimatedPanel>
+                  <AnimatedPanel swapKey={agent} animation={motionPresets.contentSwap} className={chatUi.headerIdentity}>
                     <strong className={chatUi.headerName}>{agent}</strong>
                     <span className={chatUi.headerMeta}>
                       {chat.isStreaming ? (
                         <CyclingWords words={AGENT_STATUS_WORDS} className="text-xs not-italic" />
+                      ) : chat.isLoadingTranscript ? (
+                        'Loading…'
                       ) : chat.turns.length > 0 ? (
                         `${chat.turns.length} message${chat.turns.length === 1 ? '' : 's'}`
                       ) : (
                         'New conversation'
                       )}
                     </span>
-                  </div>
+                  </AnimatedPanel>
                 </>
               ) : (
                 <span className={chatUi.headerMeta}>Chat</span>
@@ -167,7 +160,7 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
                       type="button"
                       className={chatUi.headerButton}
                       onClick={chat.reloadMessages}
-                      disabled={chat.isStreaming || chat.isReloadingMessages}
+                      disabled={!selectedSessionId || chat.isStreaming || chat.isReloadingMessages}
                       aria-label="Reload messages"
                     >
                       <RefreshCw
@@ -202,46 +195,54 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
             ) : agent ? (
               <>
                 <div className={chatUi.transcript} ref={transcriptScroll.ref}>
-                  <div className={chatUi.transcriptInner}>
-                    <ChatMessageList
-                      agent={agent}
-                      turns={chat.turns}
-                      isStreaming={chat.isStreaming}
-                      streamingText={chat.assistantText}
-                      reasoningText={chat.reasoningText}
-                      tools={chat.tools}
-                      onSuggest={chat.send}
-                    />
-                    {pendingInput?.kind === 'clarify' ? (
-                      <button
-                        type="button"
-                        className={chatUi.scrollFab}
-                        onClick={pendingInputFocus.scrollToAndFocus}
-                        aria-label="Scroll to required clarification input"
-                      >
-                        Answer required
-                        <ArrowDown size={14} />
-                      </button>
-                    ) : transcriptScroll.showScrollButton ? (
-                      <button
-                        type="button"
-                        className={chatUi.scrollFab}
-                        onClick={() => transcriptScroll.scrollToBottom('smooth')}
-                        aria-label="Scroll to latest messages"
-                      >
-                        Latest
-                        <ArrowDown size={14} />
-                      </button>
-                    ) : null}
-                  </div>
+                  <AnimatedPanel swapKey={transcriptKey} className={chatUi.transcriptInner}>
+                    {chat.isLoadingTranscript ? (
+                      <ChatTranscriptSkeleton />
+                    ) : (
+                      <>
+                        <ChatMessageList
+                          agent={agent}
+                          turns={chat.turns}
+                          isStreaming={chat.isStreaming}
+                          streamingText={chat.assistantText}
+                          reasoningText={chat.reasoningText}
+                          tools={chat.tools}
+                          onSuggest={chat.send}
+                        />
+                        {pendingInput?.kind === 'clarify' ? (
+                          <button
+                            type="button"
+                            className={chatUi.scrollFab}
+                            onClick={pendingInputFocus.scrollToAndFocus}
+                            aria-label="Scroll to required clarification input"
+                          >
+                            Answer required
+                            <ArrowDown size={14} />
+                          </button>
+                        ) : transcriptScroll.showScrollButton ? (
+                          <button
+                            type="button"
+                            className={chatUi.scrollFab}
+                            onClick={() => transcriptScroll.scrollToBottom('smooth')}
+                            aria-label="Scroll to latest messages"
+                          >
+                            Latest
+                            <ArrowDown size={14} />
+                          </button>
+                        ) : null}
+                      </>
+                    )}
+                  </AnimatedPanel>
                 </div>
                 {pendingInput ? (
-                  <PendingInputPanel
-                    pendingInput={pendingInput}
-                    focusRef={pendingInputFocus.ref}
-                    onRespondApproval={chat.respondApproval}
-                    onRespondClarify={chat.respondClarify}
-                  />
+                  <AnimatedPanel swapKey={pendingInput.kind} animation={motionPresets.panelEnter}>
+                    <PendingInputPanel
+                      pendingInput={pendingInput}
+                      focusRef={pendingInputFocus.ref}
+                      onRespondApproval={chat.respondApproval}
+                      onRespondClarify={chat.respondClarify}
+                    />
+                  </AnimatedPanel>
                 ) : null}
                 {chat.canRetry ? (
                   <p className={chatUi.errorText}>

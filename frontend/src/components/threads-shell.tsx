@@ -29,7 +29,7 @@ import { useWorkspaceList } from '@/features/workspace/hooks/use-workspace-list'
 import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { RandomAvatar } from '@/components/random-avatar'
-import { PulseDot } from '@/components/motion'
+import { PulseDot, motionPresets } from '@/components/motion'
 import { avatarToneStyles, threadsUi, type AvatarTone } from '@/components/threads-ui'
 import { chatUi } from '@/features/chat/chat-ui'
 import type { AgentSession } from '@/features/agent-history/types'
@@ -294,7 +294,7 @@ export function ThreadsShell({
                 <span>▪▪</span>
                 <span>▪▪</span>
               </div>
-              <strong>Threads</strong>
+              <strong>Aglack</strong>
               <ChevronDown size={15} strokeWidth={2.5} />
             </button>
             <button
@@ -467,7 +467,7 @@ export function ThreadsShell({
                 <PixelAvatar seed="profile-2" tone="lavender" small />
               </button>
               {headerMore ? (
-                <div className={threadsUi.headerMenu}>
+                <div className={cn(threadsUi.headerMenu, motionPresets.dropdownEnter)}>
                   <button type="button" className={threadsUi.menuButton} onClick={copyLink}>
                     Copy link
                   </button>
@@ -506,7 +506,10 @@ export function ThreadsShell({
         </section>
 
         {audiencePanelOpen ? (
-          <div className={threadsUi.audienceBackdrop} onClick={() => setAudiencePanelOpen(false)} />
+          <div
+            className={cn(threadsUi.audienceBackdrop, motionPresets.overlayEnter)}
+            onClick={() => setAudiencePanelOpen(false)}
+          />
         ) : null}
 
         <aside className={cn(threadsUi.audiencePanel, audiencePanelOpen && threadsUi.audiencePanelOpen)}>
@@ -524,7 +527,7 @@ export function ThreadsShell({
               <Laptop size={14} fill="currentColor" /> {audience} <ChevronDown size={14} fill="currentColor" />
             </button>
             {audienceOpen ? (
-              <div className={threadsUi.audienceMenu}>
+              <div className={cn(threadsUi.audienceMenu, motionPresets.dropdownEnter)}>
                 {PLACEHOLDER_CHANNELS.map((channel) => (
                   <button
                     key={channel.label}
@@ -552,8 +555,14 @@ export function ThreadsShell({
       </div>
 
       {composeOpen ? (
-        <div className={threadsUi.modalBackdrop} onClick={() => setComposeOpen(false)}>
-          <div className={threadsUi.composeModal} onClick={(e) => e.stopPropagation()}>
+        <div
+          className={cn(threadsUi.modalBackdrop, motionPresets.overlayEnter)}
+          onClick={() => setComposeOpen(false)}
+        >
+          <div
+            className={cn(threadsUi.composeModal, motionPresets.modalEnter)}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className={threadsUi.modalHeader}>
               <strong>New thread</strong>
               <button type="button" onClick={() => setComposeOpen(false)} aria-label="Close">

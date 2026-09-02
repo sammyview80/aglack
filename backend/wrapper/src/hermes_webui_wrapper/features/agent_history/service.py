@@ -215,6 +215,7 @@ def list_messages(
     offset: str | int | None = None,
 ) -> dict[str, Any]:
     _require_known_profile(name)
+    offset_unset = offset is None
     limit, offset = _validate_pagination(limit, offset)
 
     from api.models import Session
@@ -229,6 +230,12 @@ def list_messages(
         )
 
     all_messages = session.messages or []
+    if offset_unset:
+        # No caller ever passes offset today (grepped frontend/src) — default
+        # to the newest page (the live tail) instead of offset=0's oldest
+        # page. An explicit offset (even "0") keeps the from-the-start
+        # contract for a future "load older messages" page.
+        offset = max(0, len(all_messages) - limit)
     page = all_messages[offset : offset + limit]
     messages = [
         {

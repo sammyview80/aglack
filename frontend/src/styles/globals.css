@@ -38,6 +38,8 @@
   --th-assistant-code: var(--th-sidebar-2);
   color: var(--th-text);
   font-size: 14px;
+  --motion-duration: 220ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 html[data-theme='dark'] .threads-app,
 .dark .threads-app {
@@ -74,7 +76,10 @@ html[data-theme='dark'] .threads-app,
   --th-assistant-code: var(--th-sidebar-2);
 }
 .threads-app a { color: inherit; text-decoration: none; }
-.threads-app button { border: 0; cursor: pointer; font: inherit; }
+.threads-app button { border: 0; cursor: pointer; font: inherit; transition: background-color var(--motion-duration) var(--motion-ease), color var(--motion-duration) var(--motion-ease), border-color var(--motion-duration) var(--motion-ease), box-shadow var(--motion-duration) var(--motion-ease), transform var(--motion-duration) var(--motion-ease), opacity var(--motion-duration) var(--motion-ease); }
+@media (prefers-reduced-motion: reduce) {
+  .threads-app button { transition: none; }
+}
 .threads-app input, .threads-app textarea { font: inherit; }
 .threads-app select { color: var(--th-text); background: var(--th-card); border-color: var(--th-line); }
 

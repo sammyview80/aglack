@@ -86,12 +86,14 @@ beforeEach(() => {
   // leaks a session id into a later, unrelated test via the same
   // workspaceId+agent key.
   window.localStorage.clear()
+  window.sessionStorage.clear()
 })
 
 afterEach(() => {
   vi.clearAllMocks()
   vi.unstubAllGlobals()
   window.localStorage.clear()
+  window.sessionStorage.clear()
 })
 
 describe('useChat agent-switch race', () => {
@@ -108,15 +110,14 @@ describe('useChat agent-switch race', () => {
       initialProps: { agent: 'agent-a' as string | null },
     })
 
-    await waitFor(() => expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a'))
-
     await act(async () => {
       void result.current.send('hello from A')
     })
 
+    await waitFor(() => expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a'))
+
     // Switch agents before startTurn (issued for agent-a) resolves.
     rerender({ agent: 'agent-b' })
-    await waitFor(() => expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-b'))
 
     await act(async () => {
       pendingStartTurn.resolve({
@@ -152,8 +153,6 @@ describe('useChat agent-switch race', () => {
       initialProps: { agent: 'agent-a' as string | null },
     })
 
-    await waitFor(() => expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a'))
-
     await act(async () => {
       await result.current.send('hello')
     })
@@ -178,8 +177,6 @@ describe('useChat reasoning/tool persistence', () => {
       wrapper,
       initialProps: { agent: 'agent-a' as string | null },
     })
-
-    await waitFor(() => expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a'))
 
     await act(async () => {
       await result.current.send('what model are you using?')
@@ -229,8 +226,6 @@ describe('useChat reasoning/tool persistence', () => {
       initialProps: { agent: 'agent-a' as string | null },
     })
 
-    await waitFor(() => expect(mockedApi.createSession).toHaveBeenCalledWith('ws-1', 'agent-a'))
-
     await act(async () => {
       await result.current.send('hi')
     })
@@ -248,9 +243,8 @@ describe('useChat reasoning/tool persistence', () => {
   })
 })
 
-describe('useChat session persistence across reload', () => {
-  it('binds to a persisted session id instead of creating a new one', async () => {
-    window.localStorage.setItem('hermano.chat.session.ws-1.agent-a', 'persisted-session')
+describe('useChat session selection via sessionStorage', () => {
+  it('binds to a selected session id instead of creating a new one', async () => {
     mockedAgentHistoryApi.listAgentMessages.mockResolvedValueOnce({
       messages: [{ role: 'user', content: 'earlier message', timestamp: 1 }],
       limit: 50,
@@ -258,59 +252,148 @@ describe('useChat session persistence across reload', () => {
       total: 1,
     })
 
+    const { result } = renderHook(
+      ({ sessionId }) => useChat('ws-1', 'agent-a', { sessionId }),
+      { wrapper, initialProps: { sessionId: 'selected-session' as string | null } },
+    )
+
+    await waitFor(() => expect(result.current.turns.length).toBe(1))
+
+    expect(mockedApi.createSession).not.toHaveBeenCalled()
+    expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledWith('ws-1', 'agent-a', 'selected-session')
+    expect(result.current.turns[0].text).toBe('earlier message')
+  })
+
+  it('writes a freshly-created session id to sessionStorage on first send', async () => {
+    mockedApi.createSession.mockReset()
+    mockedApi.createSession.mockResolvedValue({ sessionId: 'brand-new-session' })
+    mockedApi.startTurn.mockResolvedValueOnce({
+      streamId: 'stream-1',
+      sessionId: 'brand-new-session',
+      pendingStartedAt: 0,
+      turnId: null,
+      title: 'title',
+    })
+
     const { result } = renderHook(({ agent }) => useChat('ws-1', agent), {
       wrapper,
       initialProps: { agent: 'agent-a' as string | null },
     })
 
-    await waitFor(() => expect(result.current.turns.length).toBe(1))
-
-    // createSession must NEVER be called when a persisted session id
-    // already exists for this exact workspace+agent — calling it would
-    // silently mint a second, unrelated session and orphan the real one.
-    expect(mockedApi.createSession).not.toHaveBeenCalled()
-    expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledWith('ws-1', 'agent-a', 'persisted-session')
-    expect(result.current.turns[0].text).toBe('earlier message')
-  })
-
-  it('persists a freshly-created session id so the next mount reuses it', async () => {
-    mockedApi.createSession.mockResolvedValueOnce({ sessionId: 'brand-new-session' })
-
-    renderHook(({ agent }) => useChat('ws-1', agent), {
-      wrapper,
-      initialProps: { agent: 'agent-a' as string | null },
+    await act(async () => {
+      await result.current.send('hello')
     })
 
     await waitFor(() =>
-      expect(window.localStorage.getItem('hermano.chat.session.ws-1.agent-a')).toBe('brand-new-session'),
+      expect(window.sessionStorage.getItem('hermano.chat.selected.ws-1.agent-a')).toBe('brand-new-session'),
     )
   })
 
   it('reconnects to an already-active stream detected via session status', async () => {
-    window.localStorage.setItem('hermano.chat.session.ws-1.agent-a', 'persisted-session')
     mockedApi.getSessionStatus.mockResolvedValueOnce({ activeStreamId: 'still-running-stream' })
 
-    const { result } = renderHook(({ agent }) => useChat('ws-1', agent), {
-      wrapper,
-      initialProps: { agent: 'agent-a' as string | null },
-    })
+    const { result } = renderHook(
+      ({ sessionId }) => useChat('ws-1', 'agent-a', { sessionId }),
+      { wrapper, initialProps: { sessionId: 'selected-session' as string | null } },
+    )
 
-    // Reconnected without ever calling startTurn — this stream already
-    // exists server-side, from before the reload.
     await waitFor(() => expect(result.current.isStreaming).toBe(true))
     expect(mockedApi.startTurn).not.toHaveBeenCalled()
   })
 
   it('does not reconnect when session status reports no active stream', async () => {
-    window.localStorage.setItem('hermano.chat.session.ws-1.agent-a', 'persisted-session')
     mockedApi.getSessionStatus.mockResolvedValueOnce({ activeStreamId: null })
 
-    const { result } = renderHook(({ agent }) => useChat('ws-1', agent), {
-      wrapper,
-      initialProps: { agent: 'agent-a' as string | null },
-    })
+    const { result } = renderHook(
+      ({ sessionId }) => useChat('ws-1', 'agent-a', { sessionId }),
+      { wrapper, initialProps: { sessionId: 'selected-session' as string | null } },
+    )
 
     await waitFor(() => expect(mockedApi.getSessionStatus).toHaveBeenCalled())
     expect(result.current.isStreaming).toBe(false)
+  })
+
+  it('keeps transcript loading until session status resolves for an active-stream check', async () => {
+    let resolveStatus: (value: { activeStreamId: string | null }) => void = () => {}
+    mockedApi.getSessionStatus.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStatus = resolve
+      }),
+    )
+    mockedAgentHistoryApi.listAgentMessages.mockResolvedValueOnce({
+      messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
+      limit: 50,
+      offset: 0,
+      total: 1,
+    })
+
+    const { result } = renderHook(
+      ({ sessionId }) => useChat('ws-1', 'agent-a', { sessionId }),
+      { wrapper, initialProps: { sessionId: 'selected-session' as string | null } },
+    )
+
+    expect(result.current.isLoadingTranscript).toBe(true)
+
+    await act(async () => {
+      resolveStatus({ activeStreamId: null })
+    })
+
+    await waitFor(() => expect(result.current.isLoadingTranscript).toBe(false))
+  })
+
+  it('reloadMessages refetches history and reconnects SSE when session status reports an active stream', async () => {
+    mockedApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
+    mockedAgentHistoryApi.listAgentMessages.mockResolvedValue({
+      messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
+      limit: 50,
+      offset: 0,
+      total: 1,
+    })
+
+    const { result } = renderHook(
+      ({ sessionId }) => useChat('ws-1', 'agent-a', { sessionId }),
+      { wrapper, initialProps: { sessionId: 'selected-session' as string | null } },
+    )
+
+    await waitFor(() => expect(result.current.isLoadingTranscript).toBe(false))
+    expect(result.current.isStreaming).toBe(false)
+
+    mockedAgentHistoryApi.listAgentMessages.mockResolvedValueOnce({
+      messages: [
+        { role: 'user', content: 'hello', timestamp: 1 },
+        { role: 'assistant', content: 'partial…', timestamp: 2 },
+      ],
+      limit: 50,
+      offset: 0,
+      total: 2,
+    })
+    mockedApi.getSessionStatus.mockResolvedValueOnce({ activeStreamId: 'live-stream' })
+
+    await act(async () => {
+      result.current.reloadMessages()
+    })
+
+    await waitFor(() => expect(result.current.isStreaming).toBe(true))
+    expect(mockedAgentHistoryApi.listAgentMessages).toHaveBeenCalledTimes(2)
+    expect(mockedApi.getSessionStatus).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('useChat session id stability', () => {
+  it('does not reset or cancel when the same session id is set again', async () => {
+    mockedApi.getSessionStatus.mockResolvedValue({ activeStreamId: 'live-stream' })
+
+    const { result, rerender } = renderHook(
+      ({ sessionId }: { sessionId: string | null }) => useChat('ws-1', 'agent-a', { sessionId }),
+      { wrapper, initialProps: { sessionId: 'selected-session' } },
+    )
+
+    await waitFor(() => expect(result.current.isStreaming).toBe(true))
+
+    mockedApi.cancelTurn.mockClear()
+    rerender({ sessionId: 'selected-session' })
+
+    await waitFor(() => expect(result.current.isStreaming).toBe(true))
+    expect(mockedApi.cancelTurn).not.toHaveBeenCalled()
   })
 })

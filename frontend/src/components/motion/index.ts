@@ -1,6 +1,7 @@
 export { motionPresets } from '@/components/motion/presets'
 export { useCyclingWords } from '@/components/motion/use-cycling-words'
 export { AnimatedSwap } from '@/components/motion/animated-swap'
+export { AnimatedPanel } from '@/components/motion/animated-panel'
 export { CyclingWords } from '@/components/motion/cycling-words'
 export { TypingIndicator } from '@/components/motion/typing-indicator'
 export { PulseDot } from '@/components/motion/pulse-dot'
