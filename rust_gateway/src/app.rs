@@ -76,7 +76,14 @@ pub fn build_router(
     let cors = CorsLayer::new()
         .allow_origin(origin)
         .allow_methods([Method::GET, Method::POST, Method::DELETE])
-        .allow_headers([axum::http::header::CONTENT_TYPE]);
+        .allow_headers([axum::http::header::CONTENT_TYPE])
+        // The chat proxy's browser client sends `credentials: 'include'`
+        // (see frontend/src/features/chat/api.ts's own doc comment — the
+        // gateway translates `?agent=` into a `hermes_profile` cookie the
+        // container requires). tower_http rejects pairing this with a
+        // wildcard origin, which is fine: `allow_origin` above is always
+        // one exact configured origin, never `*`.
+        .allow_credentials(true);
 
     let mut workspaces_router = Router::new()
         .route(
@@ -227,6 +234,51 @@ mod tests {
             .to_str()
             .unwrap();
         assert_eq!(allow_origin, "http://127.0.0.1:5173");
+    }
+
+    /// The chat proxy's browser client sends `credentials: 'include'`
+    /// (it must — the gateway translates `?agent=` into a `hermes_profile`
+    /// cookie the container requires, see `frontend/src/features/chat/api.ts`'s
+    /// own doc comment). A `fetch` with `credentials: 'include'` is
+    /// rejected by the browser unless BOTH the preflight response's
+    /// `Access-Control-Allow-Origin` names the exact origin (never `*`)
+    /// AND it carries `Access-Control-Allow-Credentials: true` — the
+    /// origin-echo alone (proven by the test above) is not sufficient.
+    /// Without this header, every real chat call (`POST .../chat/api/session/new`
+    /// and friends) fails as a CORS error in the browser despite the
+    /// gateway itself working fine (curl/server-to-server unaffected,
+    /// matching this file's own CORS doc comment on `build_router`) — a
+    /// real bug hit live against `/workspaces/:id/chat/api/session/new`.
+    #[tokio::test]
+    async fn preflight_response_allows_credentials_for_cookie_bearing_chat_calls() {
+        let app = build_router(
+            unused_proxy_state(),
+            temp_workspaces_state().await,
+            "http://127.0.0.1:5173",
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/workspaces/some-id/chat/api/session/new")
+                    .header("Origin", "http://127.0.0.1:5173")
+                    .header("Access-Control-Request-Method", "POST")
+                    .header("Access-Control-Request-Headers", "content-type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let allow_credentials = response
+            .headers()
+            .get("access-control-allow-credentials")
+            .expect("preflight response must include Access-Control-Allow-Credentials: true")
+            .to_str()
+            .unwrap();
+        assert_eq!(allow_credentials, "true");
     }
 
     /// Proves `register_workspace_proxy_pair` actually wired all FOUR
