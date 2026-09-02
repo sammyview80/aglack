@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, RotateCw, X } from 'lucide-react'
 import { Hint } from '@/components/ui/tooltip'
-import { PixelAvatar } from '@/components/threads-shell'
+import { RandomAvatar } from '@/components/random-avatar'
 import { errorMessage } from '@/lib/api'
 import { handleError } from '@/lib/handle-error'
 import type { AgentMessage, AgentSession } from '@/features/agent-history/types'
@@ -224,7 +224,7 @@ export function AgentHistoryPanel({
             onFocus={() => prefetchSessions(agent.name)}
             aria-label={agent.name}
           >
-            <PixelAvatar seed={agent.name} small />
+            <RandomAvatar seed={agent.name} size={54} />
           </button>
         </Hint>
       ))}

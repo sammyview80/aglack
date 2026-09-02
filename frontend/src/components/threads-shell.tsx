@@ -28,6 +28,7 @@ import { cn } from '@/lib/utils'
 import { useWorkspaceList } from '@/features/workspace/hooks/use-workspace-list'
 import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
+import { RandomAvatar } from '@/components/random-avatar'
 import '@/styles/threads-app.css'
 
 export type ThreadsWorkspaceIcon = {
@@ -343,7 +344,7 @@ export function ThreadsShell({
                 onClick={() => selectAgentHistory(agent.name)}
               >
                 <span className="person-avatar-wrap">
-                  <PixelAvatar seed={agent.name} small />
+                  <RandomAvatar seed={agent.name} size={31} />
                 </span>
                 <span className="person-name">{agent.name}</span>
               </button>
