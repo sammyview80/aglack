@@ -208,6 +208,39 @@ def _project_content(content: Any) -> str:
     return ""
 
 
+_ATTACHMENT_PROJECTION_KEYS = ("name", "path", "mime", "size", "is_image")
+
+
+def _project_attachments(raw_attachments: Any) -> list[dict[str, Any]] | None:
+    """Project a message's `attachments` list (written by upstream's own
+    `_checkpoint_user_message_for_eager_session_save` -> `user_msg["attachments"]
+    = list(attachments)`, `backend/upstream/api/routes.py:22499`, using the
+    normalized shape `_normalize_chat_attachments` builds at
+    `backend/upstream/api/routes.py:24368` — exactly `{name,path,mime,size?,
+    is_image?}` per item) down to only the keys the frontend needs to render
+    a chip/thumbnail.
+
+    Returns `None` (not `[]`) when the source message has no attachments at
+    all, so the frontend can distinguish "no attachments" from "empty list"
+    the same way `list_messages` already treats `total`/pagination absence
+    as meaningful — an empty list is a valid (if unusual) value upstream
+    could theoretically write, whereas `None` means the key was never
+    present on the raw message. A non-list value (defensive: never trust
+    upstream's raw dict shape blindly) also projects to `None` rather than
+    raising, matching `_project_content`'s own "never raise on unexpected
+    shape" rule."""
+    if not isinstance(raw_attachments, list):
+        return None
+    projected = []
+    for item in raw_attachments:
+        if not isinstance(item, dict):
+            continue
+        entry = {key: item[key] for key in _ATTACHMENT_PROJECTION_KEYS if key in item}
+        if entry:
+            projected.append(entry)
+    return projected or None
+
+
 def list_messages(
     name: str,
     session_id: str,
@@ -237,15 +270,19 @@ def list_messages(
         # contract for a future "load older messages" page.
         offset = max(0, len(all_messages) - limit)
     page = all_messages[offset : offset + limit]
-    messages = [
-        {
+    messages = []
+    for message in page:
+        if not isinstance(message, dict):
+            continue
+        projected = {
             "role": message.get("role"),
             "content": _project_content(message.get("content")),
             "timestamp": message.get("timestamp"),
         }
-        for message in page
-        if isinstance(message, dict)
-    ]
+        attachments = _project_attachments(message.get("attachments"))
+        if attachments is not None:
+            projected["attachments"] = attachments
+        messages.append(projected)
     return {
         "messages": messages,
         "limit": limit,

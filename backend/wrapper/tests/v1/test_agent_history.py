@@ -204,6 +204,48 @@ def test_messages_returns_projected_messages_for_valid_session(client: TestClien
     ]
 
 
+def test_messages_projects_attachments_when_present(client: TestClient) -> None:
+    """Upstream persists `attachments` on a user message dict verbatim
+    (`user_msg["attachments"] = list(attachments)`,
+    `backend/upstream/api/routes.py:22499`, using the normalized shape from
+    `_normalize_chat_attachments`, `backend/upstream/api/routes.py:24368`).
+    Before this test's fix, `list_messages`'s projection dropped the key
+    entirely — a chat turn sent WITH a real file attached would come back
+    from history with the file invisible, even though upstream never lost
+    it. Assert the projection carries it through, keyed exactly like the
+    normalized upload record, and that a message with no `attachments` key
+    at all gets no key back (not an empty list) so the frontend can tell
+    "never had attachments" apart from "attachments list is empty"."""
+    _create_profile(client, "history-agent-attachments")
+    session = _make_session(
+        "history-agent-attachments",
+        messages=[
+            {
+                "role": "user",
+                "content": "check this out",
+                "timestamp": 1.0,
+                "attachments": [
+                    {"name": "a.png", "path": "/state/attachments/s1/a.png", "mime": "image/png", "size": 42, "is_image": True},
+                    {"name": "b.pdf", "path": "/state/attachments/s1/b.pdf", "mime": "application/pdf", "is_image": False},
+                ],
+            },
+            {"role": "assistant", "content": "nice image", "timestamp": 2.0},
+        ],
+    )
+
+    response = client.get(
+        f"/api/wrapper/v1/agent-history/agents/history-agent-attachments/sessions/{session.session_id}/messages"
+    )
+
+    assert response.status_code == 200
+    messages = response.json()["data"]["messages"]
+    assert messages[0]["attachments"] == [
+        {"name": "a.png", "path": "/state/attachments/s1/a.png", "mime": "image/png", "size": 42, "is_image": True},
+        {"name": "b.pdf", "path": "/state/attachments/s1/b.pdf", "mime": "application/pdf", "is_image": False},
+    ]
+    assert "attachments" not in messages[1]
+
+
 def test_messages_with_no_params_returns_newest_page(client: TestClient) -> None:
     """No real frontend call site ever sends limit/offset. Without an
     explicit offset, the default page must be the newest DEFAULT_LIMIT
