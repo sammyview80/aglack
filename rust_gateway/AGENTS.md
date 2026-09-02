@@ -68,6 +68,7 @@ src/
 │   ├── agent_seeder_proxy.rs     ANY /workspaces/:id/agent-seeder/*path
 │   ├── hermes_webui_proxy.rs     ANY /workspaces/:id/hermes-webui/*path
 │   ├── desktop_proxy.rs          ANY /workspaces/:id/desktop/*path (+ WS)
+│   ├── agent_history_proxy.rs    ANY /workspaces/:id/agent-history/*path
 │   └── test_support.rs           #[cfg(test)] shared test state/DB helpers
 └── bin/
     ├── rust_gateway.rs           real entrypoint (thin: config → state →
@@ -81,8 +82,8 @@ New env var → `config.rs`. New routing/tenant logic → `proxy/`. New
 top-level route → `app.rs`'s route table + a new file in `workspaces/route/`
 (handler logic lives in its own file, not inline in `app.rs`). New Docker
 concern → a new file in `workspaces/container/`, not a bigger
-`docker_launcher.rs`. New per-workspace proxy feature (a fifth namespace
-beyond onboarding/agent-seeder/hermes-webui/desktop) → a new
+`docker_launcher.rs`. New per-workspace proxy feature (beyond
+onboarding/agent-seeder/hermes-webui/desktop/agent-history) → a new
 `workspaces/<name>_proxy.rs` holding only a thin root+wildcard handler
 pair that delegates to `wrapper_prefix_proxy::forward_to_wrapper_namespace`
 with its namespace prefix (see `agent_seeder_proxy.rs` for the exact

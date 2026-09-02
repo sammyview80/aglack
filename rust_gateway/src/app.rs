@@ -14,6 +14,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
+    agent_history_proxy_route_root, agent_history_proxy_route_with_path,
     agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path, create_workspace_route,
     delete_workspace_route, desktop_proxy_route_root, desktop_proxy_route_with_path,
     diagnose_workspace_route, hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path,
@@ -106,6 +107,12 @@ pub fn build_router(
         "/workspaces/:id/desktop",
         desktop_proxy_route_root,
         desktop_proxy_route_with_path,
+    );
+    workspaces_router = register_workspace_proxy_pair(
+        workspaces_router,
+        "/workspaces/:id/agent-history",
+        agent_history_proxy_route_root,
+        agent_history_proxy_route_with_path,
     );
     let workspaces_router = workspaces_router.with_state(workspaces_state);
 
@@ -242,6 +249,8 @@ mod tests {
             "/workspaces/does-not-exist/hermes-webui/api/sessions",
             "/workspaces/does-not-exist/desktop/",
             "/workspaces/does-not-exist/desktop/index.html",
+            "/workspaces/does-not-exist/agent-history/",
+            "/workspaces/does-not-exist/agent-history/agents",
         ] {
             let response = app
                 .clone()

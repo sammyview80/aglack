@@ -1,0 +1,215 @@
+"""Agent-history feature service — read-only per-agent chat history.
+
+In this project an "agent" IS a Hermes profile (the agent-seeder creates
+one profile per agent — see `../agent_seeder/service.py`). This feature
+exposes three read paths over upstream's own `api.profiles`/`api.models`
+data, projected down to only what the frontend renders, instead of
+proxying the full upstream session/message shape (40+ fields per session)
+through the catch-all.
+
+`list_agents` enumerates profiles from the filesystem (the `profiles/`
+subdirectory under the base Hermes home) rather than trusting
+`list_profiles_api()` as the source of truth — same reasoning
+`features/agent_config/service.py::_require_known_profile` already
+documents: when `hermes_cli` is not importable, `list_profiles_api()`
+silently falls back to returning only a synthetic default-profile row
+(`except ImportError: return [_default_profile_dict()]` in
+`api/profiles.py`), hiding every real named profile. The filesystem is the
+real invariant.
+
+Pure reads only: no route here calls `set_request_profile`,
+`switch_profile`, or otherwise mutates process/thread-global state.
+Sessions are attributed to an agent using upstream's own
+`api.profiles._profiles_match(row_profile, active_profile)` helper — the
+same helper upstream itself uses to reconcile the literal `"default"` tag,
+a renamed root profile, and legacy untagged rows (backfilled to
+`"default"` by `all_sessions()` itself) — rather than a naive string
+compare, which would silently miss/leak rows for a renamed root profile.
+
+As with every other feature in this wrapper, no upstream symbol is
+imported at module import time — every function below imports
+`api.profiles`/`api.models` lazily, after `bootstrap_upstream()` has
+already run for this process (see `upstream.py`, rule 1 in AGENTS.md).
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from hermes_webui_wrapper.features.errors import FeatureError
+
+DEFAULT_LIMIT = 50
+MAX_LIMIT = 200
+
+
+class AgentHistoryError(FeatureError):
+    """This feature's `FeatureError` — see `features/errors.py`. Mapping
+    convention (mirrors `features/agent_config/service.py`'s own note):
+    bad pagination params -> 400 (this endpoint's own equivalent of
+    upstream `routes.py`'s ValueError -> 400 convention), unknown profile
+    or unknown/foreign session -> 404."""
+
+
+def _require_known_profile(name: str) -> None:
+    """Fail closed (404) on a profile name that doesn't exist.
+
+    The name is validated against upstream's own `_PROFILE_ID_RE` BEFORE any
+    home-directory lookup. `get_hermes_home_for_profile()` deliberately falls
+    back to the BASE Hermes home for any name that isn't a valid profile id
+    (see its docstring — this is how it rejects path-traversal-shaped input),
+    so calling `home.is_dir()` on an invalid name would resolve to the root
+    profile's home, which always exists, and incorrectly accept the name.
+    Same filesystem-existence check `features/agent_config/service.py`
+    already uses for a *valid* name, so a not-yet-created agent behaves
+    identically across both features."""
+    from api.profiles import _is_root_profile, _PROFILE_ID_RE, get_hermes_home_for_profile
+
+    if _is_root_profile(name):
+        return
+    if not name or not _PROFILE_ID_RE.fullmatch(name):
+        raise AgentHistoryError(
+            "agent_history_profile_not_found", f"Profile '{name}' does not exist.", 404
+        )
+    home = get_hermes_home_for_profile(name)
+    if not home.is_dir():
+        raise AgentHistoryError(
+            "agent_history_profile_not_found", f"Profile '{name}' does not exist.", 404
+        )
+
+
+def _parse_int_param(value: str | int | None, default: int, label: str) -> int:
+    """Parse a raw query-string value into an int, raising this feature's
+    400 error instead of letting FastAPI's own query-param typing produce a
+    raw (non-enveloped) 422 — see api/v1/agent_history.py, which accepts
+    `limit`/`offset` as raw strings for exactly this reason."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise AgentHistoryError(
+            f"agent_history_invalid_{label}", f"{label} must be an integer.", 400
+        ) from None
+
+
+def _validate_pagination(
+    limit: str | int | None, offset: str | int | None
+) -> tuple[int, int]:
+    limit_val = _parse_int_param(limit, DEFAULT_LIMIT, "limit")
+    offset_val = _parse_int_param(offset, 0, "offset")
+    if limit_val < 0:
+        raise AgentHistoryError(
+            "agent_history_invalid_limit", "limit must not be negative.", 400
+        )
+    if offset_val < 0:
+        raise AgentHistoryError(
+            "agent_history_invalid_offset", "offset must not be negative.", 400
+        )
+    return min(limit_val, MAX_LIMIT), offset_val
+
+
+def list_agents() -> dict[str, Any]:
+    from api.profiles import get_hermes_home_for_profile
+
+    base_home = get_hermes_home_for_profile("default")
+    profiles_dir = base_home / "profiles"
+
+    names = {"default"}
+    if profiles_dir.is_dir():
+        for entry in profiles_dir.iterdir():
+            if entry.is_dir() and not entry.name.startswith("."):
+                names.add(entry.name)
+
+    ordered = ["default"] + sorted(names - {"default"})
+    agents = [{"name": name} for name in ordered]
+    return {"agents": agents}
+
+
+_SESSION_PROJECTION_KEYS = (
+    "session_id",
+    "title",
+    "message_count",
+    "updated_at",
+    "last_message_at",
+)
+
+
+def list_sessions(
+    name: str, limit: str | int | None = None, offset: str | int | None = None
+) -> dict[str, Any]:
+    _require_known_profile(name)
+    limit, offset = _validate_pagination(limit, offset)
+
+    from api.models import all_sessions
+    from api.profiles import _profiles_match
+
+    # Do NOT pass include_lineage_metadata=False here — benchmarked slower
+    # at every size tested (100/300/800/2400 sessions: 0.60x-0.79x speedup,
+    # i.e. -0.7ms to -21.2ms per call). False takes an uncapped state.db
+    # read over all rows; default True caps lineage enrichment at top-300.
+    all_rows = all_sessions()
+    rows = [row for row in all_rows if _profiles_match(row.get("profile"), name)]
+    rows.sort(
+        key=lambda row: row.get("last_message_at") or row.get("updated_at") or 0,
+        reverse=True,
+    )
+    page = rows[offset : offset + limit]
+    sessions = [{key: row.get(key) for key in _SESSION_PROJECTION_KEYS} for row in page]
+    return {"sessions": sessions, "limit": limit, "offset": offset}
+
+
+def _project_content(content: Any) -> str:
+    """Upstream message `content` may already be a plain string or a list
+    of typed parts (e.g. `{"type": "text", "text": "..."}`, possibly mixed
+    with tool-call/thinking parts). Join only the text parts so the
+    frontend always gets a plain string; never raise on an unexpected
+    shape."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def list_messages(
+    name: str,
+    session_id: str,
+    limit: str | int | None = None,
+    offset: str | int | None = None,
+) -> dict[str, Any]:
+    _require_known_profile(name)
+    limit, offset = _validate_pagination(limit, offset)
+
+    from api.models import Session
+    from api.profiles import _profiles_match
+
+    session = Session.load(session_id)
+    if session is None or not _profiles_match(getattr(session, "profile", None), name):
+        raise AgentHistoryError(
+            "agent_history_session_not_found",
+            f"Session '{session_id}' does not exist for agent '{name}'.",
+            404,
+        )
+
+    all_messages = session.messages or []
+    page = all_messages[offset : offset + limit]
+    messages = [
+        {
+            "role": message.get("role"),
+            "content": _project_content(message.get("content")),
+            "timestamp": message.get("timestamp"),
+        }
+        for message in page
+        if isinstance(message, dict)
+    ]
+    return {
+        "messages": messages,
+        "limit": limit,
+        "offset": offset,
+        "total": len(all_messages),
+    }

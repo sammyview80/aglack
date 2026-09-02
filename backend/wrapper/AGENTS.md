@@ -133,9 +133,12 @@ src/hermes_webui_wrapper/
 │       ├── agent_config.py    NATIVE feature router — update a named profile's
 │       │                       SOUL.md + workspace AGENTS.md (GET/PUT
 │       │                       .../{name}/soul, .../{name}/agents-md)
-│       └── agent_seeder.py    NATIVE feature router — apply the ../../seeder/
-│                               tree, scoped by mode (GET .../modes,
-│                               POST .../{mode}/apply, .../{mode}/apply/{name})
+│       ├── agent_seeder.py    NATIVE feature router — apply the ../../seeder/
+│       │                       tree, scoped by mode (GET .../modes,
+│       │                       POST .../{mode}/apply, .../{mode}/apply/{name})
+│       └── agent_history.py   NATIVE feature router — read-only per-agent
+│                               chat history (GET .../agents, .../agents/{name}/
+│                               sessions, .../agents/{name}/sessions/{session_id}/messages)
 └── features/                  one subpackage per business capability, independent
     │                           of any api/ version — a future v2 or non-HTTP
     │                           transport reuses these without duplicating logic
@@ -161,22 +164,43 @@ src/hermes_webui_wrapper/
     │   │                       per-profile AGENTS.md or writable profile.yaml
     │   │                       description exist in this pinned upstream checkout)
     │   └── schemas.py          pydantic request models for this feature only
-    └── agent_seeder/           THIN GLUE ONLY — mechanics live in ../../../../seeder_kit/
-        ├── service.py          parses ../../../../seeder/ via seeder_kit.parse_tree
-        │                       (mode-scoped — see that module's own docstring for why
-        │                       per-agent content is mode-scoped but global tools/skills
-        │                       are not), then applies it via create_profile_api +
-        │                       _ensure_agent_workspace (creates a real
-        │                       <agent-workspaces-root>/<slug>/ dir + writes it into
-        │                       config.yaml as `workspace`, only if none is set yet —
-        │                       config.resolve_agent_workspaces_root() derives the root
-        │                       from HERMES_WEBUI_DEFAULT_WORKSPACE's own parent) +
-        │                       features.agent_config + seeder_kit.copy_skill_dirs +
-        │                       seeder_kit.discover_tools_in_dirs +
-        │                       seeder_kit.build_mcp_server_entry (one mcp_servers
-        │                       config.yaml entry per agent). list_modes() wraps
-        │                       seeder_kit.available_modes()
-        └── schemas.py          no request body needed for any route
+    ├── agent_seeder/           THIN GLUE ONLY — mechanics live in ../../../../seeder_kit/
+    │   ├── service.py          parses ../../../../seeder/ via seeder_kit.parse_tree
+    │   │                       (mode-scoped — see that module's own docstring for why
+    │   │                       per-agent content is mode-scoped but global tools/skills
+    │   │                       are not), then applies it via create_profile_api +
+    │   │                       _ensure_agent_workspace (creates a real
+    │   │                       <agent-workspaces-root>/<slug>/ dir + writes it into
+    │   │                       config.yaml as `workspace`, only if none is set yet —
+    │   │                       config.resolve_agent_workspaces_root() derives the root
+    │   │                       from HERMES_WEBUI_DEFAULT_WORKSPACE's own parent) +
+    │   │                       features.agent_config + seeder_kit.copy_skill_dirs +
+    │   │                       seeder_kit.discover_tools_in_dirs +
+    │   │                       seeder_kit.build_mcp_server_entry (one mcp_servers
+    │   │                       config.yaml entry per agent). list_modes() wraps
+    │   │                       seeder_kit.available_modes()
+    │   └── schemas.py          no request body needed for any route
+    └── agent_history/          READ-ONLY — never calls set_request_profile/
+        └── service.py          switch_profile, no global/thread state mutation.
+                                No schemas.py: every route is a GET with no
+                                request body. list_agents() enumerates the
+                                profiles directory from the FILESYSTEM, not
+                                list_profiles_api() (that function silently
+                                falls back to a default-only row when
+                                hermes_cli is not importable — same trap
+                                features/agent_config/service.py documents).
+                                Sessions attributed via upstream
+                                api.profiles._profiles_match (handles default/
+                                renamed-root aliasing + legacy untagged rows).
+                                Loading a session whose profile tag does not
+                                match the requested agent -> 404 (cross-agent
+                                isolation: one agent cannot read another's
+                                transcript by guessing a session id).
+                                Pagination limit default 50 / hard cap 200;
+                                negative or non-integer limit/offset -> 400 in
+                                the shared envelope (routes take limit/offset
+                                as raw strings so FastAPI never emits a raw
+                                non-enveloped 422)
 
 tests/
 ├── conftest.py                 isolated tmp HERMES_HOME/state dirs, runtime disabled
@@ -185,8 +209,10 @@ tests/
 └── v1/
     ├── test_onboarding.py       native onboarding route tests (real upstream, no mocks)
     ├── test_agent_config.py     native agent-config route tests (real upstream, no mocks)
-    └── test_agent_seeder.py     native agent-seeder route tests (real upstream, synthetic
-                                  seeder/ tree — see that file's own docstring for why)
+    ├── test_agent_seeder.py     native agent-seeder route tests (real upstream, synthetic
+    │                             seeder/ tree — see that file's own docstring for why)
+    └── test_agent_history.py    native agent-history route tests (real upstream, isolated
+                                  tmp state, no mocks)
 ```
 
 `../seeder_kit/` (sibling of `upstream/` and this wrapper) is its own
@@ -261,15 +287,16 @@ discussion for the storage-options tradeoff already considered once.
    not-proxied-through-`dispatch()` case (mirrors
    `test_status_is_native_not_proxied_through_dispatch`).
 
-## Known current gap — no auth gate on native onboarding/agent-config/agent-seeder routes
+## Known current gap — no auth gate on native onboarding/agent-config/agent-seeder/agent-history routes
 
 Upstream's own onboarding mutation endpoints (`setup`, `oauth/start`,
 `complete`, `probe`) are protected by `_onboarding_gate_allows` — allowed
 unauthenticated only from a local/private network origin (checked against
 the raw, unspoofable socket peer), or unconditionally once real auth is
 enabled. **The native routes in `api/v1/onboarding.py`,
-`api/v1/agent_config.py`, and `api/v1/agent_seeder.py` have no equivalent
-gate today** — this wrapper has no session/login layer yet at all (see
+`api/v1/agent_config.py`, `api/v1/agent_seeder.py`, and
+`api/v1/agent_history.py` have no equivalent gate today** — this wrapper
+has no session/login layer yet at all (see
 `rust_gateway`'s own "no auth... yet" checkpoint note), so porting
 upstream's local-network exception here would be a false sense of
 security, not a real one; and upstream's exact IP-based gate does not
@@ -282,10 +309,13 @@ real UI caller too: `frontend`'s `/mode/:workspaceId` screen (Simple mode,
 see `frontend/AGENTS.md`'s "Agent seeder" rule) calls
 `POST /workspaces/:id/agent-seeder/simple/apply` on `rust_gateway`
 (`agent_seeder_proxy.rs`), which forwards here — this is no longer a
-theoretical exposure. Add real authentication in front of this service
-before any of this matters in anything but local dev — do not paper over
-it with IP-based logic that doesn't fit this project's actual deployment
-shape.
+theoretical exposure. `agent-history` is READ-ONLY — it never mutates
+`config.yaml`/`SOUL.md`/`AGENTS.md` or any profile state, unlike the three
+above — but without a gate any caller can still read every agent's chat
+transcripts for a workspace, which is its own exposure. Add real
+authentication in front of this service before any of this matters in
+anything but local dev — do not paper over it with IP-based logic that
+doesn't fit this project's actual deployment shape.
 
 ## Testing
 

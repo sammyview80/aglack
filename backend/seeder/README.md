@@ -14,8 +14,18 @@ seeder/
     update_soul.py
   skills/                    global skills — every agent, in EVERY mode, gets these
     tickoff_agent/SKILL.md
+    org-tool-use/SKILL.md    company-mode tool-naming/restrictions reference (harmless
+                             no-op for simple/creator agents that never read it)
+    org-comm-protocol/SKILL.md  company-mode message-tagging/retry protocol,
+                             identical across 5 of the 6 company agents —
+                             PM overrides it with its own richer copy (see
+                             "Company mode" below)
+    org-routing/SKILL.md     company-mode generic routing-mechanic skeleton,
+                             identical across 5 of the 6 company agents —
+                             PM overrides it with its own standalone copy
+                             (see "Company mode" below)
   modes/
-    simple/                  the only mode with real content today
+    simple/                  agents/PM/ — the minimal single-agent mode
       agents/
         PM/                  one subfolder per Hermes profile to create/update
           soul.md            -> PM's SOUL.md (always overwritten on apply)
@@ -25,8 +35,11 @@ seeder/
           tools/              PM-only MCP tools, additive to the global ones
           skills/             PM-only skills, additive to the global ones
             task_assign/SKILL.md
-    creator/                 declared modes with no agents yet are valid —
-    company/                 not errors, just empty (see "Modes" below)
+    creator/                 declared mode with no agents yet — valid, not an
+                             error (see "Modes" below)
+    company/                 six org-wide singleton agents: CEO, CFO, PM,
+                             Builder, Persona, Librarian (see "Company mode"
+                             below)
 ```
 
 Applying this tree happens through the wrapper's native API — `mode` is a
@@ -60,6 +73,81 @@ apply to every agent in every mode, since a tool/skill useful to one
 agent's identity is not usually specific to which mode created that
 agent. A tool/skill that only makes sense for one mode belongs under that
 mode's own agent folder(s) instead, same as any other per-agent content.
+
+## Company mode
+
+`modes/company/agents/` ports the six org-wide singleton agents from an
+earlier, separate Hermes ERP prototype (`hermano/backend`'s
+`api/{ceo,cfo,pm,builder,persona,librarian}_defaults/`) into this
+project's seeder tree shape: CEO, CFO, PM, Builder, Persona, Librarian.
+Each is a full role — identity (`soul.md`), operating instructions
+(`agent.md`), and its own `skills/` (routing, reporting, communication
+protocol, and role-specific procedures like `weekly-review` or
+`financial-review`).
+
+**What ported and what didn't:**
+
+- Tool names dropped the source prototype's `mcp__hermes_webui__` prefix
+  (that prefix is specific to upstream's own MCP tool bridge, which this
+  project's `seeder_kit` tools don't use) — every `org_*`/`kanban_*`/
+  `brain_*` tool name is now bare, matching this project's plain
+  `TOOL_NAME` convention. See `skills/org-tool-use/SKILL.md` (global) for
+  the naming rule every company-mode agent's `agent.md` points to.
+- The seventh source role, **Department Head**, is NOT included as a
+  seeded agent — it was never a singleton in the source prototype (one
+  per department, created dynamically by Builder), and this project has
+  no dynamic department/head-creation mechanism to seed it against (see
+  `CHECKPOINT4.md`/`CHECKPOINT5.md`: cross-agent trigger/kanban
+  infrastructure is explicitly out of scope).
+- Three skills were candidates for the global `skills/` tier; each was
+  checked with `seeder_kit`, not assumed:
+  - `org-tool-use` — identical across every role in the source. Promoted
+    to global as-is.
+  - `org-comm-protocol` — byte-identical across 5 of the 6 roles (Builder/
+    CEO/CFO/Librarian/Persona). Promoted to global. **PM is the
+    exception**: its source copy has an extra section (the trigger-trace-
+    cycle detection PM/Head need, the other 5 roles don't) — PM keeps its
+    own copy at `modes/company/agents/PM/skills/org-comm-protocol/SKILL.md`,
+    which overrides the global one for PM specifically (per-agent skills
+    copy AFTER global ones and win on a name collision — see
+    "Idempotency" below).
+  - `org-routing` — NOT byte-identical (each role's remit description and
+    routing table genuinely differ), but 5 of the 6 roles (Builder/CEO/
+    CFO/Librarian/Persona) share the exact same surrounding mechanic
+    (self-check framing, the mediate-or-go-direct procedure, the "what
+    this doesn't cover" closing). That shared mechanic was extracted to
+    the global `skills/org-routing/SKILL.md`; each of those 5 agents keeps
+    only its own genuinely-different content (remit + routing table +
+    role-specific notes) in a small per-agent
+    `skills/org-remit/SKILL.md`, which the global skill explicitly
+    delegates to for steps 1-2. **PM is the exception again**: its routing
+    logic is woven into its own Phase A/B dispatch flow and defers the
+    routing table to `question-routing` instead of repeating it — a
+    structurally different shape, not just longer content — so PM keeps
+    its own full, standalone `org-routing/SKILL.md`, unchanged, which
+    overrides the global one for PM specifically.
+
+  Verify with `seeder_kit.copy_skill_dirs`/`parse_tree` before assuming a
+  skill is safe to dedupe or split: only promote whole-file content to
+  global `skills/` when it's byte-identical; only extract a shared
+  skeleton into a global skill (with a per-agent remainder file) when the
+  extracted part is genuinely the same mechanic, not merely similar
+  wording — and never force an agent whose actual shape differs (like PM
+  here) into the same split just for symmetry.
+- Every reference to a source-prototype workspace-template placeholder
+  (`{{WORKSPACE_ROOT}}`) was rewritten to plain prose ("your own
+  workspace folder") — this project's seeder has no templating engine.
+- The source prototype auto-seeded a `PLAN.md` starter file at each
+  singleton's workspace root outside the normal SOUL.md/AGENTS.md
+  mechanism; that one-off file type was NOT added to `seeder_kit` (each
+  agent's `agent.md`/`soul.md` still instructs it to read/write its own
+  `PLAN.md`, it just isn't pre-populated by the seeder).
+- These agents describe org/kanban/Brain tools (`org_get_graph`,
+  `kanban_create`, `brain_search`, `org_trigger_agent_async`, ...) that
+  this project does not implement anywhere — same gap as the source
+  prototype content itself once had relative to upstream Hermes; treat
+  `modes/company/` as ported identity/procedure content, not a claim that
+  this deployment's runtime actually backs every tool named here.
 
 ## How it fits together
 
@@ -169,7 +257,11 @@ tree doesn't own:
   every apply. Edit the file here, not the running profile's copy, if you
   want a change to survive the next apply.
 - **Skills** — always re-copied from the seed source, overwriting the
-  previous copy.
+  previous copy. Copy order is global `skills/` first, then the agent's
+  own `skills/` (`SeederTree.skill_dirs_for`) — a per-agent skill folder
+  with the SAME name as a global one overwrites it for that agent only
+  (e.g. PM's own `org-comm-protocol/` overrides the global one; every
+  other company-mode agent gets the global copy untouched).
 - **`mcp_servers: hermes-seeder` config.yaml entry** — always rewritten
   from the current tool-directory set. Any OTHER key already in that
   profile's `config.yaml` is preserved.
