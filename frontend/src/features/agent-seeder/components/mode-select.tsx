@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
+import { threadsUi } from '@/components/threads-ui'
 import { StatusAlert } from '@/components/status-alert'
 import { Button } from '@/components/ui/button'
 import { isModeAvailable, MODES, type ModeId, type ModeOption } from '@/features/agent-seeder/modes'
@@ -68,7 +69,7 @@ export function ModeSelect({
         <div className="space-y-1">
           <h2>Choose a starting point</h2>
           <div className="divider" />
-          <p className="post-copy">Pick how this workspace's agents should be set up.</p>
+          <p className={threadsUi.postCopy}>Pick how this workspace's agents should be set up.</p>
         </div>
 
         <StatusAlert message={error} />

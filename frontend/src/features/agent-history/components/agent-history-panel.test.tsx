@@ -179,8 +179,8 @@ describe('AgentHistoryPanel skeleton behavior', () => {
 
     // A refetch must not rip the already-rendered session out for a skeleton.
     expect(screen.getByText('First session')).toBeInTheDocument()
-    const history = screen.getByText('First session').closest('.audience-history')
-    expect(within(history as HTMLElement).queryAllByRole('listitem').length).toBeGreaterThan(0)
+    const history = screen.getByTestId('audience-history')
+    expect(within(history).queryAllByRole('listitem').length).toBeGreaterThan(0)
   })
 
   it('renders a skeleton during the initial pending fetch', () => {

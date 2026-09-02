@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { ArrowRight } from 'lucide-react'
+import { threadsUi } from '@/components/threads-ui'
 import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { FormField } from '@/components/form-field'
 import { StatusAlert } from '@/components/status-alert'
@@ -42,7 +43,7 @@ export function CreateWorkspaceForm({
       <form className="flex w-full flex-col gap-5" onSubmit={submit}>
         <h2>Create a workspace</h2>
         <div className="divider" />
-        <p className="post-copy">Choose a name for your new workspace.</p>
+        <p className={threadsUi.postCopy}>Choose a name for your new workspace.</p>
 
         <StatusAlert message={error} />
 

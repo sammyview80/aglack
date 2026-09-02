@@ -1,6 +1,7 @@
 import { Moon, Sun } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useColorTheme } from '@/features/theme/color-theme'
+import { threadsUi } from '@/components/threads-ui'
 
 export function ThemeSwitch() {
   const { theme, toggleTheme } = useColorTheme()
@@ -12,7 +13,7 @@ export function ThemeSwitch() {
       variant="ghost"
       size="icon"
       role="switch"
-      className="threads-theme-switch"
+      className={threadsUi.themeSwitch}
       aria-checked={dark}
       aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
       onClick={toggleTheme}

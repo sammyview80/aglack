@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Check } from 'lucide-react'
 import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { FormField } from '@/components/form-field'
+import { threadsUi } from '@/components/threads-ui'
 import { PageFallback } from '@/components/page-fallback'
 import { PasswordInput } from '@/components/password-input'
 import { StatusAlert } from '@/components/status-alert'
@@ -103,7 +104,7 @@ export function OnboardingWizard({
         <div className="space-y-1">
           <h2>Set up {APP_NAME}</h2>
           <div className="divider" />
-          <p className="post-copy">Chat/text models only. Pick a provider, then save.</p>
+          <p className={threadsUi.postCopy}>Chat/text models only. Pick a provider, then save.</p>
         </div>
 
         <StatusAlert message={error} />
@@ -304,7 +305,7 @@ function CompleteCard({
       </span>
       <h2>Ready to chat</h2>
       <div className="divider" />
-      <p className="post-copy">
+      <p className={threadsUi.postCopy}>
         This workspace already has a model. You can start chatting now, or change the provider later from
         setup.
       </p>

@@ -9,6 +9,7 @@ import { relativeTime } from '@/features/agent-history/components/relative-time'
 import { AgentsSkeleton } from '@/features/agent-history/components/agents-skeleton'
 import { SessionsSkeleton } from '@/features/agent-history/components/sessions-skeleton'
 import { useAgentHistoryPrefetch, useAgentSessions, useAgents } from '@/features/agent-history/hooks/use-agent-history'
+import { threadsUi } from '@/components/threads-ui'
 
 export function AgentHistoryPanel({
   workspaceId,
@@ -100,27 +101,27 @@ export function AgentHistoryPanel({
 
   if (!workspaceId) {
     return (
-      <div className="audience-grid">
-        <p className="audience-empty">No workspace selected.</p>
+      <div className={threadsUi.audienceGrid}>
+        <p className={threadsUi.audienceEmpty}>No workspace selected.</p>
       </div>
     )
   }
 
   if (selectedAgent) {
     return (
-      <div className="audience-history">
-        <div className="audience-history-header">
-          <button type="button" className="audience-history-back" onClick={closeAgent} aria-label="Back to agents">
+      <div className={threadsUi.audienceHistory} data-testid="audience-history">
+        <div className={threadsUi.audienceHistoryHeader}>
+          <button type="button" className={threadsUi.audienceHistoryBack} onClick={closeAgent} aria-label="Back to agents">
             <ArrowLeft size={14} /> {selectedAgent}
           </button>
-          <div className="audience-history-actions">
+          <div className={threadsUi.audienceHistoryActions}>
             <Hint label="Refresh" side="top">
-              <button type="button" className="audience-history-icon" onClick={refresh} aria-label="Refresh history">
+              <button type="button" className={threadsUi.audienceHistoryIcon} onClick={refresh} aria-label="Refresh history">
                 <RotateCw size={14} />
               </button>
             </Hint>
             <Hint label="Close" side="top">
-              <button type="button" className="audience-history-icon" onClick={closeAgent} aria-label="Close agent history">
+              <button type="button" className={threadsUi.audienceHistoryIcon} onClick={closeAgent} aria-label="Close agent history">
                 <X size={14} />
               </button>
             </Hint>
@@ -144,12 +145,12 @@ export function AgentHistoryPanel({
 
   if (agentsError) {
     return (
-      <div className="audience-grid">
-        <p className="audience-empty">{agentsError}</p>
+      <div className={threadsUi.audienceGrid}>
+        <p className={threadsUi.audienceEmpty}>{agentsError}</p>
         <Hint label="Retry" side="top">
           <button
             type="button"
-            className="audience-history-icon"
+            className={threadsUi.audienceHistoryIcon}
             onClick={() => void agentsQuery.refetch()}
             aria-label="Retry loading agents"
           >
@@ -162,19 +163,19 @@ export function AgentHistoryPanel({
 
   if (agents.length === 0) {
     return (
-      <div className="audience-grid">
-        <p className="audience-empty">No agents yet.</p>
+      <div className={threadsUi.audienceGrid}>
+        <p className={threadsUi.audienceEmpty}>No agents yet.</p>
       </div>
     )
   }
 
   return (
-    <div className="audience-grid">
+    <div className={threadsUi.audienceGrid}>
       {agents.map((agent) => (
         <Hint key={agent.name} label={agent.name} side="top">
           <button
             type="button"
-            className="audience-avatar-btn"
+            className={threadsUi.audienceAvatarBtn}
             onClick={() => selectAgent(agent.name)}
             onMouseEnter={() => prefetchSessions(agent.name)}
             onFocus={() => prefetchSessions(agent.name)}
@@ -202,22 +203,22 @@ function SessionsList({
   onHoverSession: (session: AgentSession) => void
 }) {
   if (loading) return <SessionsSkeleton />
-  if (error) return <p className="audience-empty">{error}</p>
-  if (sessions.length === 0) return <p className="audience-empty">No history yet.</p>
+  if (error) return <p className={threadsUi.audienceEmpty}>{error}</p>
+  if (sessions.length === 0) return <p className={threadsUi.audienceEmpty}>No history yet.</p>
 
   return (
-    <ul className="audience-session-list">
+    <ul className={threadsUi.audienceSessionList}>
       {sessions.map((session) => (
         <li key={session.sessionId}>
           <button
             type="button"
-            className="audience-session-item"
+            className={threadsUi.audienceSessionItem}
             onClick={() => onSelect(session)}
             onMouseEnter={() => onHoverSession(session)}
             onFocus={() => onHoverSession(session)}
           >
-            <span className="audience-session-title">{session.title || 'Untitled session'}</span>
-            <span className="audience-session-meta">
+            <span className={threadsUi.audienceSessionTitle}>{session.title || 'Untitled session'}</span>
+            <span className={threadsUi.audienceSessionMeta}>
               {relativeTime(session.lastMessageAt)} · {session.messageCount} msg
               {session.messageCount === 1 ? '' : 's'}
             </span>

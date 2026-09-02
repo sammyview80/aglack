@@ -1,5 +1,6 @@
 import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { Button } from '@/components/ui/button'
+import { threadsUi } from '@/components/threads-ui'
 import { PageFallback } from '@/components/page-fallback'
 import { StatusAlert } from '@/components/status-alert'
 import type { CreateWorkspaceResult } from '@/features/workspace/types'
@@ -44,7 +45,7 @@ export function CreatingStatus({
         {result.status === 'failed' && 'Creation failed'}
       </h2>
       <div className="divider" />
-      <p className="post-copy">
+      <p className={threadsUi.postCopy}>
         {result.status === 'ready' && `Container: ${result.containerName}`}
         {result.status === 'creating' &&
           'The gateway accepted the request but there is no status endpoint yet to confirm when it finishes. Try again in a moment.'}

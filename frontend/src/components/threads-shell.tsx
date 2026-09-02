@@ -29,8 +29,10 @@ import { useWorkspaceList } from '@/features/workspace/hooks/use-workspace-list'
 import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { RandomAvatar } from '@/components/random-avatar'
+import { avatarToneStyles, threadsUi, type AvatarTone } from '@/components/threads-ui'
 import type { AgentSession } from '@/features/agent-history/types'
-import '@/styles/threads-app.css'
+
+export type { AvatarTone }
 
 export type ThreadsWorkspaceIcon = {
   id: string
@@ -64,8 +66,6 @@ type ThreadsShellProps = {
 }
 
 const TONES = ['gold', 'lavender', 'aqua', 'pink', 'blue', 'gray'] as const
-
-export type AvatarTone = (typeof TONES)[number]
 
 const PLACEHOLDER_CHANNELS = [
   { icon: '❓', label: 'ask-anything' },
@@ -118,14 +118,16 @@ export function PixelAvatar({
   className?: string
   tone?: AvatarTone
 }) {
+  const colors = avatarToneStyles[tone ?? avatarTone(seed)]
+
   return (
     <span
-      className={cn('avatar', `avatar-${tone ?? avatarTone(seed)}`, small && 'avatar-small', className)}
+      className={cn(threadsUi.avatar, colors.shell, small && threadsUi.avatarSmall, className)}
       aria-hidden="true"
     >
-      <span className="avatar-hair" />
-      <span className="avatar-face">✦</span>
-      <span className="avatar-body" />
+      <span className={cn(threadsUi.avatarHair, small && threadsUi.avatarHairSmall, colors.hair)} />
+      <span className={cn(threadsUi.avatarFace, small && threadsUi.avatarFaceSmall, colors.face)}>✦</span>
+      <span className={cn(threadsUi.avatarBody, small && threadsUi.avatarBodySmall, colors.body)} />
     </span>
   )
 }
@@ -276,17 +278,17 @@ export function ThreadsShell({
 
   return (
     <TooltipProvider delay={200}>
-    <main className="threads-app" data-workspace={workspaceId || workspaceName}>
-      <div className="app-window">
+    <main className={threadsUi.root} data-workspace={workspaceId || workspaceName}>
+      <div className={threadsUi.appWindow}>
         <WorkspaceRail
           workspaceId={workspaceId}
           workspaceName={workspaceName}
           onOpenSettings={() => openSection('Settings')}
         />
-        <aside className="sidebar">
-          <div className="workspace-row">
-            <button type="button" className="workspace-home" onClick={() => navigate('/')}>
-              <div className="workspace-mark">
+        <aside className={threadsUi.sidebar}>
+          <div className={threadsUi.workspaceRow}>
+            <button type="button" className={threadsUi.workspaceHome} onClick={() => navigate('/')}>
+              <div className={threadsUi.workspaceMark}>
                 <span>▪▪</span>
                 <span>▪▪</span>
               </div>
@@ -295,40 +297,40 @@ export function ThreadsShell({
             </button>
             <button
               type="button"
-              className="icon-button top-action"
+              className={cn(threadsUi.iconButton, threadsUi.topAction)}
               aria-label="Activity"
               onClick={() => openSection('Activity')}
             >
               <History size={21} />
             </button>
-            <button type="button" className="icon-button" aria-label="Quick actions" onClick={openCompose}>
+            <button type="button" className={threadsUi.iconButton} aria-label="Quick actions" onClick={openCompose}>
               <Zap size={21} />
             </button>
           </div>
 
-          <button type="button" className="compose-button" onClick={openCompose}>
+          <button type="button" className={threadsUi.composeButton} onClick={openCompose}>
             <Pencil size={20} /> Compose
           </button>
 
-          <nav className="primary-nav" aria-label="Primary navigation">
+          <nav className={threadsUi.primaryNav} aria-label="Primary navigation">
             <button
               type="button"
-              className={section === 'Inbox' ? 'nav-item active' : 'nav-item'}
+              className={cn(threadsUi.navItem, section === 'Inbox' && threadsUi.navItemActive)}
               onClick={() => openSection('Inbox')}
             >
-              <CalendarDays size={20} /> Inbox <span className="count-badge">7</span>
+              <CalendarDays size={20} /> Inbox <span className={threadsUi.countBadge}>7</span>
             </button>
             <button
               type="button"
-              className={section === 'Drafts' ? 'nav-item active' : 'nav-item'}
+              className={cn(threadsUi.navItem, section === 'Drafts' && threadsUi.navItemActive)}
               onClick={() => openSection('Drafts')}
             >
               <FileText size={20} /> Drafts
             </button>
           </nav>
 
-          <section className="sidebar-section">
-            <div className="section-label">
+          <section className={threadsUi.sidebarSection}>
+            <div className={threadsUi.sectionLabel}>
               <ChevronDown size={14} /> CHANNELS
             </div>
             {PLACEHOLDER_CHANNELS.map((channel) => {
@@ -338,26 +340,30 @@ export function ThreadsShell({
               <button
                 key={channel.label}
                 type="button"
-                className={selected ? 'channel-item channel-selected' : 'channel-item'}
+                className={cn(threadsUi.channelItem, selected && threadsUi.channelSelected)}
                 onClick={() => {
                   setAudience(channel.label.toUpperCase())
                   openSection(channel.label)
                 }}
               >
-                <span className="channel-emoji">{channel.icon}</span>
+                <span className={threadsUi.channelEmoji}>{channel.icon}</span>
                 {channel.label}
               </button>
               )
             })}
-            <button type="button" className="more-button" onClick={() => setMoreOpen((v) => !v)}>
-              <ChevronDown size={19} className={moreOpen ? 'rotate-180' : ''} /> view more
+            <button type="button" className={threadsUi.moreButton} onClick={() => setMoreOpen((v) => !v)}>
+              <ChevronDown size={19} className={moreOpen ? threadsUi.rotate180 : undefined} /> view more
             </button>
             {moreOpen
               ? EXTRA_CHANNELS.map((channel) => (
-                  <div className="extra-channels" key={channel.label}>
+                  <div className={threadsUi.extraChannels} key={channel.label}>
                     <button
                       type="button"
-                      className={section === channel.label ? 'channel-item channel-selected' : 'channel-item'}
+                      className={cn(
+                        threadsUi.channelItem,
+                        threadsUi.extraChannelItem,
+                        section === channel.label && threadsUi.channelSelected,
+                      )}
                       onClick={() => {
                         setAudience(channel.label.toUpperCase())
                         openSection(channel.label)
@@ -370,17 +376,20 @@ export function ThreadsShell({
               : null}
           </section>
 
-          <section className="sidebar-section chat-section">
-            <div className="section-label">
+          <section
+            className={cn(threadsUi.sidebarSection, threadsUi.chatSection)}
+            data-testid="sidebar-chat-section"
+          >
+            <div className={threadsUi.sectionLabel}>
               <ChevronDown size={14} /> CHAT
             </div>
             {agentsQuery.isError ? (
-              <span className="person-item" aria-disabled="true">
+              <span className={threadsUi.personItem} aria-disabled="true">
                 Could not load agents
               </span>
             ) : null}
             {!agentsQuery.isError && !agentsQuery.isPending && sidebarAgents.length === 0 ? (
-              <span className="person-item" aria-disabled="true">
+              <span className={threadsUi.personItem} aria-disabled="true">
                 No agents yet
               </span>
             ) : null}
@@ -388,46 +397,46 @@ export function ThreadsShell({
               <button
                 key={agent.name}
                 type="button"
-                className={historyAgent === agent.name ? 'person-item channel-selected' : 'person-item'}
+                className={cn(threadsUi.personItem, historyAgent === agent.name && threadsUi.personSelected)}
                 onClick={() => selectAgentHistory(agent.name)}
               >
-                <span className="person-avatar-wrap">
+                <span className={threadsUi.personAvatarWrap}>
                   <RandomAvatar seed={agent.name} size={31} />
                 </span>
-                <span className="person-name">{agent.name}</span>
+                <span className={threadsUi.personName}>{agent.name}</span>
               </button>
             ))}
           </section>
 
-          <div className="sidebar-footer">
-            <button type="button" className="footer-button" onClick={() => openSection('Settings')}>
+          <div className={threadsUi.sidebarFooter}>
+            <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Settings')}>
               <Settings2 size={18} /> Settings
             </button>
-            <button type="button" className="footer-button" onClick={() => openSection('Help')}>
+            <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Help')}>
               <CircleHelp size={18} /> Help
             </button>
           </div>
         </aside>
 
-        <section className="content-area">
-          <header className="content-header">
-            <button type="button" className="threads-back" onClick={() => navigate('/')} aria-label="Back to workspaces">
+        <section className={threadsUi.contentArea}>
+          <header className={threadsUi.contentHeader}>
+            <button type="button" className={threadsUi.threadsBack} onClick={() => navigate('/')} aria-label="Back to workspaces">
               <ArrowLeft size={16} strokeWidth={2.4} /> Back
             </button>
             <h1>{heading}</h1>
-            <div className="header-actions">
-              <button type="button" className="icon-button" aria-label="Comments" onClick={openCompose}>
+            <div className={threadsUi.headerActions}>
+              <button type="button" className={threadsUi.iconButton} aria-label="Comments" onClick={openCompose}>
                 <MessageCircle size={21} />
               </button>
               <button
                 type="button"
-                className="icon-button"
+                className={threadsUi.iconButton}
                 aria-label="More"
                 onClick={() => setHeaderMore((v) => !v)}
               >
                 <Ellipsis size={22} />
               </button>
-              <label className="search-box">
+              <label className={threadsUi.searchBox}>
                 <Search size={17} />
                 <input
                   value={query}
@@ -436,31 +445,31 @@ export function ThreadsShell({
                   aria-label="Search"
                 />
               </label>
-              <button type="button" className="icon-button" aria-label="Help" onClick={() => openSection('Help')}>
+              <button type="button" className={threadsUi.iconButton} aria-label="Help" onClick={() => openSection('Help')}>
                 <CircleHelp size={20} />
               </button>
               <button
                 type="button"
-                className="icon-button audience-toggle"
+                className={cn(threadsUi.iconButton, threadsUi.audienceToggle)}
                 aria-label="Toggle agent history"
                 onClick={() => setAudiencePanelOpen((v) => !v)}
               >
                 <History size={20} />
               </button>
               <ThemeSwitch />
-              <button type="button" className="profile-button" aria-hidden="true">
+              <button type="button" className={threadsUi.profileButton} aria-hidden="true">
                 <PixelAvatar seed="you" tone="gold" small />
                 <PixelAvatar seed="profile-2" tone="lavender" small />
               </button>
               {headerMore ? (
-                <div className="header-menu">
-                  <button type="button" onClick={copyLink}>
+                <div className={threadsUi.headerMenu}>
+                  <button type="button" className={threadsUi.menuButton} onClick={copyLink}>
                     Copy link
                   </button>
-                  <button type="button" onClick={() => openSection('Inbox')}>
+                  <button type="button" className={threadsUi.menuButton} onClick={() => openSection('Inbox')}>
                     Open thread
                   </button>
-                  <button type="button" onClick={() => openCompose()}>
+                  <button type="button" className={threadsUi.menuButton} onClick={() => openCompose()}>
                     New comment
                   </button>
                 </div>
@@ -470,21 +479,21 @@ export function ThreadsShell({
 
           {showThread ? (
             alignCenter ? (
-              <div className="thread-scroll">
-                <article className="thread-card">
-                  <div className="thread-main">{children}</div>
+              <div className={threadsUi.threadScroll}>
+                <article className={threadsUi.threadCard}>
+                  <div className={threadsUi.threadMain}>{children}</div>
                 </article>
               </div>
             ) : (
               children
             )
           ) : (
-            <div className="thread-scroll">
-              <article className="thread-card">
-                <div className="thread-main">
+            <div className={threadsUi.threadScroll}>
+              <article className={threadsUi.threadCard}>
+                <div className={threadsUi.threadMain}>
                   <h2>{heading}</h2>
-                  <div className="divider" />
-                  <p className="post-copy">{paneCopy(section)}</p>
+                  <div className={threadsUi.divider} />
+                  <p className={threadsUi.postCopy}>{paneCopy(section)}</p>
                 </div>
               </article>
             </div>
@@ -492,29 +501,30 @@ export function ThreadsShell({
         </section>
 
         {audiencePanelOpen ? (
-          <div className="audience-backdrop" onClick={() => setAudiencePanelOpen(false)} />
+          <div className={threadsUi.audienceBackdrop} onClick={() => setAudiencePanelOpen(false)} />
         ) : null}
 
-        <aside className={cn('audience-panel', audiencePanelOpen && 'audience-panel-open')}>
+        <aside className={cn(threadsUi.audiencePanel, audiencePanelOpen && threadsUi.audiencePanelOpen)}>
           <button
             type="button"
-            className="audience-close"
+            className={threadsUi.audienceClose}
             aria-label="Close agent history"
             onClick={() => setAudiencePanelOpen(false)}
           >
             <X size={18} />
           </button>
-          <div className="audience-title">
+          <div className={threadsUi.audienceTitle}>
             <strong>AUDIENCE</strong>
             <button type="button" onClick={() => setAudienceOpen((v) => !v)}>
               <Laptop size={14} fill="currentColor" /> {audience} <ChevronDown size={14} fill="currentColor" />
             </button>
             {audienceOpen ? (
-              <div className="audience-menu">
+              <div className={threadsUi.audienceMenu}>
                 {PLACEHOLDER_CHANNELS.map((channel) => (
                   <button
                     key={channel.label}
                     type="button"
+                    className={threadsUi.menuButton}
                     onClick={() => {
                       setAudience(channel.label.toUpperCase())
                       openSection(channel.label)
@@ -537,15 +547,15 @@ export function ThreadsShell({
       </div>
 
       {composeOpen ? (
-        <div className="modal-backdrop" onClick={() => setComposeOpen(false)}>
-          <div className="compose-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
+        <div className={threadsUi.modalBackdrop} onClick={() => setComposeOpen(false)}>
+          <div className={threadsUi.composeModal} onClick={(e) => e.stopPropagation()}>
+            <div className={threadsUi.modalHeader}>
               <strong>New thread</strong>
               <button type="button" onClick={() => setComposeOpen(false)} aria-label="Close">
                 <X size={20} />
               </button>
             </div>
-            <div className="modal-user">
+            <div className={threadsUi.modalUser}>
               <PixelAvatar seed="you" tone="lavender" />
               <strong>You</strong>
               <span>
@@ -559,7 +569,7 @@ export function ThreadsShell({
               onChange={(e) => setComposeText(e.target.value)}
             />
             {composeEmoji ? (
-              <div className="emoji-row">
+              <div className={threadsUi.emojiRow}>
                 {['😀', '🎉', '❤️', '👍', '🔥'].map((emoji) => (
                   <button key={emoji} type="button" onClick={() => setComposeText((v) => v + emoji)}>
                     {emoji}
@@ -567,11 +577,11 @@ export function ThreadsShell({
                 ))}
               </div>
             ) : null}
-            <div className="modal-footer">
+            <div className={threadsUi.modalFooter}>
               <button type="button" onClick={() => setComposeEmoji((v) => !v)} aria-label="Emoji">
                 <SmilePlus size={19} />
               </button>
-              <button type="button" className="modal-send" onClick={publish} disabled={!composeText.trim()}>
+              <button type="button" className={threadsUi.modalSend} onClick={publish} disabled={!composeText.trim()}>
                 <Send size={16} /> Publish
               </button>
             </div>
@@ -618,51 +628,66 @@ function WorkspaceRail({
           : []
 
   return (
-    <nav className="guild-rail" aria-label="Workspaces">
+    <nav className={threadsUi.guildRail} aria-label="Workspaces">
       <Hint label="Dashboard" side="right">
-        <button type="button" className="guild-home" onClick={() => navigate('/')} aria-label="Dashboard">
+        <button type="button" className={threadsUi.guildHome} onClick={() => navigate('/')} aria-label="Dashboard">
           <BrandLogo size="size-full" className="rounded-2xl ring-0" />
         </button>
       </Hint>
-      <div className="guild-split" />
+      <div className={threadsUi.guildSplit} />
       {loadError ? (
         <Hint label={loadError} side="right">
-          <span className="guild-btn" aria-label={`Workspace list error: ${loadError}`} role="status">
+          <span className={threadsUi.guildBtn} aria-label={`Workspace list error: ${loadError}`} role="status">
             !
           </span>
         </Hint>
       ) : null}
-      <div className="guild-list">
+      <div className={threadsUi.guildList}>
         {displayGuilds.map((guild) => (
           <Hint key={guild.id} label={guild.name} side="right">
             <button
               type="button"
-              className={cn('guild-btn', guild.id === workspaceId && 'selected')}
+              className={threadsUi.guildBtn}
               onClick={() =>
                 navigate(`/workspaces/${guild.id}/chat`, { state: { name: guild.name } })
               }
               aria-label={guild.name}
               aria-current={guild.id === workspaceId ? 'page' : undefined}
             >
-              <span className="guild-pill" />
+              <span className={threadsUi.guildPill} />
               {guild.mark}
             </button>
           </Hint>
         ))}
       </div>
       <Hint label="Add workspace" side="right">
-        <button type="button" className="guild-btn guild-action" onClick={() => navigate('/create')} aria-label="Add workspace">
+        <button
+          type="button"
+          className={cn(threadsUi.guildBtn, threadsUi.guildAction)}
+          onClick={() => navigate('/create')}
+          aria-label="Add workspace"
+        >
           <Plus size={22} strokeWidth={2.4} />
         </button>
       </Hint>
       <Hint label="Dashboard" side="right">
-        <button type="button" className="guild-btn guild-action" onClick={() => navigate('/')} aria-label="Dashboard">
+        <button
+          type="button"
+          className={cn(threadsUi.guildBtn, threadsUi.guildAction)}
+          onClick={() => navigate('/')}
+          aria-label="Dashboard"
+        >
           <Compass size={20} strokeWidth={2.2} />
         </button>
       </Hint>
-      <div className="guild-end">
+      <div className={threadsUi.guildEnd}>
         <Hint label="Settings" side="right">
-          <button type="button" className="guild-btn guild-action" onClick={onOpenSettings} aria-label="Settings">
+          <button
+            type="button"
+            className={cn(threadsUi.guildBtn, threadsUi.guildAction)}
+            onClick={onOpenSettings}
+            aria-label="Settings"
+          >
             <Settings2 size={20} strokeWidth={2.2} />
           </button>
         </Hint>

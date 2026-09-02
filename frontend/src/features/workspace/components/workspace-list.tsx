@@ -10,6 +10,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-react'
+import { threadsUi } from '@/components/threads-ui'
 import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { PageFallback } from '@/components/page-fallback'
 import { StatusAlert } from '@/components/status-alert'
@@ -135,7 +136,7 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
             </Button>
           </div>
           <div className="divider mb-3! mt-3" />
-          <p className="post-copy">
+          <p className={threadsUi.postCopy}>
             {!ready
               ? 'Loading workspaces…'
               : items.length > 0
