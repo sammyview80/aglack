@@ -1,16 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import {
-  deleteWorkspace,
-  diagnoseWorkspace,
-  listWorkspaces,
-} from '@/features/workspace/api'
+import { deleteWorkspace, diagnoseWorkspace, listWorkspaces } from '@/features/workspace/api'
 import type {
   DiagnosisReport,
   DiagnosisSnapshot,
   WorkspaceListItem,
 } from '@/features/workspace/types'
+import { errorMessage } from '@/lib/api'
 import { handleError } from '@/lib/handle-error'
+import { queryKeys } from '@/lib/query-keys'
 
 const LIST_ERRORS: Record<string, string> = {
   invalid_pagination: 'List request used a bad page size.',
@@ -56,85 +55,55 @@ function diagnosisMessage(report: DiagnosisReport): { ok: boolean; text: string 
 }
 
 export function useWorkspaceList() {
-  const [items, setItems] = useState<WorkspaceListItem[]>([])
-  const [pageLimit, setPageLimit] = useState<number | null>(null)
-  const [lastPageFull, setLastPageFull] = useState(false)
-  const [loadError, setLoadError] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [busyId, setBusyId] = useState<string | null>(null)
-  const [ready, setReady] = useState(false)
+  const queryClient = useQueryClient()
+  const [mutationError, setMutationError] = useState('')
 
-  async function loadFirst() {
-    const next = await listWorkspaces()
-    setItems(next.workspaces)
-    setPageLimit(next.limit)
-    setLastPageFull(next.workspaces.length === next.limit)
-  }
+  const query = useInfiniteQuery({
+    queryKey: queryKeys.workspaces.list(),
+    queryFn: ({ pageParam }) =>
+      listWorkspaces(pageParam === null ? {} : { limit: pageParam.limit, offset: pageParam.offset }),
+    initialPageParam: null as { limit: number; offset: number } | null,
+    getNextPageParam: (lastPage) => {
+      if (lastPage.workspaces.length < lastPage.limit) return undefined
+      return { limit: lastPage.limit, offset: lastPage.offset + lastPage.workspaces.length }
+    },
+  })
 
-  useEffect(() => {
-    let cancelled = false
-    loadFirst()
-      .then(() => {
-        if (!cancelled) setLoadError('')
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setLoadError(
-            handleError(err, {
-              fallback: 'Failed to load workspaces',
-              messagesByCode: LIST_ERRORS,
-            }),
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setReady(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const items: WorkspaceListItem[] = query.data?.pages.flatMap((page) => page.workspaces) ?? []
 
-  async function refresh() {
-    setBusy(true)
-    setLoadError('')
-    try {
-      await loadFirst()
-    } catch (err) {
-      setLoadError(
-        handleError(err, {
-          fallback: 'Failed to load workspaces',
-          messagesByCode: LIST_ERRORS,
-        }),
+  const removeMutation = useMutation({
+    mutationFn: (row: WorkspaceListItem) => deleteWorkspace(row.workspaceId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+    },
+    onError: (err) => {
+      setMutationError(
+        handleError(err, { fallback: 'Failed to delete workspace', messagesByCode: LIST_ERRORS }),
       )
-    } finally {
-      setBusy(false)
-    }
-  }
+    },
+  })
 
-  async function loadMore() {
-    if (pageLimit === null || busy) return
-    setBusy(true)
-    setLoadError('')
-    try {
-      const next = await listWorkspaces({
-        limit: pageLimit,
-        offset: items.length,
-      })
-      setItems((prev) => [...prev, ...next.workspaces])
-      setPageLimit(next.limit)
-      setLastPageFull(next.workspaces.length === next.limit)
-    } catch (err) {
-      setLoadError(
-        handleError(err, {
-          fallback: 'Failed to load more workspaces',
-          messagesByCode: LIST_ERRORS,
-        }),
+  const diagnoseMutation = useMutation({
+    mutationFn: (row: WorkspaceListItem) => diagnoseWorkspace(row.workspaceId),
+    onMutate: async (row) => {
+      const toastId = toast.loading(`Diagnosing "${row.name}"…`)
+      return { toastId }
+    },
+    onSuccess: (report, _row, context) => {
+      const { ok, text } = diagnosisMessage(report)
+      if (context) toast.dismiss(context.toastId)
+      if (ok) toast.success(text)
+      else toast.error(text)
+      setMutationError(ok ? '' : text)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+    },
+    onError: (err, _row, context) => {
+      if (context) toast.dismiss(context.toastId)
+      setMutationError(
+        handleError(err, { fallback: 'Failed to diagnose workspace', messagesByCode: LIST_ERRORS }),
       )
-    } finally {
-      setBusy(false)
-    }
-  }
+    },
+  })
 
   async function remove(row: WorkspaceListItem): Promise<boolean> {
     if (
@@ -144,60 +113,44 @@ export function useWorkspaceList() {
     ) {
       return false
     }
-    setBusyId(row.workspaceId)
-    setLoadError('')
+    setMutationError('')
     try {
-      await deleteWorkspace(row.workspaceId)
-      setItems((prev) => prev.filter((item) => item.workspaceId !== row.workspaceId))
+      await removeMutation.mutateAsync(row)
       return true
-    } catch (err) {
-      setLoadError(
-        handleError(err, {
-          fallback: 'Failed to delete workspace',
-          messagesByCode: LIST_ERRORS,
-        }),
-      )
+    } catch {
       return false
-    } finally {
-      setBusyId(null)
     }
   }
 
   async function diagnose(row: WorkspaceListItem) {
-    setBusyId(row.workspaceId)
-    setLoadError('')
-    const toastId = toast.loading(`Diagnosing "${row.name}"…`)
+    setMutationError('')
     try {
-      const report = await diagnoseWorkspace(row.workspaceId)
-      const { ok, text } = diagnosisMessage(report)
-      toast.dismiss(toastId)
-      if (ok) toast.success(text)
-      else toast.error(text)
-      setLoadError(ok ? '' : text)
-      await loadFirst()
-    } catch (err) {
-      toast.dismiss(toastId)
-      setLoadError(
-        handleError(err, {
-          fallback: 'Failed to diagnose workspace',
-          messagesByCode: LIST_ERRORS,
-        }),
-      )
-    } finally {
-      setBusyId(null)
+      await diagnoseMutation.mutateAsync(row)
+    } catch {
+      // handled in onError
     }
   }
 
+  const loadError = query.isError
+    ? errorMessage(query.error, 'Failed to load workspaces', LIST_ERRORS)
+    : mutationError
+
+  const busyId =
+    removeMutation.isPending
+      ? (removeMutation.variables?.workspaceId ?? null)
+      : diagnoseMutation.isPending
+        ? (diagnoseMutation.variables?.workspaceId ?? null)
+        : null
+
   return {
     items,
-    pageLimit,
-    lastPageFull,
+    lastPageFull: Boolean(query.hasNextPage),
     loadError,
-    busy,
+    busy: query.isFetching,
     busyId,
-    ready,
-    refresh,
-    loadMore,
+    ready: !query.isPending,
+    refresh: () => query.refetch(),
+    loadMore: () => query.fetchNextPage(),
     remove,
     diagnose,
   }

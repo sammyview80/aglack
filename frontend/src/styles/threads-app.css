@@ -167,8 +167,51 @@ html[data-theme="dark"] .threads-app,.dark .threads-app{
 .threads-app .guild-btn:hover .guild-pill:not(.ping){height:20px}
 @media (max-width: 1120px){
   .threads-app .app-window{grid-template-columns:72px 250px minmax(500px,1fr)}
+  .threads-app .audience-panel{
+    display:flex;
+    flex-direction:column;
+    position:fixed;
+    top:0;
+    right:0;
+    bottom:0;
+    width:300px;
+    max-width:85vw;
+    transform:translateX(100%);
+    transition:transform .2s ease;
+    z-index:15;
+    box-shadow:-8px 0 24px #0000004d;
+  }
+  .threads-app .audience-panel.audience-panel-open{transform:translateX(0)}
+  .threads-app .audience-toggle{display:grid}
+  .threads-app .audience-backdrop{display:block;position:fixed;top:0;right:0;bottom:0;left:0;z-index:14;background:var(--th-modal-scrim)}
+  .threads-app .audience-close{display:grid;place-items:center;align-self:flex-end;padding:5px;margin-bottom:8px;background:transparent;color:var(--th-muted);border-radius:6px;transition:background .2s}
+  .threads-app .audience-close:hover{background:var(--th-icon-hover)}
 }
+.threads-app .audience-toggle{display:none}
+.threads-app .audience-backdrop{display:none}
+.threads-app .audience-close{display:none}
 @media (max-width: 760px){
   .threads-app .app-window{grid-template-columns:72px 1fr}
   .threads-app .guild-rail{display:flex}
 }
+.threads-app .audience-empty{color:var(--th-muted);font-size:13px;padding-top:4px}
+.threads-app .audience-avatar-btn{padding:0;background:transparent;border-radius:5px}
+.threads-app .audience-avatar-btn:hover{outline:2px solid var(--th-hover);outline-offset:1px}
+.threads-app .audience-history{display:flex;flex-direction:column;gap:12px;padding-top:14px;min-height:0}
+.threads-app .audience-history-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.threads-app .audience-history-back{display:flex;align-items:center;gap:6px;padding:0;background:transparent;color:var(--th-text);font-size:13px;font-weight:650}
+.threads-app .audience-history-actions{display:flex;align-items:center;gap:4px}
+.threads-app .audience-history-icon{display:grid;place-items:center;padding:5px;background:transparent;color:var(--th-icon);border-radius:6px}
+.threads-app .audience-history-icon:hover{background:var(--th-icon-hover)}
+.threads-app .audience-session-list{display:flex;flex-direction:column;gap:2px;overflow:auto}
+.threads-app .audience-session-item{width:100%;display:flex;flex-direction:column;gap:2px;padding:8px 9px;border-radius:6px;background:transparent;text-align:left}
+.threads-app .audience-session-item:hover{background:var(--th-hover)}
+.threads-app .audience-session-title{color:var(--th-text);font-size:13.5px;font-weight:600}
+.threads-app .audience-session-meta{color:var(--th-muted);font-size:12px}
+.threads-app .audience-messages{display:flex;flex-direction:column;gap:10px;overflow:auto;min-height:0}
+.threads-app .audience-messages-title{color:var(--th-text);font-size:13.5px;font-weight:650}
+.threads-app .audience-message-list{display:flex;flex-direction:column;gap:10px}
+.threads-app .audience-message-item{display:flex;flex-direction:column;gap:3px;padding-bottom:8px;border-bottom:1px solid var(--th-sidebar-line)}
+.threads-app .audience-message-role{color:var(--th-muted);font-size:11px;font-weight:750;letter-spacing:.6px;text-transform:uppercase}
+.threads-app .audience-message-content{margin:0;color:var(--th-text);font-size:13px;line-height:1.45;white-space:pre-wrap}
+.threads-app .audience-message-time{color:var(--th-muted);font-size:11px}

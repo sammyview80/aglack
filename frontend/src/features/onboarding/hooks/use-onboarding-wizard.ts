@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   applyOnboardingSetup,
@@ -17,7 +18,9 @@ import {
   type ProviderCatalogEntry,
   type SetupNeedsConfirm,
 } from '@/features/onboarding/types'
+import { errorMessage } from '@/lib/api'
 import { handleError } from '@/lib/handle-error'
+import { queryKeys } from '@/lib/query-keys'
 import { GATEWAY_WORKSPACE_ERRORS, isInvalidWorkspace } from '@/lib/workspace-errors'
 
 const ONBOARDING_ERRORS: Record<string, string> = {
@@ -40,9 +43,15 @@ export function useOnboardingWizard({
   onInvalidWorkspace,
   onFinished,
 }: UseOnboardingWizardArgs) {
-  const [status, setStatus] = useState<OnboardingStatus | null>(null)
-  const [loadError, setLoadError] = useState('')
-  const [busy, setBusy] = useState(false)
+  const queryClient = useQueryClient()
+  const statusKey = queryKeys.onboarding.status(workspaceId)
+
+  const statusQuery = useQuery({
+    queryKey: statusKey,
+    queryFn: () => getOnboardingStatus(workspaceId),
+  })
+  const status = statusQuery.data ?? null
+
   const [error, setError] = useState('')
   const [providerId, setProviderId] = useState('')
   const [model, setModel] = useState('')
@@ -50,7 +59,47 @@ export function useOnboardingWizard({
   const [baseUrl, setBaseUrl] = useState('')
   const [confirm, setConfirm] = useState<SetupNeedsConfirm | null>(null)
   const [probeModels, setProbeModels] = useState<{ id: string; label: string }[]>([])
-  const [oauth, setOauth] = useState<OAuthFlow | null>(null)
+
+  const initializedFromStatus = useRef(false)
+
+  useEffect(() => {
+    initializedFromStatus.current = false
+    setProviderId('')
+    setModel('')
+    setBaseUrl('')
+    setApiKey('')
+  }, [workspaceId])
+
+  // Onboarding initial load hitting workspace_not_found/workspace_not_ready
+  // redirects to /create rather than showing a retry toast.
+  useEffect(() => {
+    if (!statusQuery.isError) return
+    if (isInvalidWorkspace(statusQuery.error)) {
+      toast.message(
+        'This onboarding link needs a workspace that exists and is ready. Create one first.',
+      )
+      onInvalidWorkspace()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusQuery.isError, statusQuery.error])
+
+  useEffect(() => {
+    if (!status || initializedFromStatus.current) return
+    initializedFromStatus.current = true
+    const current = status.setup.current?.provider
+    if (!current) return
+    setProviderId(current)
+    const p = (status.setup.providers ?? []).find((row) => row.id === current)
+    if (p) {
+      setModel(p.defaultModel || p.models?.[0]?.id || '')
+      setBaseUrl(p.defaultBaseUrl || '')
+    }
+  }, [status])
+
+  const loadError =
+    statusQuery.isError && !isInvalidWorkspace(statusQuery.error)
+      ? errorMessage(statusQuery.error, 'Failed to load onboarding status', ONBOARDING_ERRORS)
+      : ''
 
   const providersById = useMemo(() => {
     const map = new Map<string, ProviderCatalogEntry>()
@@ -61,78 +110,48 @@ export function useOnboardingWizard({
   const selected = providersById.get(providerId)
   const useOauth = Boolean(selected?.oauthProvider)
 
-  useEffect(() => {
-    let cancelled = false
-    getOnboardingStatus(workspaceId)
-      .then((next) => {
-        if (cancelled) return
-        setStatus(next)
-        const current = next.setup.current?.provider
-        if (!current) return
-        setProviderId(current)
-        const p = (next.setup.providers ?? []).find((row) => row.id === current)
-        if (p) {
-          setModel(p.defaultModel || p.models?.[0]?.id || '')
-          setBaseUrl(p.defaultBaseUrl || '')
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return
-        if (isInvalidWorkspace(err)) {
-          toast.message(
-            'This onboarding link needs a workspace that exists and is ready. Create one first.',
-          )
-          onInvalidWorkspace()
-          return
-        }
-        setLoadError(
-          handleError(err, {
-            fallback: 'Failed to load onboarding status',
-            messagesByCode: ONBOARDING_ERRORS,
-          }),
-        )
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceId, onInvalidWorkspace])
+  // OAuth: the one place polling is correct — poll every few seconds until
+  // status leaves 'pending', then stop.
+  const [oauthFlowId, setOauthFlowId] = useState<string | null>(null)
+  const [oauthInitial, setOauthInitial] = useState<OAuthFlow | null>(null)
+
+  const oauthQuery = useQuery({
+    queryKey: ['onboarding', workspaceId, 'oauth', oauthFlowId] as const,
+    queryFn: () => pollOAuthFlow(workspaceId, oauthFlowId as string),
+    enabled: Boolean(oauthFlowId),
+    initialData: oauthInitial ?? undefined,
+    retry: 0,
+    refetchInterval: (query) => {
+      if (query.state.status === 'error') return false
+      return query.state.data?.status === 'pending' ? 3000 : false
+    },
+  })
 
   useEffect(() => {
-    if (!oauth || oauth.status !== 'pending') return
-    const flowId = oauth.flowId
-    const id = window.setInterval(() => {
-      pollOAuthFlow(workspaceId, flowId)
-        .then((next) => {
-          setOauth(next)
-          if (next.status === 'success') {
-            toast.success('OAuth connected.')
-          }
-        })
-        .catch((err) => {
-          setError(
-            handleError(err, {
-              fallback: 'OAuth poll failed',
-              messagesByCode: ONBOARDING_ERRORS,
-            }),
-          )
-          setOauth((prev) => (prev ? { ...prev, status: 'error' } : prev))
-        })
-    }, 3000)
-    return () => window.clearInterval(id)
-  }, [workspaceId, oauth?.flowId, oauth?.status])
+    if (oauthQuery.data?.status === 'success') toast.success('OAuth connected.')
+  }, [oauthQuery.data?.status])
+
+  useEffect(() => {
+    if (!oauthQuery.isError) return
+    setError(handleError(oauthQuery.error, { fallback: 'OAuth poll failed', messagesByCode: ONBOARDING_ERRORS }))
+  }, [oauthQuery.isError, oauthQuery.error])
+
+  const oauth: OAuthFlow | null = oauthFlowId
+    ? oauthQuery.isError
+      ? { ...(oauthQuery.data ?? oauthInitial)!, status: 'error' }
+      : (oauthQuery.data ?? oauthInitial)
+    : null
 
   async function finish(next?: OnboardingStatus) {
     const done = next ?? (await completeOnboarding(workspaceId))
-    setStatus(done)
+    queryClient.setQueryData(statusKey, done)
     toast.success('Model setup saved.')
     onFinished()
   }
 
-  async function submitSetup(confirmOverwrite = false) {
-    if (!selected) return
-    setBusy(true)
-    setError('')
-    try {
+  const setupMutation = useMutation({
+    mutationFn: async (confirmOverwrite: boolean) => {
+      if (!selected) throw new Error('No provider selected')
       if (SELF_HOSTED.has(selected.id)) {
         await applySelfHostedSetup(workspaceId, {
           provider: selected.id,
@@ -141,8 +160,7 @@ export function useOnboardingWizard({
           baseUrl: baseUrl || undefined,
           activate: true,
         })
-        await finish()
-        return
+        return { selfHosted: true as const }
       }
       const data = await applyOnboardingSetup(workspaceId, {
         provider: selected.id,
@@ -151,32 +169,41 @@ export function useOnboardingWizard({
         baseUrl: baseUrl || undefined,
         confirmOverwrite: confirmOverwrite || undefined,
       })
-      if (isSetupNeedsConfirm(data)) {
-        setConfirm(data)
+      return { selfHosted: false as const, data }
+    },
+    onSuccess: async (result) => {
+      if (result.selfHosted) {
+        await finish()
         return
       }
-      await finish(data.completed ? data : undefined)
-    } catch (err) {
-      setError(
-        handleError(err, {
-          fallback: 'Failed to apply setup',
-          messagesByCode: ONBOARDING_ERRORS,
-        }),
-      )
-    } finally {
-      setBusy(false)
+      if (isSetupNeedsConfirm(result.data)) {
+        setConfirm(result.data)
+        return
+      }
+      await finish(result.data.completed ? result.data : undefined)
+    },
+    onError: (err) => {
+      setError(handleError(err, { fallback: 'Failed to apply setup', messagesByCode: ONBOARDING_ERRORS }))
+    },
+  })
+
+  async function submitSetup(confirmOverwrite = false) {
+    setError('')
+    try {
+      await setupMutation.mutateAsync(confirmOverwrite)
+    } catch {
+      // handled in onError
     }
   }
 
-  async function runProbe() {
-    setBusy(true)
-    setError('')
-    try {
-      const result = await probeProvider(workspaceId, {
+  const probeMutation = useMutation({
+    mutationFn: () =>
+      probeProvider(workspaceId, {
         provider: selected?.id,
         baseUrl,
         apiKey: apiKey || undefined,
-      })
+      }),
+    onSuccess: (result) => {
       if (!result.ok) {
         setError(result.error || result.detail || 'Probe failed')
         toast.error(result.error || 'Cannot reach that base URL')
@@ -185,52 +212,58 @@ export function useOnboardingWizard({
       setProbeModels(result.models ?? [])
       if (result.models?.[0]) setModel(result.models[0].id)
       toast.success('Endpoint reachable.')
-    } catch (err) {
-      setError(
-        handleError(err, {
-          fallback: 'Probe failed',
-          messagesByCode: ONBOARDING_ERRORS,
-        }),
-      )
-    } finally {
-      setBusy(false)
+    },
+    onError: (err) => {
+      setError(handleError(err, { fallback: 'Probe failed', messagesByCode: ONBOARDING_ERRORS }))
+    },
+  })
+
+  async function runProbe() {
+    setError('')
+    try {
+      await probeMutation.mutateAsync()
+    } catch {
+      // handled in onError
     }
   }
+
+  const startOauthMutation = useMutation({
+    mutationFn: () => startOAuthFlow(workspaceId, (selected as ProviderCatalogEntry).id),
+    onSuccess: (flow) => {
+      setOauthInitial(flow)
+      setOauthFlowId(flow.flowId)
+    },
+    onError: (err) => {
+      setError(handleError(err, { fallback: 'Could not start OAuth', messagesByCode: ONBOARDING_ERRORS }))
+    },
+  })
 
   async function startOauth() {
     if (!selected) return
-    setBusy(true)
-    setError('')
     try {
-      const flow = await startOAuthFlow(workspaceId, selected.id)
-      setOauth(flow)
-    } catch (err) {
-      setError(
-        handleError(err, {
-          fallback: 'Could not start OAuth',
-          messagesByCode: ONBOARDING_ERRORS,
-        }),
-      )
-    } finally {
-      setBusy(false)
+      await startOauthMutation.mutateAsync()
+    } catch {
+      // handled in onError
     }
   }
 
+  const stopOauthMutation = useMutation({
+    mutationFn: () => cancelOAuthFlow(workspaceId, oauthFlowId as string, selected?.id),
+    onSuccess: () => {
+      setOauthFlowId(null)
+      setOauthInitial(null)
+    },
+    onError: (err) => {
+      setError(handleError(err, { fallback: 'Could not cancel OAuth', messagesByCode: ONBOARDING_ERRORS }))
+    },
+  })
+
   async function stopOauth() {
-    if (!oauth) return
-    setBusy(true)
+    if (!oauthFlowId) return
     try {
-      await cancelOAuthFlow(workspaceId, oauth.flowId, selected?.id)
-      setOauth(null)
-    } catch (err) {
-      setError(
-        handleError(err, {
-          fallback: 'Could not cancel OAuth',
-          messagesByCode: ONBOARDING_ERRORS,
-        }),
-      )
-    } finally {
-      setBusy(false)
+      await stopOauthMutation.mutateAsync()
+    } catch {
+      // handled in onError
     }
   }
 
@@ -241,15 +274,23 @@ export function useOnboardingWizard({
     setApiKey('')
     setConfirm(null)
     setProbeModels([])
-    setOauth(null)
+    setOauthFlowId(null)
+    setOauthInitial(null)
     setError('')
   }
 
   const modelOptions = probeModels.length > 0 ? probeModels : (selected?.models ?? [])
 
+  const busy =
+    setupMutation.isPending ||
+    probeMutation.isPending ||
+    startOauthMutation.isPending ||
+    stopOauthMutation.isPending
+
   return {
     status,
     loadError,
+    refetchStatus: statusQuery.refetch,
     busy,
     error,
     providerId,

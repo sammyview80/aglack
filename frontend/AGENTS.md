@@ -101,10 +101,16 @@ src/
     agent-seeder/  rust_gateway /workspaces/:id/agent-seeder/* (camelCase DTOs);
                    modes.ts is the mode catalog (id/label/description/run) —
                    add a mode here, not as a branch in mode-select.tsx
+    agent-history/ rust_gateway /workspaces/:id/agent-history/* (camelCase DTOs);
+                   read-only agent/session/message browser powering the
+                   AUDIENCE panel in threads-shell.tsx, fresh-on-open + manual
+                   refresh only (no polling, no websockets, no timers)
     theme/
   lib/
-    env.ts      gatewayUrl
-    api.ts      apiFetch / ApiError / errorMessage
+    env.ts          gatewayUrl
+    api.ts          apiFetch / ApiError / errorMessage
+    query-client.ts the one QueryClient (staleTime / 4xx-aware retry policy)
+    query-keys.ts   hierarchical query key factory — keys carry full identity
     handle-error.ts
 ```
 
@@ -155,6 +161,78 @@ successful forward: `agent_seeder_profile_create_failed`,
 for what each means). None of these have friendly per-code messages in
 `mode-select.tsx` yet beyond the two gateway ones — add to `MODE_ERRORS`
 there if a specific one needs a better message than the raw server text.
+
+## Agent History API
+
+Base: `${VITE_GATEWAY_URL}/workspaces/:workspaceId/agent-history`
+
+| Call | Notes |
+| --- | --- |
+| GET `/agents` | `{ agents: [{ name }] }` — every agent is a Hermes profile. |
+| GET `/agents/:name/sessions?limit=&offset=` | `{ sessions, limit, offset }`. Each session is metadata only, projected to exactly 5 keys (`session_id`, `title`, `message_count`, `updated_at`, `last_message_at`), newest first. |
+| GET `/agents/:name/sessions/:sessionId/messages?limit=&offset=` | `{ messages: [{ role, content, timestamp }], limit, offset, total }`. |
+
+Pagination `limit` defaults to 50, hard-capped at 200; `offset` defaults to
+0. `features/agent-history/api.ts` remaps every snake_case field above to
+camelCase (`sessionId`, `messageCount`, `updatedAt`, `lastMessageAt`) —
+same pattern as `workspace`/`onboarding`. Cross-agent isolation is enforced
+server-side: requesting a session under the wrong agent name 404s rather
+than returning another agent's transcript.
+
+Same gateway error codes as onboarding/agent-seeder
+(`workspace_not_found` 404, `workspace_not_ready` 409) before any wrapper
+hop. Wrapper codes after a successful forward: `agent_history_profile_not_found`
+(404), `agent_history_session_not_found` (404), `agent_history_invalid_limit`
+(400), `agent_history_invalid_offset` (400).
+
+Freshness is deliberately fresh-on-open + manual refresh only — no
+polling, no websockets, no timers. Opening an agent or session re-fetches
+once; a visible refresh control re-fetches on demand. The three queries are
+gated on the panel actually being open (`panelOpen` ANDed into `enabled`),
+so nothing is fetched while the AUDIENCE panel is closed — **do not
+reintroduce a prefetch of agent history from another screen**: the
+workspace dashboard did exactly that once (hover a workspace card →
+`listAgents`) and it silently defeated the gate. Prefetch agent history
+only from inside the panel, on hover/focus of an agent or session.
+
+## Server state: TanStack Query (React Query v5)
+
+**Every server read goes through React Query.** Do not add a new
+`useEffect` + `useState` fetch — that pattern is gone from this codebase on
+purpose (it produced a real stale-response race in the agent-history panel,
+fixed by migrating to `useQuery`).
+
+- `lib/query-client.ts` — the one `QueryClient`. `staleTime` 30s,
+  `refetchOnWindowFocus: false` (this app has explicit refresh controls),
+  queries retry once, mutations never. **The retry predicate never retries a
+  structured 4xx** (`workspace_not_found`, `workspace_not_ready`, …) — only
+  `network` / `invalid_response` are worth a retry. Retrying a 404 is pure
+  latency.
+- `lib/query-keys.ts` — the hierarchical key factory. Every key MUST carry
+  its full identity (`workspaceId`, agent name, session id). A key missing
+  part of its identity is a cross-tenant cache leak, not a style nit.
+- Query/mutation hooks live in the owning feature
+  (`features/<name>/hooks/`), never inline in a page or shell component.
+- Lists that page (`limit`/`offset`) use `useInfiniteQuery`. First page
+  sends no args; later pages send the **echoed** `limit` plus an `offset` of
+  the loaded count, and `getNextPageParam` returns `undefined` once a page
+  comes back short.
+- Mutations (`delete`, `diagnose`, onboarding `setup`/`probe`/`complete`)
+  invalidate the relevant key on success rather than hand-patching cache.
+- `placeholderData: keepPreviousData` is only for a page change **within one
+  identity**. Never across a different agent/session/workspace — it renders
+  the previous entity's data under the new one (a real bug caught in review).
+  Show the skeleton instead.
+- Skeletons render on `isPending` (first load) only, never on a background
+  refetch — a refetch must not rip content out from under the user. Reuse
+  `components/ui/skeleton.tsx`; feature-shaped skeletons live in the feature.
+- Query errors render inline with a retry wired to `refetch()`. Never
+  `window.location.reload()` — that throws away the whole SPA and every other
+  cache entry to recover one request.
+- Polling is the exception, not the default: only the OAuth poll and it must
+  terminate (`refetchInterval` returns `false` once the flow leaves
+  `pending`).
+- Devtools are dev-only and must stay out of the production bundle.
 
 ## Errors / toasts / fallbacks
 

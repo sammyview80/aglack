@@ -13,6 +13,7 @@ import {
 import { SlackOnboardingLayout } from '@/components/slack-onboarding-layout'
 import { PageFallback } from '@/components/page-fallback'
 import { StatusAlert } from '@/components/status-alert'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { APP_NAME } from '@/lib/brand'
@@ -105,7 +106,7 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
         title="Cannot load workspaces"
         description={loadError}
         actionLabel="Retry"
-        onAction={() => window.location.reload()}
+        onAction={() => void refresh()}
         hideBack
       />
     )
@@ -190,7 +191,17 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
         <StatusAlert message={loadError} />
 
         {!ready ? (
-          <p className="text-sm text-muted-foreground">Loading workspaces…</p>
+          <ul className="overflow-hidden rounded-xl border border-border" aria-label="Loading workspaces">
+            {[0, 1, 2].map((i) => (
+              <li key={i} className="flex items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0">
+                <Skeleton className="size-9 shrink-0 rounded-lg" />
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <Skeleton className="h-3.5 w-1/3" />
+                  <Skeleton className="h-3 w-1/5" />
+                </div>
+              </li>
+            ))}
+          </ul>
         ) : items.length === 0 ? (
           <p className="text-sm text-muted-foreground">No workspaces yet.</p>
         ) : filtered.length === 0 ? (
@@ -208,8 +219,12 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
                 <li
                   key={row.workspaceId}
                   className="border-b border-border last:border-b-0"
-                  onMouseEnter={() => setPreviewId(row.workspaceId)}
-                  onFocusCapture={() => setPreviewId(row.workspaceId)}
+                  onMouseEnter={() => {
+                    setPreviewId(row.workspaceId)
+                  }}
+                  onFocusCapture={() => {
+                    setPreviewId(row.workspaceId)
+                  }}
                 >
                   <div className={cn('flex items-center hover:bg-muted', busyRow && 'opacity-55')}>
                     <button

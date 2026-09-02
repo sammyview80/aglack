@@ -28,6 +28,7 @@ export function OnboardingWizard({
   const {
     status,
     loadError,
+    refetchStatus,
     busy,
     error,
     apiKey,
@@ -57,7 +58,7 @@ export function OnboardingWizard({
         title="Cannot load onboarding"
         description={loadError}
         actionLabel="Retry"
-        onAction={() => window.location.reload()}
+        onAction={() => void refetchStatus()}
         onBack={onBack}
       />
     )

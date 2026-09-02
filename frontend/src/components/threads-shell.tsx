@@ -25,7 +25,8 @@ import { ThemeSwitch } from '@/features/theme/theme-switch'
 import { Hint, TooltipProvider } from '@/components/ui/tooltip'
 import { BrandLogo } from '@/components/brand-mark'
 import { cn } from '@/lib/utils'
-import { listWorkspaces } from '@/features/workspace/api'
+import { useWorkspaceList } from '@/features/workspace/hooks/use-workspace-list'
+import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
 import '@/styles/threads-app.css'
 
 export type ThreadsWorkspaceIcon = {
@@ -68,31 +69,6 @@ const PLACEHOLDER_PEOPLE: { name: string; tone: AvatarTone; badge?: string }[] =
   { name: 'adam', tone: 'aqua' },
   { name: 'addie', tone: 'pink' },
   { name: 'courtney', tone: 'gold' },
-]
-
-const PLACEHOLDER_AUDIENCE: AvatarTone[] = [
-  'lavender',
-  'gold',
-  'aqua',
-  'pink',
-  'gold',
-  'blue',
-  'gray',
-  'aqua',
-  'gold',
-  'lavender',
-  'blue',
-  'gray',
-  'gold',
-  'aqua',
-  'blue',
-  'gray',
-  'gold',
-  'pink',
-  'gray',
-  'gold',
-  'lavender',
-  'pink',
 ]
 
 const THREAD_SECTIONS = new Set(['Inbox', 'Thread', 'design-www', 'Setup'])
@@ -165,7 +141,31 @@ export function ThreadsShell({
   const [moreOpen, setMoreOpen] = useState(false)
   const [headerMore, setHeaderMore] = useState(false)
   const [audienceOpen, setAudienceOpen] = useState(false)
+  const [audiencePanelOpen, setAudiencePanelOpen] = useState(false)
   const [audience, setAudience] = useState('DESIGN-WWW')
+
+  useEffect(() => {
+    if (!audiencePanelOpen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setAudiencePanelOpen(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [audiencePanelOpen])
+
+  // Below 1120px the audience panel is a drawer (display:none until opened);
+  // above it, the panel is always visible in the three-column layout, so
+  // treat that width as "open" without requiring a click.
+  const [isAudienceDesktop, setIsAudienceDesktop] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1121px)').matches,
+  )
+  useEffect(() => {
+    const mql = window.matchMedia('(min-width: 1121px)')
+    const onChange = () => setIsAudienceDesktop(mql.matches)
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [])
+  const audienceVisible = isAudienceDesktop || audiencePanelOpen
   const [query, setQuery] = useState(search ?? '')
   const [badges, setBadges] = useState<Record<string, string | undefined>>(() =>
     Object.fromEntries(PLACEHOLDER_PEOPLE.map((row) => [row.name, row.badge])),
@@ -374,6 +374,14 @@ export function ThreadsShell({
               <button type="button" className="icon-button" aria-label="Help" onClick={() => openSection('Help')}>
                 <CircleHelp size={20} />
               </button>
+              <button
+                type="button"
+                className="icon-button audience-toggle"
+                aria-label="Toggle agent history"
+                onClick={() => setAudiencePanelOpen((v) => !v)}
+              >
+                <History size={20} />
+              </button>
               <ThemeSwitch />
               <button type="button" className="profile-button" aria-hidden="true">
                 <PixelAvatar seed="you" tone="gold" small />
@@ -418,7 +426,19 @@ export function ThreadsShell({
           )}
         </section>
 
-        <aside className="audience-panel">
+        {audiencePanelOpen ? (
+          <div className="audience-backdrop" onClick={() => setAudiencePanelOpen(false)} />
+        ) : null}
+
+        <aside className={cn('audience-panel', audiencePanelOpen && 'audience-panel-open')}>
+          <button
+            type="button"
+            className="audience-close"
+            aria-label="Close agent history"
+            onClick={() => setAudiencePanelOpen(false)}
+          >
+            <X size={18} />
+          </button>
           <div className="audience-title">
             <strong>AUDIENCE</strong>
             <button type="button" onClick={() => setAudienceOpen((v) => !v)}>
@@ -441,11 +461,7 @@ export function ThreadsShell({
               </div>
             ) : null}
           </div>
-          <div className="audience-grid">
-            {PLACEHOLDER_AUDIENCE.map((tone, index) => (
-              <PixelAvatar key={`${tone}-${index}`} seed={`audience-${index}`} tone={tone} small />
-            ))}
-          </div>
+          <AgentHistoryPanel workspaceId={workspaceId} open={audienceVisible} />
         </aside>
       </div>
 
@@ -506,28 +522,12 @@ function WorkspaceRail({
   onOpenSettings: () => void
 }) {
   const navigate = useNavigate()
-  const [guilds, setGuilds] = useState<GuildEntry[]>([])
-
-  useEffect(() => {
-    let cancelled = false
-    listWorkspaces({ health: 'skip' })
-      .then((result) => {
-        if (cancelled) return
-        setGuilds(
-          result.workspaces.map((row) => ({
-            id: row.workspaceId,
-            name: row.name,
-            mark: row.name.trim().charAt(0).toUpperCase() || 'W',
-          })),
-        )
-      })
-      .catch(() => {
-        /* fallback entry below covers the rail when the fetch fails */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const { items, loadError } = useWorkspaceList()
+  const guilds: GuildEntry[] = items.map((row) => ({
+    id: row.workspaceId,
+    name: row.name,
+    mark: row.name.trim().charAt(0).toUpperCase() || 'W',
+  }))
 
   const currentEntry: GuildEntry | null = workspaceId
     ? {
@@ -554,6 +554,13 @@ function WorkspaceRail({
         </button>
       </Hint>
       <div className="guild-split" />
+      {loadError ? (
+        <Hint label={loadError} side="right">
+          <span className="guild-btn" aria-label={`Workspace list error: ${loadError}`} role="status">
+            !
+          </span>
+        </Hint>
+      ) : null}
       <div className="guild-list">
         {displayGuilds.map((guild) => (
           <Hint key={guild.id} label={guild.name} side="right">

@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createWorkspace } from '@/features/workspace/api'
 import { CreatingStatus } from '@/features/workspace/components/creating-status'
 import { clearCreateDraft } from '@/features/workspace/draft-storage'
 import type { CreateWorkspaceResult } from '@/features/workspace/types'
 import { handleError } from '@/lib/handle-error'
+import { queryKeys } from '@/lib/query-keys'
 
 type LocationState = {
   result: CreateWorkspaceResult
@@ -14,38 +16,48 @@ type LocationState = {
 export function CreatingWorkspacePage() {
   const location = useLocation()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const state = location.state as LocationState | null
   const [result, setResult] = useState<CreateWorkspaceResult | null>(state?.result ?? null)
   const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (result?.status !== 'ready') return
     clearCreateDraft()
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
     navigate(`/onboarding/${result.workspaceId}`, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result?.status, result?.workspaceId, navigate])
 
-  async function retry() {
-    if (!state) return
-    setBusy(true)
-    setError('')
-    try {
-      const next = await createWorkspace(state.workspaceName)
+  const retryMutation = useMutation({
+    mutationFn: () => createWorkspace((state as LocationState).workspaceName),
+    onSuccess: (next) => {
       setResult(next)
-    } catch (err) {
+    },
+    onError: (err) => {
       setError(
         handleError(err, {
           fallback: 'Failed to create workspace',
           messagesByCode: {
-            workspace_name_taken: `"${state.workspaceName}" is already taken — choose a different name.`,
+            workspace_name_taken: `"${state?.workspaceName}" is already taken — choose a different name.`,
             network: 'Cannot reach the gateway. Is rust_gateway running?',
           },
         }),
       )
-    } finally {
-      setBusy(false)
+    },
+  })
+
+  async function retry() {
+    if (!state) return
+    setError('')
+    try {
+      await retryMutation.mutateAsync()
+    } catch {
+      // handled in onError
     }
   }
+
+  const busy = retryMutation.isPending
 
   if (result?.status === 'ready') return null
 
