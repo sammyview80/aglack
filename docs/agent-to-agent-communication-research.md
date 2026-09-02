@@ -148,14 +148,14 @@ Reliability rules that recur across sources:
 - The seeder's org skills (`backend/seeder/skills/org-comm-protocol`,
   `org-routing`) are prompt-level versions of §4's mention-routing and
   supervisor patterns; the ladder + `decidedBy` logging and layered
-  termination are the proven next steps if hermano builds real
+  termination are the proven next steps if aglack builds real
   agent-to-agent chat.
 - A2A is the interoperability story if workspaces' agents should talk
   ACROSS containers/tenants: each workspace could publish an Agent Card
   through the gateway and accept `message:send` — the gateway's
   wrapper-namespace proxy pattern fits this as a new namespace.
 - Grok's model (opaque parallel agents + leader) is a *model capability*,
-  not a protocol — relevant only if hermano adopts xAI's Responses API
+  not a protocol — relevant only if aglack adopts xAI's Responses API
   as a backend.
 
 ## Sources (crawled with crawl4ai)

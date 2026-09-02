@@ -1,4 +1,4 @@
-# hermano ⚙️
+# aglack ⚙️
 
 Multi-tenant control plane that runs one **Hermes WebUI** agent
 environment per workspace, each in its own Docker container, behind a
