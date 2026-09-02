@@ -13,6 +13,7 @@
 
 mod agent_history_proxy;
 mod agent_seeder_proxy;
+mod chat_proxy;
 pub(crate) mod container;
 mod desktop_proxy;
 pub(crate) mod diagnosis;
@@ -27,6 +28,7 @@ mod wrapper_prefix_proxy;
 
 pub use agent_history_proxy::{agent_history_proxy_route_root, agent_history_proxy_route_with_path};
 pub use agent_seeder_proxy::{agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path};
+pub use chat_proxy::{chat_proxy_route_root, chat_proxy_route_with_path};
 pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};
 pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
 pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
