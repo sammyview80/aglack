@@ -77,6 +77,19 @@ async fn main() {
         "forwarding every request to http://{}",
         config.backend_addr()
     );
+    // Printed on every startup, not just on error: a CORS rejection is
+    // silent on the server side (the browser blocks it, this process
+    // never logs anything wrong) and looks identical to a real gateway
+    // bug from the browser's console alone. Having the exact allowed
+    // origin string right here, every time, turns "why is this a CORS
+    // error" into a 5-second diff against the browser's own address bar
+    // instead of a code-reading exercise — see docs/troubleshooting.md's
+    // "Cross-origin mismatch" entry for the full walkthrough.
+    println!(
+        "CORS: only {} may make browser (fetch/XHR) requests here — \
+         if your frontend is open at a different origin, this is why chat/onboarding calls fail with a CORS error",
+        config.frontend_origin
+    );
 
     axum::serve(listener, app)
         .await

@@ -174,6 +174,13 @@ real containers via `POST /workspaces`.
   (read latest first), changelogs in `checkpoints/CHANGELOG*.md`.
 - Research notes: `docs/` (e.g. `docs/hermes-extensions-and-mcp.md` for
   the plugin/MCP integration landscape).
+- **Hitting a CORS error, or anything else that looks like an
+  environment/config bug rather than a code bug? Check
+  `docs/troubleshooting.md` first** — it covers the recurring
+  cross-origin (CORS) mismatch class of error (port drift,
+  `localhost`/`127.0.0.1` mismatch, missing credentials header, stale
+  running process) with a 30-second diagnosis recipe, before you start
+  reading gateway/proxy code.
 
 ## Pushing changes
 
