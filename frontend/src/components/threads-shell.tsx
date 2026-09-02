@@ -345,7 +345,7 @@ export function ThreadsShell({
                 <span className="person-avatar-wrap">
                   <PixelAvatar seed={agent.name} small />
                 </span>
-                <span>{agent.name}</span>
+                <span className="person-name">{agent.name}</span>
               </button>
             ))}
           </section>
