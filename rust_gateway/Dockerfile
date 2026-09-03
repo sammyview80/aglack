@@ -109,10 +109,22 @@ FROM debian:bookworm-slim
 # sqlite3 (see the builder-stage comment above — no `bundled` feature is
 # enabled in Cargo.lock). ca-certificates: `reqwest` (rustls-tls) still
 # needs the system CA bundle to validate outbound HTTPS (OpenConnector /
-# backend calls).
+# backend calls). docker.io: this gateway shells out to the real `docker`
+# CLI (docker create/cp/start/inspect — see
+# src/workspaces/container/docker_cli.rs, token_delivery.rs) to orchestrate
+# per-workspace SIBLING containers on the HOST's Docker daemon — mounting
+# /var/run/docker.sock alone is not enough, the `docker` CLIENT BINARY must
+# also exist inside this image to actually run those commands (confirmed
+# live: without it, every `docker create` attempt fails with "docker:
+# executable file not found in $PATH", masked one layer up as a generic
+# "container launch error"). `docker.io` (Debian's packaged client) is
+# used rather than Docker's own APT repo to avoid a second external repo
+# just for the CLI binary — this container never runs `dockerd` itself,
+# only the client talking to the host's socket.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsqlite3-0 \
     ca-certificates \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
