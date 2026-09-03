@@ -73,6 +73,11 @@ const ALLOWED_METHODS: &[&str] = &[
 /// get an error" step to skip. It is read-only (no connection-naming
 /// fields, nothing to sanitize) exactly like the other catalog-browsing
 /// tools above, so it belongs in this same allowlist group.
+///
+/// `search_connection` (also in `mcp_server.py`) is a client-side
+/// substring filter over the SAME `list_connections` result — it forwards
+/// only a `list_connections` call, never a new listing method. Read-only,
+/// no connection-naming fields, same allowlist group as `list_connections`.
 const ALLOWED_TOOLS: &[&str] = &[
     "execute_action",
     "list_connections",
@@ -80,6 +85,7 @@ const ALLOWED_TOOLS: &[&str] = &[
     "get_action_guide",
     "list_apps",
     "find_action",
+    "search_connection",
 ];
 
 /// Re-exported from `crate::crypto` so every EXISTING call site inside
@@ -782,6 +788,19 @@ mod tests {
     }
 
     #[test]
+    fn allows_search_connection() {
+        // `search_connection` (in `mcp_server.py`) is a client-side
+        // substring filter over this workspace's own `list_connections`
+        // result — read-only, no connection-naming fields, so it must pass
+        // the allowlist exactly like `list_connections`/`find_action` do.
+        let request = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"search_connection","arguments":{"query":"git","limit":20}}
+        });
+        assert!(sanitize_request("ws-1", &[], request).is_ok());
+    }
+
+    #[test]
     fn allows_execute_action_and_list_connections() {
         for tool in ["execute_action", "list_connections"] {
             let request = json!({
@@ -802,6 +821,7 @@ mod tests {
             icon: None,
             openconnector_service: id.to_string(),
             description: None,
+            homepage_url: None,
             oauth_client_env: None,
             allowed_actions: allowed_actions.into_iter().map(str::to_string).collect(),
         }

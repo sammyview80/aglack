@@ -23,6 +23,12 @@ pub struct Provider {
     pub openconnector_service: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Marketing homepage (e.g. `https://github.com`). The frontend derives
+    /// a brand favicon from its hostname (see
+    /// `frontend/.../components/provider-mark.tsx`); absent means "no
+    /// favicon, render the generated initials tile" — never an error.
+    #[serde(default)]
+    pub homepage_url: Option<String>,
     /// Env-var name PREFIX for this provider's OAuth client credentials —
     /// e.g. `GITHUB_OAUTH` means `GITHUB_OAUTH_CLIENT_ID` and
     /// `GITHUB_OAUTH_CLIENT_SECRET` (see `Provider::oauth_credentials`).
@@ -201,6 +207,7 @@ providers:
             icon: None,
             openconnector_service: "test-provider".to_string(),
             description: None,
+            homepage_url: None,
             oauth_client_env: Some(prefix.to_string()),
             allowed_actions: Vec::new(),
         }
@@ -214,6 +221,7 @@ providers:
             icon: None,
             openconnector_service: "no-oauth".to_string(),
             description: None,
+            homepage_url: None,
             oauth_client_env: None,
             allowed_actions: Vec::new(),
         };
@@ -261,5 +269,25 @@ providers:
         provider.allowed_actions = vec!["github.get_current_user".to_string()];
         assert!(provider.allows_action("github.get_current_user"));
         assert!(!provider.allows_action("github.delete_repo"));
+    }
+
+    /// The REAL catalog on disk (not a temp fixture) must load: a broken
+    /// entry there fails gateway startup, so catch it here first.
+    #[test]
+    fn real_providers_yaml_on_disk_loads_with_every_catalog_entry() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../backend/integrations/providers.yaml");
+        let providers = load_providers(&path).expect("real providers.yaml loads");
+        assert_eq!(providers.len(), 104);
+        let unique: std::collections::HashSet<&str> =
+            providers.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(unique.len(), providers.len(), "duplicate provider ids");
+        for provider in &providers {
+            assert!(
+                !provider.openconnector_service.trim().is_empty(),
+                "provider {:?} has an empty openconnector_service",
+                provider.id
+            );
+        }
     }
 }

@@ -415,6 +415,7 @@ mod tests {
             icon: None,
             openconnector_service: id.to_string(),
             description: None,
+            homepage_url: None,
             oauth_client_env: None,
             allowed_actions: Vec::new(),
         }

@@ -33,8 +33,10 @@ adding a tool here without also adding it to that allowlist would just
 get every call to it rejected by the gateway, so the two lists must be
 kept in sync by hand for now (no shared schema between the two
 processes/languages). Currently: `list_connections`, `execute_action`,
-and `find_action` (added to fix agents guessing `execute_action` ids —
-see `find_action`'s own doc comment below).
+`find_action` (added to fix agents guessing `execute_action` ids — see
+`find_action`'s own doc comment below), and `search_connection` (an
+in-memory substring filter over `list_connections`'s own result — see its
+doc comment below).
 """
 from __future__ import annotations
 
@@ -52,6 +54,28 @@ from hermes_webui_wrapper.features.integrations.service import (
 )
 
 _T = TypeVar("_T", bound=dict[str, Any])
+
+# Connection fields `search_connection` substring-matches against — exactly
+# the id/name/service triple its doc comment promises, nothing more.
+#
+# Deliberately NOT `connectionName`: the gateway (`mcp_proxy.rs`) strips any
+# client-supplied `connectionName` and overwrites it with
+# `workspace_connection_name(workspace_id)` (`ws-{workspace_id}`), and
+# `route.rs` matches remote connections on that same single per-workspace
+# value — so every connection `list_connections` returns for a workspace
+# carries the SAME `connectionName`. Filtering on it would make any query
+# that happens to hit the workspace id (e.g. "ws") match every connection,
+# which is worse than useless for a search tool.
+#
+# Deliberately NOT `provider_id`/`providerId` either: those belong to the
+# gateway's REST `ConnectionSummaryOut` (`GET /integrations/connections`),
+# not to OpenConnector's MCP `list_connections` response this tool relays,
+# so they never appear in the rows being filtered here.
+_SEARCH_CONNECTION_FIELDS: tuple[str, ...] = (
+    "id",
+    "name",
+    "service",
+)
 
 
 def _tool_error_boundary(
@@ -137,6 +161,63 @@ def build_mcp_app() -> tuple[Starlette, Callable[[], "AsyncIterator[None]"]]:
         }
         response = await anyio.to_thread.run_sync(relay_mcp_call, body)
         return _unwrap(response)
+
+    @mcp.tool()
+    @_tool_error_boundary
+    async def search_connection(query: str, limit: int = 20) -> dict[str, Any]:
+        """Search this workspace's CONNECTED providers by case-insensitive
+        substring match against each connection's id, name, and service,
+        returning at most `limit` matches as `{"ok": true, "data": [...]}`.
+
+        Searches only what `list_connections` returns for THIS workspace —
+        a small set — never the full provider catalog (that is the
+        gateway's separate `GET /integrations/catalog?search=` feature).
+        It relays exactly one `list_connections` call and filters the
+        result in memory here, so it stays fast regardless of how large
+        `providers.yaml` or the catalog grows, and needs no caching or
+        pagination of its own.
+        """
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "list_connections", "arguments": {}},
+        }
+        response = await anyio.to_thread.run_sync(relay_mcp_call, body)
+        listed = _unwrap(response)
+        if listed.get("ok") is False:
+            # A gateway/transport failure is a real failure — surface it
+            # as-is rather than masking it as "zero matches".
+            return listed
+
+        connections = listed.get("data")
+        if connections is None:
+            connections = listed.get("connections", [])
+        if not isinstance(connections, list):
+            connections = []
+
+        needle = query.strip().lower()
+        # `limit <= 0` means "return nothing" — checked up front so the cap
+        # is enforced BEFORE the first append, never after it (a `limit=0`
+        # call previously returned one match because the append ran before
+        # the length check).
+        if not needle or limit <= 0:
+            return {"ok": True, "data": []}
+
+        matches: list[dict[str, Any]] = []
+        for connection in connections:
+            if len(matches) >= limit:
+                break
+            if not isinstance(connection, dict):
+                continue
+            haystack = [
+                connection.get(key)
+                for key in _SEARCH_CONNECTION_FIELDS
+                if isinstance(connection.get(key), str)
+            ]
+            if any(needle in value.lower() for value in haystack):
+                matches.append(connection)
+        return {"ok": True, "data": matches}
 
     @mcp.tool()
     @_tool_error_boundary

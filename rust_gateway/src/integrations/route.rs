@@ -117,6 +117,9 @@ struct ProviderSummary<'a> {
     name: &'a str,
     icon: Option<&'a str>,
     description: Option<&'a str>,
+    /// Marketing homepage the frontend turns into a brand favicon (see
+    /// `Provider::homepage_url`); `null` when the catalog entry has none.
+    homepage_url: Option<&'a str>,
     /// True only when this provider declares `oauth_client_env` AND both
     /// halves of that credential are actually present in this process's
     /// environment (see `Provider::oauth_credentials`) — the frontend
@@ -138,6 +141,7 @@ pub async fn list_providers_route(State(state): State<Arc<IntegrationsState>>) -
             name: &provider.name,
             icon: provider.icon.as_deref(),
             description: provider.description.as_deref(),
+            homepage_url: provider.homepage_url.as_deref(),
             oauth_available: provider.oauth_credentials().is_some(),
         })
         .collect();
@@ -1197,6 +1201,7 @@ mod tests {
             icon: None,
             openconnector_service: id.to_string(),
             description: None,
+            homepage_url: None,
             // `Some` (not `None`) so `start_oauth_route`'s
             // `oauth_not_supported` check does not short-circuit before
             // ever reaching OpenConnector — every OAuth-path test in this
@@ -1229,6 +1234,35 @@ mod tests {
             .await
             .expect("mark_ready");
         store
+    }
+
+    // ---- GET /integrations/providers exposes homepage_url --------------
+
+    #[tokio::test]
+    async fn list_providers_returns_each_providers_homepage_url() {
+        let pool = temp_pool().await;
+        let mut github = test_provider("github");
+        github.homepage_url = Some("https://example.com".to_string());
+        let state = Arc::new(IntegrationsState {
+            store: IntegrationStore::new(pool.clone()),
+            openconnector: Arc::new(FakeOpenConnector::default()),
+            providers: vec![github, test_provider("slack")],
+            workspace_store: WorkspaceStore::new(pool),
+            http_client: reqwest::Client::new(),
+            token_cipher: test_token_cipher(),
+            mcp_bearer_lockout: Default::default(),
+            catalog_cache: Default::default(),
+        });
+
+        let response = list_providers_route(State(state)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["data"][0]["homepage_url"], "https://example.com");
+        assert_eq!(
+            body["data"][1]["homepage_url"],
+            serde_json::Value::Null,
+            "a provider without a homepage must serialize null, not be dropped"
+        );
     }
 
     // ---- Bug 1: second connect must not narrow the first provider out ----

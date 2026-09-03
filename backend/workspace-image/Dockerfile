@@ -285,6 +285,22 @@ RUN python3 /tmp/patch_kasmvnc_hide_control_bar.py && rm /tmp/patch_kasmvnc_hide
 COPY backend/workspace-image/patch_kasmvnc_hide_lsbar.py /tmp/patch_kasmvnc_hide_lsbar.py
 RUN python3 /tmp/patch_kasmvnc_hide_lsbar.py && rm /tmp/patch_kasmvnc_hide_lsbar.py
 
+# ── Per-agent browser-manager daemon (Chromium process lifecycle) ──────────
+# `browser_manager.py`: a standalone, stdlib-only HTTP daemon that owns
+# ONE PERSISTENT Chromium profile directory per Hermes agent_id, with the
+# Chromium PROCESS itself EPHEMERAL (started on demand, killed when no
+# longer needed — see the file's own module docstring for the full design).
+# Only the FILE is placed in the image here — this Dockerfile does NOT wire
+# it into `/custom-cont-init.d/` itself. That boot hook is generated
+# EXTERNALLY, per-container, by `rust_gateway/src/workspaces/container/boot_script.rs`
+# (a separate repo/process, out of scope for this change) at container-CREATE
+# time, the same way the wrapper's own startup is documented to work
+# (Dockerfile's "No CMD override here" comment near EXPOSE 8787, below) —
+# not baked into the image because per-container values that boot script
+# needs (HERMES_HOME, PUID/PGID, ...) are only known at container-creation
+# time. A later change adds the actual boot invocation there.
+COPY backend/workspace-image/browser_manager.py /opt/hermes-browser-manager/browser_manager.py
+
 # ── Default desktop wallpaper (IceWM) ───────────────────────────────────────
 # Baked in via `/etc/icewm/prefoverride`, NOT the base image's own
 # `/usr/share/icewm/preferences` — verified live against the real

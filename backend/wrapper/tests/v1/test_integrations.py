@@ -184,7 +184,154 @@ class TestMcpServer:
                 tools = await session.list_tools()
 
         names = {tool.name for tool in tools.tools}
-        assert names == {"list_connections", "execute_action", "find_action"}
+        assert names == {
+            "list_connections",
+            "execute_action",
+            "find_action",
+            "search_connection",
+        }
+
+    @pytest.mark.anyio
+    async def test_search_connection_filters_list_connections_by_substring(
+        self, server_url, monkeypatch
+    ) -> None:
+        """Proves `search_connection` relays exactly ONE `list_connections`
+        call (never a new listing method) and filters its result in memory,
+        case-insensitively, across id/name/service, honoring `limit`."""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        captured_bodies = []
+        connections = [
+            {"id": "c1", "service": "github", "connectionName": "ws-1", "configured": True},
+            {"id": "c2", "service": "slack", "connectionName": "ws-1", "configured": True},
+            {"id": "c3", "service": "gitlab", "name": "GitLab", "configured": True},
+        ]
+
+        def fake_relay_mcp_call(body):
+            captured_bodies.append(body)
+            return {"result": {"structuredContent": {"ok": True, "data": connections}}}
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.integrations.mcp_server.relay_mcp_call",
+            fake_relay_mcp_call,
+        )
+
+        async with streamablehttp_client(server_url) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                all_git = await session.call_tool("search_connection", {"query": "GIT"})
+                capped = await session.call_tool(
+                    "search_connection", {"query": "git", "limit": 1}
+                )
+                none = await session.call_tool("search_connection", {"query": "jira"})
+
+        assert all_git.structuredContent == {
+            "ok": True,
+            "data": [connections[0], connections[2]],
+        }
+        assert capped.structuredContent == {"ok": True, "data": [connections[0]]}
+        assert none.structuredContent == {"ok": True, "data": []}
+        assert len(captured_bodies) == 3
+        assert all(body["params"]["name"] == "list_connections" for body in captured_bodies)
+
+    @pytest.mark.anyio
+    async def test_search_connection_surfaces_gateway_error_not_empty_result(
+        self, server_url, monkeypatch
+    ) -> None:
+        """A transport-level `list_connections` failure must come back as
+        the `{"ok": false, "error": ...}` envelope, never as "no matches"."""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        def fake_relay_mcp_call(body):
+            return {"error": {"code": -32000, "message": "upstream down"}}
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.integrations.mcp_server.relay_mcp_call",
+            fake_relay_mcp_call,
+        )
+
+        async with streamablehttp_client(server_url) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("search_connection", {"query": "git"})
+
+        assert result.structuredContent == {
+            "ok": False,
+            "error": {"code": -32000, "message": "upstream down"},
+        }
+
+    @pytest.mark.anyio
+    async def test_search_connection_limit_zero_or_negative_returns_no_matches(
+        self, server_url, monkeypatch
+    ) -> None:
+        """`limit=0` (and any negative limit) must return ZERO matches. The
+        original loop appended a match BEFORE checking the cap, so `limit=0`
+        wrongly returned one row; this pins the corrected behaviour."""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        connections = [
+            {"id": "c1", "service": "github", "connectionName": "ws-1", "configured": True},
+            {"id": "c3", "service": "gitlab", "name": "GitLab", "configured": True},
+        ]
+
+        def fake_relay_mcp_call(body):
+            return {"result": {"structuredContent": {"ok": True, "data": connections}}}
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.integrations.mcp_server.relay_mcp_call",
+            fake_relay_mcp_call,
+        )
+
+        async with streamablehttp_client(server_url) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                zero = await session.call_tool(
+                    "search_connection", {"query": "git", "limit": 0}
+                )
+                negative = await session.call_tool(
+                    "search_connection", {"query": "git", "limit": -3}
+                )
+                two = await session.call_tool(
+                    "search_connection", {"query": "git", "limit": 2}
+                )
+
+        assert zero.structuredContent == {"ok": True, "data": []}
+        assert negative.structuredContent == {"ok": True, "data": []}
+        assert two.structuredContent == {"ok": True, "data": connections}
+
+    @pytest.mark.anyio
+    async def test_search_connection_ignores_workspace_level_connection_name(
+        self, server_url, monkeypatch
+    ) -> None:
+        """`connectionName` is the gateway-forced per-WORKSPACE name
+        (`ws-{workspace_id}`, identical on every connection in the listing),
+        so it must NOT be a search field — otherwise a query matching the
+        workspace id would return every connection."""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        connections = [
+            {"id": "c1", "service": "github", "connectionName": "ws-1", "configured": True},
+            {"id": "c2", "service": "slack", "connectionName": "ws-1", "configured": True},
+        ]
+
+        def fake_relay_mcp_call(body):
+            return {"result": {"structuredContent": {"ok": True, "data": connections}}}
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.integrations.mcp_server.relay_mcp_call",
+            fake_relay_mcp_call,
+        )
+
+        async with streamablehttp_client(server_url) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("search_connection", {"query": "ws-1"})
+
+        assert result.structuredContent == {"ok": True, "data": []}
 
     @pytest.mark.anyio
     async def test_real_mcp_client_calls_execute_action_through_the_real_relay(
