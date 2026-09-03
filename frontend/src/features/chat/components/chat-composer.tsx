@@ -1,5 +1,5 @@
 import { useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
-import { Mic, Paperclip, Square, X } from 'lucide-react'
+import { ArrowUp, Mic, Plus, Square, X } from 'lucide-react'
 import { chatUi } from '@/features/chat/chat-ui'
 import { useSpeechInput } from '@/features/chat/components/use-speech-input'
 import { ModelPicker } from '@/features/models/components/model-picker'
@@ -77,17 +77,12 @@ export function ChatComposer({
 
   return (
     <form className={chatUi.composer} onSubmit={onSubmit}>
-      <div className={chatUi.composerBody}>
-        <input
-          ref={inputRef}
-          className={chatUi.composerInput}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Message this agent"
-          aria-label="Message this agent"
-          disabled={disabled}
-        />
+      {/* Fades the transcript's last message(s) into the composer's own
+       * background instead of a hard border cut. Purely visual — sits
+       * above the pill, inside this same relative container. */}
+      <div className={chatUi.composerFade} aria-hidden="true" />
+
+      <div className={chatUi.composerPill}>
         {attachments.length > 0 ? (
           <div className={chatUi.composerAttachments} aria-label="Attached files">
             {attachments.map((file) => (
@@ -104,9 +99,7 @@ export function ChatComposer({
             ))}
           </div>
         ) : null}
-      </div>
 
-      <div className={chatUi.composerToolbar}>
         <input
           ref={fileInputRef}
           type="file"
@@ -116,22 +109,32 @@ export function ChatComposer({
           tabIndex={-1}
           onChange={onFilesSelected}
         />
-        {/* Model shortlist + quick-switch — models feature, kept out of
-         * chat's own state/logic entirely (reads localStorage + its own
-         * API module). Placed with the other input-affecting controls
-         * (attach, voice), before the message is typed/sent — see
-         * features/models/components/model-picker.tsx. */}
-        <ModelPicker workspaceId={workspaceId} agent={agent} sessionId={sessionId} />
         <button
           type="button"
-          className={chatUi.composerTool}
+          className={chatUi.composerAttach}
           aria-label="Attach file"
           title="Attach file"
           disabled={disabled}
           onClick={() => fileInputRef.current?.click()}
         >
-          <Paperclip size={18} />
+          <Plus size={19} />
         </button>
+
+        <input
+          ref={inputRef}
+          className={chatUi.composerInput}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Message this agent"
+          aria-label="Message this agent"
+          disabled={disabled}
+        />
+
+        {/* Model shortlist + quick-switch — models feature, kept out of
+         * chat's own state/logic entirely (reads localStorage + its own
+         * API module). See features/models/components/model-picker.tsx. */}
+        <ModelPicker workspaceId={workspaceId} agent={agent} sessionId={sessionId} />
         <button
           type="button"
           className={cn(chatUi.composerTool, speech.listening && chatUi.composerToolActive)}
@@ -149,7 +152,6 @@ export function ChatComposer({
         >
           <Mic size={18} />
         </button>
-        <span className={chatUi.composerHint}>Shift + Return for new line</span>
         {isStreaming ? (
           <button
             type="button"
@@ -166,11 +168,13 @@ export function ChatComposer({
             type="submit"
             disabled={disabled || !canSend}
             aria-label="Send"
+            title="Send"
           >
-            Send
+            <ArrowUp size={18} strokeWidth={2.4} />
           </button>
         )}
       </div>
+      {/* <span className={chatUi.composerHint}>Shift + Return for new line</span> */}
     </form>
   )
 }

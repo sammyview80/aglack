@@ -4,6 +4,7 @@ import { StatusAlert } from '@/components/status-alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CatalogProviderMark } from '@/features/integrations/components/catalog-provider-mark'
 import { ConnectDialog } from '@/features/integrations/components/connect-dialog'
+import { PluginCardShell } from '@/features/integrations/components/plugin-card-shell'
 import { integrationsUi } from '@/features/integrations/integrations-ui'
 import { useCatalog, useConnectCatalogProvider } from '@/features/integrations/hooks/use-catalog'
 import { useIntegrations } from '@/features/integrations/hooks/use-integrations'
@@ -55,9 +56,12 @@ export function CatalogTab({ workspaceId }: { workspaceId: string }) {
           />
         </label>
         {total !== undefined ? (
-          <p className={integrationsUi.meta}>
-            {total} {total === 1 ? 'service' : 'services'}
-          </p>
+          <div className={integrationsUi.sectionHead}>
+            <span className={integrationsUi.sectionEyebrow}>
+              {total} {total === 1 ? 'service' : 'services'}
+            </span>
+            <span className={integrationsUi.sectionLine} />
+          </div>
         ) : null}
       </div>
 
@@ -89,23 +93,26 @@ export function CatalogTab({ workspaceId }: { workspaceId: string }) {
             {providers.map((provider) => {
               const installed = isInstalled(connectionsByProvider.get(provider.service))
               return (
-                <button
+                <PluginCardShell
                   key={provider.service}
-                  type="button"
-                  className={cn(
-                    integrationsUi.catalogCard,
-                    installed && integrationsUi.catalogCardInstalled,
-                  )}
+                  as="button"
+                  installed={installed}
                   onClick={() => setSelected(provider)}
-                >
-                  <div className={integrationsUi.catalogCardTop}>
+                  mark={
                     <CatalogProviderMark
                       service={provider.service}
                       displayName={provider.displayName}
                       homepageUrl={provider.homepageUrl}
                     />
-                    <div className={integrationsUi.catalogCardBody}>
-                      <p className={integrationsUi.catalogCardName}>{provider.displayName}</p>
+                  }
+                  body={
+                    <>
+                      <div className="flex items-center gap-1.5">
+                        <p className={integrationsUi.catalogCardName}>{provider.displayName}</p>
+                        {installed ? (
+                          <span className={cn(integrationsUi.statusDot, integrationsUi.statusDotConnected)} />
+                        ) : null}
+                      </div>
                       {provider.categories.length > 0 ? (
                         <p className={integrationsUi.catalogCardCategories}>
                           {provider.categories.join(' · ')}
@@ -116,19 +123,21 @@ export function CatalogTab({ workspaceId }: { workspaceId: string }) {
                           {provider.homepageUrl.replace(/^https?:\/\//, '')}
                         </p>
                       ) : null}
-                    </div>
-                  </div>
-                  <div className={integrationsUi.catalogCardFooter}>
-                    <span className={integrationsUi.catalogCardAuthType}>
-                      {provider.authTypes[0]?.replace(/_/g, ' ') ?? 'api key'}
-                    </span>
-                    {installed ? (
-                      <span className={integrationsUi.badge}>Connected</span>
-                    ) : (
-                      <span className={integrationsUi.catalogCardAction}>Connect →</span>
-                    )}
-                  </div>
-                </button>
+                    </>
+                  }
+                  footer={
+                    <>
+                      <span className={integrationsUi.catalogCardAuthType}>
+                        {provider.authTypes[0]?.replace(/_/g, ' ') ?? 'api key'}
+                      </span>
+                      {installed ? (
+                        <span className={integrationsUi.badge}>Connected</span>
+                      ) : (
+                        <span className={integrationsUi.catalogCardAction}>Connect →</span>
+                      )}
+                    </>
+                  }
+                />
               )
             })}
           </div>

@@ -4,7 +4,14 @@
  * component. Uses the same `--th-*` theme tokens as chat so this feature
  * visually matches the composer chrome it sits next to. */
 export const modelsUi = {
-  overlay: 'fixed inset-0 z-50 bg-black/40',
+  // Grayish, mostly-opaque scrim (not the app's purple-tinted
+  // --th-modal-scrim used by other dialogs — kept separate here so this
+  // change doesn't also affect the integrations dialog/compose modal that
+  // share that token) + backdrop-blur-[3px] so page content behind the
+  // dialog can't collide with the dialog's own text (the flat
+  // bg-black/40 this replaced let background text stay sharp/legible
+  // underneath the dialog — a real bug).
+  overlay: 'fixed inset-0 z-50 bg-[#3a3a40]/85 backdrop-blur-[3px] dark:bg-[#1c1c22]/90',
   popup:
     'fixed left-1/2 top-1/2 z-50 flex max-h-[80vh] w-[min(92vw,560px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)] shadow-[0_12px_32px_#00000033]',
   header: 'flex items-center justify-between gap-3 border-b border-[var(--th-line)] px-5 py-4',

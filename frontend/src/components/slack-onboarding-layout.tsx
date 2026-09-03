@@ -90,15 +90,18 @@ export function SlackOnboardingLayout({
             {children}
           </FormPane>
         </div>
-        <aside
-          className="hidden items-center justify-center bg-muted p-6 lg:flex"
-          aria-hidden="true"
-        >
-          <img
-            src="/onboarding-preview.png"
-            alt=""
-            className="h-auto w-full max-h-[92vh] rounded-xl object-contain object-center shadow-lg"
-          />
+        <aside className="hidden h-full min-h-0 flex-col bg-muted lg:flex" aria-hidden="true">
+          {/* Spacer mirroring BrandHeader (px-6 py-4 + size-8 mark) so the preview centers on the form area. */}
+          <div className="shrink-0 px-6 py-4">
+            <div className="size-8" />
+          </div>
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <img
+              src="/onboarding-preview.png"
+              alt=""
+              className="h-auto w-full max-h-[92vh] rounded-xl object-contain object-center shadow-lg"
+            />
+          </div>
         </aside>
       </div>
     </Window>

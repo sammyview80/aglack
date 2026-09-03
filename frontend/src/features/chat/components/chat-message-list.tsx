@@ -180,14 +180,12 @@ export function ChatMessageList({
                 </div>
               </div>
             </div>
-            <span
-              className={cn(chatUi.messageTime, chatUi.messageTimeAssistant, 'inline-flex items-baseline')}
-            >
-              <CyclingWords words={AGENT_STATUS_WORDS} className="text-[11px]" />
-            </span>
+            
           </div>
         </div>
       ) : null}
     </div>
   )
 }
+
+

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, RotateCw, X } from 'lucide-react'
+import { ChevronRight, MessageSquare, RotateCw, X } from 'lucide-react'
 import { Hint } from '@/components/ui/tooltip'
 import { RandomAvatar } from '@/components/random-avatar'
 import { errorMessage } from '@/lib/api'
@@ -109,13 +109,22 @@ export function AgentHistoryPanel({
   }
 
   if (selectedAgent) {
+    const sessionCount = sessions.length
     return (
       <AnimatedPanel swapKey={selectedAgent} className={threadsUi.audienceHistory} animation={motionPresets.contentSwap}>
         <div data-testid="audience-history">
         <div className={threadsUi.audienceHistoryHeader}>
-          <button type="button" className={threadsUi.audienceHistoryBack} onClick={closeAgent} aria-label="Back to agents">
-            <ArrowLeft size={14} /> {selectedAgent}
-          </button>
+          <div className={threadsUi.audienceHistoryIdentity}>
+            <RandomAvatar seed={selectedAgent} size={30} />
+            <div className={threadsUi.audienceHistoryIdentityCopy}>
+              <span className={threadsUi.audienceHistoryBack}>{selectedAgent}</span>
+              {!sessionsQuery.isPending && !sessionsError ? (
+                <span className={threadsUi.audienceHistoryCount}>
+                  {sessionCount} {sessionCount === 1 ? 'session' : 'sessions'}
+                </span>
+              ) : null}
+            </div>
+          </div>
           <div className={threadsUi.audienceHistoryActions}>
             <Hint label="Refresh" side="top">
               <button type="button" className={threadsUi.audienceHistoryIcon} onClick={refresh} aria-label="Refresh history">
@@ -224,11 +233,16 @@ function SessionsList({
             onMouseEnter={() => onHoverSession(session)}
             onFocus={() => onHoverSession(session)}
           >
-            <span className={threadsUi.audienceSessionTitle}>{session.title || 'Untitled session'}</span>
-            <span className={threadsUi.audienceSessionMeta}>
-              {relativeTime(session.lastMessageAt)} · {session.messageCount} msg
-              {session.messageCount === 1 ? '' : 's'}
+            <span className={threadsUi.audienceSessionCopy}>
+              <span className={threadsUi.audienceSessionTitle}>{session.title || 'Untitled session'}</span>
+              <span className={threadsUi.audienceSessionMeta}>
+                {relativeTime(session.lastMessageAt)}
+                <span className={threadsUi.audienceSessionMetaDot} aria-hidden="true" />
+                <MessageSquare size={11} strokeWidth={2.2} aria-hidden="true" />
+                {session.messageCount}
+              </span>
             </span>
+            <ChevronRight size={15} strokeWidth={2} className={threadsUi.audienceSessionChevron} aria-hidden="true" />
           </button>
         </li>
       ))}

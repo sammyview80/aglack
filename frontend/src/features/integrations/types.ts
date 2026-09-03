@@ -15,6 +15,7 @@ export type ProviderSummary = {
   name: string
   icon: string | null
   description: string | null
+  homepageUrl: string | null
   oauthAvailable: boolean
 }
 

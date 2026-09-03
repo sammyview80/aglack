@@ -53,6 +53,16 @@ export function useChatTranscriptScroll({
   isLoadingOlder?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  // Separate from `ref` (the scroll CONTAINER, whose own box is fixed by
+  // flex layout and never resizes) — this watches the CONTENT element
+  // that actually grows/shrinks inside it. `ResizeObserver` fires on box
+  // size changes of the observed element itself; observing the fixed-size
+  // scroll container (the original bug here) means late layout growth
+  // that doesn't resize the container — an async-decoded `<img>`, a
+  // syntax-highlighted code block settling in, a web font swap — never
+  // re-triggers the pin, silently leaving the viewport stuck above the
+  // real bottom after the initial pin window's first synchronous frames.
+  const contentRef = useRef<HTMLDivElement>(null)
   const [showScrollButton, setShowScrollButton] = useState(false)
   const wasStreamingRef = useRef(false)
   const wasLoadingTranscriptRef = useRef(isLoadingTranscript)
@@ -122,8 +132,14 @@ export function useChatTranscriptScroll({
       rafId = requestAnimationFrame(() => scrollToBottom('instant'))
     }
 
+    // Observe the CONTENT element, not `el` (the scroll container) — see
+    // `contentRef`'s doc comment above for why the container itself never
+    // fires here. Falls back to `el` if the caller hasn't wired
+    // `contentRef` to anything, so this stays a no-op behavior change for
+    // any other consumer of this hook that doesn't pass it.
+    const observedEl = contentRef.current ?? el
     const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(pinIfActive) : null
-    observer?.observe(el)
+    observer?.observe(observedEl)
 
     pinIfActive()
     timeoutId = window.setTimeout(() => {
@@ -285,5 +301,5 @@ export function useChatTranscriptScroll({
     return () => el.removeEventListener('scroll', onScroll)
   }, [updateScrollButton, isNearTop, canLoadOlder, isLoadingOlder])
 
-  return { ref, scrollToBottom, showScrollButton }
+  return { ref, contentRef, scrollToBottom, showScrollButton }
 }

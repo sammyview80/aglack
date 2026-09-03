@@ -13,8 +13,22 @@ const mockedApi = vi.mocked(integrationsApi)
 const mockedAgentHistoryApi = vi.mocked(agentHistoryApi)
 
 const PROVIDERS: ProviderSummary[] = [
-  { id: 'github', name: 'GitHub', icon: 'github', description: 'Repos and issues', oauthAvailable: false },
-  { id: 'slack', name: 'Slack', icon: 'slack', description: 'Channels and messages', oauthAvailable: false },
+  {
+    id: 'github',
+    name: 'GitHub',
+    icon: 'github',
+    description: 'Repos and issues',
+    homepageUrl: 'https://github.com',
+    oauthAvailable: false,
+  },
+  {
+    id: 'slack',
+    name: 'Slack',
+    icon: 'slack',
+    description: 'Channels and messages',
+    homepageUrl: 'https://slack.com',
+    oauthAvailable: false,
+  },
 ]
 
 afterEach(() => {
@@ -51,11 +65,11 @@ describe('IntegrationsPageContent', () => {
     renderWithClient(<IntegrationsPageContent workspaceId="ws-1" />)
 
     await screen.findByText('GitHub')
-    const githubCard = screen.getByText('GitHub').closest('[data-slot="card"]') as HTMLElement
+    const githubCard = screen.getByText('GitHub').closest('.group') as HTMLElement
     expect(within(githubCard).getByRole('button', { name: 'Disconnect' })).toBeInTheDocument()
 
-    const slackCard = screen.getByText('Slack').closest('[data-slot="card"]') as HTMLElement
-    expect(within(slackCard).getByRole('button', { name: 'Connect' })).toBeInTheDocument()
+    const slackCard = screen.getByText('Slack').closest('.group') as HTMLElement
+    expect(within(slackCard).getByRole('button', { name: 'Connect →' })).toBeInTheDocument()
   })
 
   it('connect dialog submits the workspace id and provider id it was opened for', async () => {
@@ -65,7 +79,7 @@ describe('IntegrationsPageContent', () => {
     renderWithClient(<IntegrationsPageContent workspaceId="ws-42" />)
 
     await screen.findByText('GitHub')
-    const connectButtons = screen.getAllByRole('button', { name: 'Connect' })
+    const connectButtons = screen.getAllByRole('button', { name: 'Connect →' })
     await user.click(connectButtons[0])
 
     const input = await screen.findByLabelText('API key')
@@ -79,7 +93,14 @@ describe('IntegrationsPageContent', () => {
 
   it('OAuth-capable provider opens a popup via oauth/start instead of the API-key dialog', async () => {
     mockedApi.fetchProviders.mockResolvedValue([
-      { id: 'github', name: 'GitHub', icon: 'github', description: null, oauthAvailable: true },
+      {
+        id: 'github',
+        name: 'GitHub',
+        icon: 'github',
+        description: null,
+        homepageUrl: 'https://github.com',
+        oauthAvailable: true,
+      },
     ])
     mockedApi.fetchIntegrations.mockResolvedValue([])
     mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [] })
@@ -89,7 +110,7 @@ describe('IntegrationsPageContent', () => {
     const user = userEvent.setup()
 
     renderWithClient(<IntegrationsPageContent workspaceId="ws-oauth" />)
-    await user.click(await screen.findByRole('button', { name: 'Connect' }))
+    await user.click(await screen.findByRole('button', { name: 'Connect →' }))
 
     await waitFor(() => {
       expect(mockedApi.startOAuthConnect).toHaveBeenCalledWith('ws-oauth', 'github')

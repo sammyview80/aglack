@@ -1,48 +1,61 @@
-import {
-  BookOpen,
-  Calendar,
-  FolderOpen,
-  GitFork,
-  Hash,
-  Mail,
-  Puzzle,
-  type LucideIcon,
-} from 'lucide-react'
+import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { integrationsUi } from '@/features/integrations/integrations-ui'
+import {
+  faviconUrlFor,
+  initialsFor,
+  paletteClassFor,
+} from '@/features/integrations/components/catalog-provider-mark'
 
-const MARKS: Record<string, { tile: string; Icon: LucideIcon }> = {
-  // lucide-react's brand-logo icons (incl. a literal "Github" mark) were
-  // dropped from this installed version — no exact GitHub logo is
-  // available, `GitFork` is the closest generic stand-in. Swap for a
-  // real brand glyph (e.g. an inline SVG) if that matters visually later.
-  github: { tile: 'bg-[#181717] text-white', Icon: GitFork },
-  gmail: { tile: 'bg-[#ea4335] text-white', Icon: Mail },
-  google: { tile: 'bg-[#4285f4] text-white', Icon: Mail },
-  'google-calendar': { tile: 'bg-[#1a73e8] text-white', Icon: Calendar },
-  'google-drive': { tile: 'bg-[#188038] text-white', Icon: FolderOpen },
-  slack: { tile: 'bg-[#4a154b] text-white', Icon: Hash },
-  notion: { tile: 'bg-[#191919] text-white', Icon: BookOpen },
-}
-
+/**
+ * Brand mark for a curated `providers.yaml` provider. Same two-tier
+ * rendering as `CatalogProviderMark` (favicon from `homepageUrl`, else a
+ * deterministic color + initials tile keyed by `providerId`) so the curated
+ * grid and the full catalog look identical — no hand-maintained per-provider
+ * icon table (frontend/AGENTS.md rule #2). `icon` is kept in the props for
+ * callers that still pass the API's short icon keyword; it no longer drives
+ * iconography.
+ */
 export function ProviderMark({
   providerId,
-  icon,
   name,
+  homepageUrl,
 }: {
   providerId: string
   icon: string | null
   name: string
+  homepageUrl?: string | null
 }) {
-  const mark = MARKS[providerId] ?? (icon ? MARKS[icon] : undefined) ?? {
-    tile: 'bg-[var(--th-compose)]/15 text-[var(--th-compose)]',
-    Icon: Puzzle,
+  const [imgFailed, setImgFailed] = useState(false)
+  const faviconUrl = faviconUrlFor(homepageUrl)
+
+  if (faviconUrl && !imgFailed) {
+    return (
+      <span
+        className={cn(integrationsUi.markTile, 'overflow-hidden bg-white')}
+        aria-hidden="true"
+        title={name}
+        data-testid="provider-mark"
+      >
+        <img
+          src={faviconUrl}
+          alt=""
+          loading="lazy"
+          className="size-full rounded-[inherit] object-contain p-1.5"
+          onError={() => setImgFailed(true)}
+        />
+      </span>
+    )
   }
-  const Icon = mark.Icon
 
   return (
-    <span className={cn(integrationsUi.mark, mark.tile)} aria-hidden="true" title={name}>
-      <Icon size={22} strokeWidth={1.8} />
+    <span
+      className={cn(integrationsUi.markTile, 'text-xs font-bold', paletteClassFor(providerId))}
+      aria-hidden="true"
+      title={name}
+      data-testid="provider-mark"
+    >
+      {initialsFor(name, providerId)}
     </span>
   )
 }

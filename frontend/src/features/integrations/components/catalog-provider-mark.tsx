@@ -83,7 +83,7 @@ export function CatalogProviderMark({
   if (faviconUrl && !imgFailed) {
     return (
       <span
-        className={cn(integrationsUi.mark, 'overflow-hidden bg-white')}
+        className={cn(integrationsUi.markTile, 'overflow-hidden bg-white')}
         aria-hidden="true"
         title={displayName}
         data-testid="catalog-provider-mark"
@@ -92,7 +92,7 @@ export function CatalogProviderMark({
           src={faviconUrl}
           alt=""
           loading="lazy"
-          className="size-full rounded-[inherit] object-contain p-1"
+          className="size-full rounded-[inherit] object-contain p-1.5"
           onError={() => setImgFailed(true)}
         />
       </span>
@@ -101,7 +101,7 @@ export function CatalogProviderMark({
 
   return (
     <span
-      className={cn(integrationsUi.mark, 'text-xs font-bold', paletteClassFor(service))}
+      className={cn(integrationsUi.markTile, 'text-xs font-bold', paletteClassFor(service))}
       aria-hidden="true"
       title={displayName}
       data-testid="catalog-provider-mark"

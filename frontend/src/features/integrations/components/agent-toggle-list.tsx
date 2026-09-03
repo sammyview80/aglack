@@ -1,3 +1,4 @@
+import { SlidersHorizontal } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
@@ -28,17 +29,25 @@ export function AgentToggleList({ workspaceId }: { workspaceId: string }) {
   return (
     <section className={integrationsUi.agents}>
       <div className={integrationsUi.agentsHead}>
+        <span className={integrationsUi.agentsIcon} aria-hidden="true">
+          <SlidersHorizontal size={16} strokeWidth={2} />
+        </span>
         <div>
           <h3 className={integrationsUi.agentsTitle}>Enable per agent</h3>
           <p className={integrationsUi.agentsHint}>Installed plugins stay off until an agent is allowed to use them.</p>
         </div>
       </div>
-      <div className="mt-3 flex flex-col">
+      <div className="flex flex-col">
         {agents.map((agent) => (
           <div key={agent.name} className={integrationsUi.agentRow}>
-            <Label htmlFor={`agent-integrations-${agent.name}`} className="text-sm capitalize text-[var(--th-text)]">
-              {agent.name}
-            </Label>
+            <div className={integrationsUi.agentRowLabel}>
+              <span className={integrationsUi.agentAvatar} aria-hidden="true">
+                {agent.name.slice(0, 2)}
+              </span>
+              <Label htmlFor={`agent-integrations-${agent.name}`} className="text-sm capitalize text-[var(--th-text)]">
+                {agent.name}
+              </Label>
+            </div>
             <Switch
               id={`agent-integrations-${agent.name}`}
               checked={Boolean(enablement[agent.name])}

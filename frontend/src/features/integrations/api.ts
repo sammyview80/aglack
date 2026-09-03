@@ -20,6 +20,7 @@ type ProviderSummaryApiData = {
   name: string
   icon: string | null
   description: string | null
+  homepage_url: string | null
   oauth_available: boolean
 }
 
@@ -32,6 +33,7 @@ export async function fetchProviders(): Promise<ProviderSummary[]> {
     name: provider.name,
     icon: provider.icon,
     description: provider.description,
+    homepageUrl: provider.homepage_url,
     oauthAvailable: provider.oauth_available,
   }))
 }

@@ -24,6 +24,40 @@ function matchesQuery(provider: ProviderSummary, query: string) {
   return haystack.includes(query)
 }
 
+function ProviderSection({
+  label,
+  count,
+  providers,
+  workspaceId,
+  connectionsByProvider,
+}: {
+  label: string
+  count: number
+  providers: ProviderSummary[]
+  workspaceId: string
+  connectionsByProvider: Map<string, IntegrationConnection>
+}) {
+  return (
+    <div className={integrationsUi.section}>
+      <div className={integrationsUi.sectionHead}>
+        <span className={integrationsUi.sectionEyebrow}>{label}</span>
+        <span className={integrationsUi.sectionCount}>{count}</span>
+        <span className={integrationsUi.sectionLine} />
+      </div>
+      <div className={integrationsUi.catalogGrid}>
+        {providers.map((provider) => (
+          <ProviderCard
+            key={provider.id}
+            workspaceId={workspaceId}
+            provider={provider}
+            connection={connectionsByProvider.get(provider.id)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }) {
   const providersQuery = useProviders()
   const connectionsQuery = useIntegrations(workspaceId)
@@ -43,6 +77,8 @@ export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }
     if (shelf === 'available' && isInstalled(conn)) return false
     return matchesQuery(p, query.trim().toLowerCase())
   })
+  const connectedVisible = visible.filter((p) => isInstalled(connectionsByProvider.get(p.id)))
+  const availableVisible = visible.filter((p) => !isInstalled(connectionsByProvider.get(p.id)))
 
   if (providersQuery.isPending) {
     return (
@@ -75,9 +111,9 @@ export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }
         <div className={integrationsUi.chips} role="tablist" aria-label="Plugin shelves">
           {(
             [
-              { id: 'all', label: `All ${providers.length}` },
-              { id: 'installed', label: `Installed ${installedCount}` },
-              { id: 'available', label: 'Available' },
+              { id: 'all', label: 'All', count: providers.length },
+              { id: 'installed', label: 'Installed', count: installedCount },
+              { id: 'available', label: 'Available', count: providers.length - installedCount },
               { id: 'browse', label: 'Browse all' },
             ] as const
           ).map((chip) => (
@@ -90,6 +126,7 @@ export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }
               onClick={() => setShelf(chip.id)}
             >
               {chip.label}
+              {'count' in chip ? <span className={integrationsUi.chipCount}>{chip.count}</span> : null}
             </button>
           ))}
         </div>
@@ -100,6 +137,27 @@ export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }
         <CatalogTab workspaceId={workspaceId} />
       ) : visible.length === 0 ? (
         <p className={integrationsUi.empty}>No plugins match that search.</p>
+      ) : shelf === 'all' ? (
+        <div className="flex flex-col gap-6">
+          {connectedVisible.length > 0 ? (
+            <ProviderSection
+              label="Connected"
+              count={connectedVisible.length}
+              providers={connectedVisible}
+              workspaceId={workspaceId}
+              connectionsByProvider={connectionsByProvider}
+            />
+          ) : null}
+          {availableVisible.length > 0 ? (
+            <ProviderSection
+              label="Available"
+              count={availableVisible.length}
+              providers={availableVisible}
+              workspaceId={workspaceId}
+              connectionsByProvider={connectionsByProvider}
+            />
+          ) : null}
+        </div>
       ) : (
         <div className={integrationsUi.catalogGrid}>
           {visible.map((provider) => (
