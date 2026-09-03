@@ -142,6 +142,7 @@ async fn main() {
         http_client: rust_gateway::shared::http::stream_client(),
         token_cipher,
         mcp_bearer_lockout: Default::default(),
+        catalog_cache: Default::default(),
     });
 
     // Push OAuth client credentials to OpenConnector for every provider
@@ -231,6 +232,9 @@ async fn main() {
         config.cors_enabled,
     )
     .merge(rust_gateway::integrations::route::router(
+        integrations_state.clone(),
+    ))
+    .merge(rust_gateway::integrations::catalog::router(
         integrations_state,
     ))
     .merge(rust_gateway::auth::router(auth_state.clone()));

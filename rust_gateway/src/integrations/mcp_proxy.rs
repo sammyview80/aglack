@@ -620,6 +620,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             token_cipher,
             mcp_bearer_lockout: McpBearerLockout::default(),
+            catalog_cache: Default::default(),
         });
         (state, pool)
     }

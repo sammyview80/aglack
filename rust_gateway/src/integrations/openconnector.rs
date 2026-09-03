@@ -9,7 +9,7 @@
 //! layer 2).
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// An OpenConnector call failed. `message` may contain OpenConnector's own
@@ -107,6 +107,29 @@ pub struct ConnectionSummary {
     pub configured: bool,
 }
 
+/// One entry from OpenConnector's FULL provider catalog (`GET
+/// /api/providers` — confirmed live: returns all ~1451 providers
+/// unconditionally, no server-side search/pagination/filtering exists on
+/// OpenConnector's own side). Deliberately lightweight: only the fields a
+/// browse/search list UI needs. Confirmed live that some providers carry
+/// 500+ `actions` entries plus `auth`/`scenario`/`execution` blocks —
+/// none of that is captured here on purpose (see `catalog.rs`'s module
+/// doc comment for why); a connected agent gets full action detail via
+/// `find_action`/`get_action_guide` in the MCP tools instead, never from
+/// this list.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CatalogProvider {
+    pub service: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(rename = "authTypes", default)]
+    pub auth_types: Vec<String>,
+    #[serde(rename = "homepageUrl", default)]
+    pub homepage_url: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct RuntimeTokenCreated {
     token: String,
@@ -190,6 +213,17 @@ pub trait OpenConnectorApi: Send + Sync {
         workspace_bearer: &str,
         body: &Value,
     ) -> Result<Value, OpenConnectorError>;
+
+    /// `GET /api/providers` — OpenConnector's FULL provider catalog
+    /// (confirmed live: ~1451 providers, one unfiltered 6.4MB response,
+    /// every query param tried is ignored). Distinct from
+    /// `list_connections` (connections already made) and from
+    /// `providers.yaml`'s small curated allowlist (`Provider`, this
+    /// gateway's OAuth-eligible registry) — this is every service
+    /// OpenConnector itself knows how to connect to, `api_key` auth only
+    /// from this gateway's side (see `catalog.rs`). `route.rs`/`catalog.rs`
+    /// never call this directly per-request — see `CatalogCache`.
+    async fn list_providers_catalog(&self) -> Result<Vec<CatalogProvider>, OpenConnectorError>;
 }
 
 impl OpenConnectorClient {
@@ -421,6 +455,11 @@ impl OpenConnectorApi for OpenConnectorClient {
         })?;
         Ok(parsed)
     }
+
+    async fn list_providers_catalog(&self) -> Result<Vec<CatalogProvider>, OpenConnectorError> {
+        let response = self.admin_request(reqwest::Method::GET, "/api/providers").send().await?;
+        parse_or_error(response).await
+    }
 }
 
 /// Reconstruct the `data` field of the first SSE event in `text`, per the
@@ -529,6 +568,21 @@ pub(crate) mod fake {
         connections: Vec<ConnectionSummary>,
         list_connections_calls: usize,
         fail_list_connections: bool,
+        /// What `list_providers_catalog` returns — seeded via
+        /// `with_catalog` (catalog-cache tests need a fake catalog wider
+        /// than the curated `providers.yaml` entries this module's other
+        /// tests already use).
+        catalog: Vec<CatalogProvider>,
+        list_providers_catalog_calls: usize,
+        fail_list_providers_catalog: bool,
+        /// Artificial delay `list_providers_catalog` sleeps for before
+        /// returning — seeded via `with_catalog_fetch_delay`. Exists
+        /// solely so a thundering-herd test can make several concurrent
+        /// `CatalogCache::get_or_refresh` callers genuinely overlap in
+        /// time (a zero-delay fake call is too fast for `tokio::join!` to
+        /// reliably race), rather than happening to run sequentially and
+        /// passing for the wrong reason.
+        catalog_fetch_delay: std::time::Duration,
     }
 
     impl FakeOpenConnector {
@@ -582,6 +636,33 @@ pub(crate) mod fake {
 
         pub(crate) fn list_connections_calls(&self) -> usize {
             self.state.lock().unwrap().list_connections_calls
+        }
+
+        /// Seed the fixed list `list_providers_catalog` returns
+        /// (builder-style, same convention as `with_connections`).
+        pub(crate) fn with_catalog(self, catalog: Vec<CatalogProvider>) -> Self {
+            self.state.lock().unwrap().catalog = catalog;
+            self
+        }
+
+        /// Forces `list_providers_catalog` to fail, for asserting the
+        /// catalog route's clean-502/stale-serving behavior.
+        pub(crate) fn that_fails_list_providers_catalog() -> Self {
+            let fake = Self::default();
+            fake.state.lock().unwrap().fail_list_providers_catalog = true;
+            fake
+        }
+
+        pub(crate) fn list_providers_catalog_calls(&self) -> usize {
+            self.state.lock().unwrap().list_providers_catalog_calls
+        }
+
+        /// Seed an artificial delay before `list_providers_catalog`
+        /// returns — see `FakeState::catalog_fetch_delay`'s own doc
+        /// comment for why this exists.
+        pub(crate) fn with_catalog_fetch_delay(self, delay: std::time::Duration) -> Self {
+            self.state.lock().unwrap().catalog_fetch_delay = delay;
+            self
         }
 
         pub(crate) fn create_runtime_token_calls(&self) -> Vec<(String, Vec<String>)> {
@@ -716,6 +797,30 @@ pub(crate) mod fake {
             _body: &Value,
         ) -> Result<Value, OpenConnectorError> {
             Ok(Value::Null)
+        }
+
+        async fn list_providers_catalog(&self) -> Result<Vec<CatalogProvider>, OpenConnectorError> {
+            let delay = {
+                let mut state = self.state.lock().unwrap();
+                state.list_providers_catalog_calls += 1;
+                state.catalog_fetch_delay
+            };
+            // Deliberately outside the `std::sync::Mutex` guard above (a
+            // guard held across an `.await` would poison every other
+            // fake call for the duration) — `catalog_fetch_delay` is
+            // zero, and this a no-op sleep, unless a test opts in via
+            // `with_catalog_fetch_delay`.
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let state = self.state.lock().unwrap();
+            if state.fail_list_providers_catalog {
+                return Err(OpenConnectorError {
+                    message: "simulated list_providers_catalog failure".to_string(),
+                    status: None,
+                });
+            }
+            Ok(state.catalog.clone())
         }
     }
 }

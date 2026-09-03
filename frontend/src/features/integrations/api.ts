@@ -8,7 +8,12 @@
  */
 import { apiFetch } from '@/lib/api'
 import { gatewayUrl } from '@/lib/env'
-import type { ConnectionStatus, IntegrationConnection, ProviderSummary } from '@/features/integrations/types'
+import type {
+  CatalogProvider,
+  ConnectionStatus,
+  IntegrationConnection,
+  ProviderSummary,
+} from '@/features/integrations/types'
 
 type ProviderSummaryApiData = {
   id: string
@@ -29,6 +34,61 @@ export async function fetchProviders(): Promise<ProviderSummary[]> {
     description: provider.description,
     oauthAvailable: provider.oauth_available,
   }))
+}
+
+type CatalogProviderApiData = {
+  service: string
+  display_name: string
+  categories: string[]
+  auth_types: string[]
+  homepage_url: string | null
+}
+
+type CatalogListApiData = {
+  providers: CatalogProviderApiData[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export type CatalogListResult = {
+  providers: CatalogProvider[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/**
+ * `GET /integrations/catalog?search=&limit=&offset=` — not workspace-scoped.
+ * OpenConnector's full catalog (see `rust_gateway/src/integrations/catalog.rs`).
+ * Omit `limit`/`offset` for the gateway defaults (echoed back, `limit`
+ * capped server-side). `search` is a case-insensitive substring match on
+ * `service` or `display_name`. Query string built the same way as
+ * `listWorkspaces` — a param is left out entirely when undefined.
+ */
+export async function fetchCatalog(params: {
+  search?: string
+  limit?: number
+  offset?: number
+}): Promise<CatalogListResult> {
+  const query = new URLSearchParams()
+  if (params.search !== undefined) query.set('search', params.search)
+  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  if (params.offset !== undefined) query.set('offset', String(params.offset))
+  const suffix = query.size > 0 ? `?${query}` : ''
+  const data = await apiFetch<CatalogListApiData>(gatewayUrl(), `/integrations/catalog${suffix}`)
+  return {
+    providers: data.providers.map((provider) => ({
+      service: provider.service,
+      displayName: provider.display_name,
+      categories: provider.categories,
+      authTypes: provider.auth_types,
+      homepageUrl: provider.homepage_url,
+    })),
+    total: data.total,
+    limit: data.limit,
+    offset: data.offset,
+  }
 }
 
 type IntegrationConnectionApiData = {
@@ -67,6 +127,28 @@ export async function connectIntegration(
     method: 'POST',
     body: JSON.stringify({ api_key: apiKey }),
   })
+}
+
+/**
+ * `POST /workspaces/:id/integrations/catalog/:service/connect` — `api_key`
+ * connect for a FULL-catalog service (`CatalogProvider.service`), not a
+ * curated provider id. Same body as `connectIntegration`. A `:service`
+ * that collides with a curated `providers.yaml` id is rejected with
+ * `provider_id_conflicts_with_curated_entry` (409) — use the curated route.
+ */
+export async function connectCatalogProvider(
+  workspaceId: string,
+  service: string,
+  apiKey: string,
+): Promise<void> {
+  await apiFetch(
+    gatewayUrl(),
+    `/workspaces/${workspaceId}/integrations/catalog/${encodeURIComponent(service)}/connect`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ api_key: apiKey }),
+    },
+  )
 }
 
 /**

@@ -27,6 +27,14 @@ function setup(connections: IntegrationConnection[] = []) {
   mockedApi.fetchIntegrations.mockResolvedValue(connections)
   mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'writer', isWorking: false }] })
   mockedApi.fetchAgentIntegrationEnablement.mockResolvedValue({ writer: false })
+  mockedApi.fetchCatalog.mockResolvedValue({
+    providers: [
+      { service: 'notion', displayName: 'Notion', categories: ['docs'], authTypes: ['api_key'], homepageUrl: null },
+    ],
+    total: 1,
+    limit: 50,
+    offset: 0,
+  })
 }
 
 describe('IntegrationsPageContent', () => {
@@ -114,5 +122,19 @@ describe('IntegrationsPageContent', () => {
         true,
       )
     })
+  })
+
+  it('Browse all chip renders the full catalog tab in place of the curated grid', async () => {
+    setup()
+    const user = userEvent.setup()
+    renderWithClient(<IntegrationsPageContent workspaceId="ws-1" />)
+
+    await screen.findByText('GitHub')
+    await user.click(screen.getByRole('tab', { name: 'Browse all' }))
+
+    expect(await screen.findByText('Notion')).toBeInTheDocument()
+    expect(screen.getByLabelText('Search the full catalog')).toBeInTheDocument()
+    expect(screen.queryByText('GitHub')).not.toBeInTheDocument()
+    expect(mockedApi.fetchCatalog).toHaveBeenCalledWith({ search: undefined, limit: 50 })
   })
 })

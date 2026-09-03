@@ -50,6 +50,9 @@ type ThreadsShellProps = {
   workspaceName: string
   title: string
   alignCenter?: boolean
+  /** When true the AUDIENCE panel (agent history) and its toggle button are
+   * not rendered at all. Use on settings/integrations pages. */
+  hideAudiencePanel?: boolean
   onCompose?: () => void
   onPublish?: (text: string) => void
   search?: string
@@ -143,6 +146,7 @@ export function ThreadsShell({
   workspaceName,
   title,
   alignCenter = false,
+  hideAudiencePanel = false,
   onCompose,
   onPublish,
   search,
@@ -309,7 +313,7 @@ export function ThreadsShell({
   return (
     <TooltipProvider delay={200}>
     <main className={threadsUi.root} data-workspace={workspaceId || workspaceName}>
-      <div className={threadsUi.appWindow}>
+      <div className={cn(threadsUi.appWindow, hideAudiencePanel && 'grid-cols-[72px_317px_minmax(560px,1fr)] max-[1120px]:grid-cols-[72px_250px_minmax(500px,1fr)]')}>
         <WorkspaceRail
           workspaceId={workspaceId}
           workspaceName={workspaceName}
@@ -493,14 +497,16 @@ export function ThreadsShell({
               <button type="button" className={threadsUi.iconButton} aria-label="Help" onClick={() => openSection('Help')}>
                 <CircleHelp size={20} />
               </button>
-              <button
-                type="button"
-                className={cn(threadsUi.iconButton, threadsUi.audienceToggle)}
-                aria-label="Toggle agent history"
-                onClick={() => setAudiencePanelOpen((v) => !v)}
-              >
-                <History size={20} />
-              </button>
+              {!hideAudiencePanel ? (
+                <button
+                  type="button"
+                  className={cn(threadsUi.iconButton, threadsUi.audienceToggle)}
+                  aria-label="Toggle agent history"
+                  onClick={() => setAudiencePanelOpen((v) => !v)}
+                >
+                  <History size={20} />
+                </button>
+              ) : null}
               {workspaceId ? (
                 <button
                   type="button"
@@ -562,13 +568,14 @@ export function ThreadsShell({
           )}
         </section>
 
-        {audiencePanelOpen ? (
+        {!hideAudiencePanel && audiencePanelOpen ? (
           <div
             className={cn(threadsUi.audienceBackdrop, motionPresets.overlayEnter)}
             onClick={() => setAudiencePanelOpen(false)}
           />
         ) : null}
 
+        {!hideAudiencePanel ? (
         <aside className={cn(threadsUi.audiencePanel, audiencePanelOpen && threadsUi.audiencePanelOpen)}>
           <button
             type="button"
@@ -613,6 +620,7 @@ export function ThreadsShell({
             />
           )}
         </aside>
+        ) : null}
       </div>
 
       {composeOpen ? (

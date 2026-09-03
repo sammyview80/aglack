@@ -64,10 +64,20 @@ pub struct IntegrationsState {
     /// session-exempt (`auth/middleware.rs`), so this is the only brute-
     /// force mitigation that route has.
     pub mcp_bearer_lockout: super::mcp_proxy::McpBearerLockout,
+    /// In-memory cache for `GET /integrations/catalog` — see
+    /// `catalog::CatalogCache`'s own doc comment. Lives on this shared
+    /// state (constructed once at process start, same as every other
+    /// field here) so the cache is genuinely shared across requests, not
+    /// rebuilt per-call.
+    pub catalog_cache: super::catalog::CatalogCache,
 }
 
 impl IntegrationsState {
-    fn find_provider(&self, provider_id: &str) -> Option<&Provider> {
+    /// `pub(super)` (not private): `catalog.rs`'s
+    /// `catalog_connect_route` reuses this exact lookup to reject a
+    /// catalog-connect for a `:service` that collides with an existing
+    /// curated `providers.yaml` entry — see that call site's own comment.
+    pub(super) fn find_provider(&self, provider_id: &str) -> Option<&Provider> {
         self.providers
             .iter()
             .find(|provider| provider.id == provider_id)
@@ -619,7 +629,7 @@ pub async fn connect_integration_route(
 /// the workspace to have a running container; returns a clean
 /// `workspace_not_ready` error otherwise rather than storing a token no
 /// container will ever pick up.
-async fn finish_connection(
+pub(super) async fn finish_connection(
     state: &IntegrationsState,
     workspace_id: &str,
     provider_id: &str,
@@ -1059,7 +1069,7 @@ pub async fn list_integration_agents_route(
     crate::proxy::forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await
 }
 
-fn workspace_connection_name(workspace_id: &str) -> String {
+pub(super) fn workspace_connection_name(workspace_id: &str) -> String {
     format!("ws-{workspace_id}")
 }
 
@@ -1175,6 +1185,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             token_cipher: test_token_cipher(),
             mcp_bearer_lockout: Default::default(),
+            catalog_cache: Default::default(),
         });
         (state, pool)
     }

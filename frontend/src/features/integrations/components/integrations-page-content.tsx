@@ -1,18 +1,18 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import { AgentToggleList } from '@/features/integrations/components/agent-toggle-list'
+import { CatalogTab } from '@/features/integrations/components/catalog-tab'
 import { ProviderCard } from '@/features/integrations/components/provider-card'
 import { integrationsUi } from '@/features/integrations/integrations-ui'
 import { useIntegrations } from '@/features/integrations/hooks/use-integrations'
 import { useProviders } from '@/features/integrations/hooks/use-providers'
-import { chatUi } from '@/features/chat/chat-ui'
 import { StatusAlert } from '@/components/status-alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { errorMessage } from '@/lib/api'
 import type { IntegrationConnection, ProviderSummary } from '@/features/integrations/types'
 
-type Shelf = 'all' | 'installed' | 'available'
+type Shelf = 'all' | 'installed' | 'available' | 'browse'
 
 function isInstalled(connection: IntegrationConnection | undefined) {
   return connection?.status === 'connected' || connection?.status === 'pending'
@@ -24,31 +24,6 @@ function matchesQuery(provider: ProviderSummary, query: string) {
   return haystack.includes(query)
 }
 
-function PluginsChrome({
-  meta,
-  children,
-}: {
-  meta: string
-  children: ReactNode
-}) {
-  return (
-    <div className={chatUi.threadScroll}>
-      <article className={chatUi.threadCard}>
-        <div className={chatUi.threadMain}>
-          <div className={chatUi.headerRow}>
-            <div className={chatUi.headerIdentity}>
-              <strong className={chatUi.headerName}>Plugins</strong>
-              <span className={chatUi.headerMeta}>{meta}</span>
-            </div>
-          </div>
-          <div className={chatUi.divider} />
-          {children}
-        </div>
-      </article>
-    </div>
-  )
-}
-
 export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }) {
   const providersQuery = useProviders()
   const connectionsQuery = useIntegrations(workspaceId)
@@ -56,46 +31,43 @@ export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }
   const [shelf, setShelf] = useState<Shelf>('all')
 
   const connectionsByProvider = useMemo(
-    () => new Map((connectionsQuery.data ?? []).map((connection) => [connection.providerId, connection])),
+    () => new Map((connectionsQuery.data ?? []).map((c) => [c.providerId, c])),
     [connectionsQuery.data],
   )
 
   const providers = providersQuery.data ?? []
-  const installedCount = providers.filter((provider) => isInstalled(connectionsByProvider.get(provider.id))).length
-  const visible = providers.filter((provider) => {
-    const connection = connectionsByProvider.get(provider.id)
-    if (shelf === 'installed' && !isInstalled(connection)) return false
-    if (shelf === 'available' && isInstalled(connection)) return false
-    return matchesQuery(provider, query.trim().toLowerCase())
+  const installedCount = providers.filter((p) => isInstalled(connectionsByProvider.get(p.id))).length
+  const visible = providers.filter((p) => {
+    const conn = connectionsByProvider.get(p.id)
+    if (shelf === 'installed' && !isInstalled(conn)) return false
+    if (shelf === 'available' && isInstalled(conn)) return false
+    return matchesQuery(p, query.trim().toLowerCase())
   })
 
   if (providersQuery.isPending) {
     return (
-      <PluginsChrome meta="Loading…">
-        <div className={chatUi.transcript}>
-          <Skeleton className="h-24 w-full rounded-lg" />
-          <Skeleton className="mt-3 h-24 w-full rounded-lg" />
-        </div>
-      </PluginsChrome>
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-24 w-full rounded-xl" />
+        <Skeleton className="h-24 w-full rounded-xl" />
+        <Skeleton className="h-24 w-full rounded-xl" />
+      </div>
     )
   }
 
   if (providersQuery.isError) {
-    return (
-      <PluginsChrome meta="Could not load plugins">
-        <StatusAlert message={errorMessage(providersQuery.error, 'Could not load providers.')} />
-      </PluginsChrome>
-    )
+    return <StatusAlert message={errorMessage(providersQuery.error, 'Could not load providers.')} />
   }
 
   return (
-    <PluginsChrome meta={`${providers.length} available · ${installedCount} installed`}>
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-8 py-6 max-[760px]:px-4">
+      <div className="mx-auto w-full max-w-[1100px] flex flex-col gap-5">
+      {/* Toolbar */}
       <div className={integrationsUi.toolbar}>
         <label className={integrationsUi.search}>
           <Search size={16} />
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(e) => setQuery(e.target.value)}
             placeholder="Search plugins"
             aria-label="Search plugins"
           />
@@ -106,6 +78,7 @@ export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }
               { id: 'all', label: `All ${providers.length}` },
               { id: 'installed', label: `Installed ${installedCount}` },
               { id: 'available', label: 'Available' },
+              { id: 'browse', label: 'Browse all' },
             ] as const
           ).map((chip) => (
             <button
@@ -122,23 +95,26 @@ export function IntegrationsPageContent({ workspaceId }: { workspaceId: string }
         </div>
       </div>
 
-      <div className={chatUi.transcript}>
-        {visible.length === 0 ? (
-          <p className={integrationsUi.empty}>No plugins match that search.</p>
-        ) : (
-          <div className={integrationsUi.list}>
-            {visible.map((provider) => (
-              <ProviderCard
-                key={provider.id}
-                workspaceId={workspaceId}
-                provider={provider}
-                connection={connectionsByProvider.get(provider.id)}
-              />
-            ))}
-          </div>
-        )}
-        <AgentToggleList workspaceId={workspaceId} />
+      {/* Grid */}
+      {shelf === 'browse' ? (
+        <CatalogTab workspaceId={workspaceId} />
+      ) : visible.length === 0 ? (
+        <p className={integrationsUi.empty}>No plugins match that search.</p>
+      ) : (
+        <div className={integrationsUi.catalogGrid}>
+          {visible.map((provider) => (
+            <ProviderCard
+              key={provider.id}
+              workspaceId={workspaceId}
+              provider={provider}
+              connection={connectionsByProvider.get(provider.id)}
+            />
+          ))}
+        </div>
+      )}
+
+      <AgentToggleList workspaceId={workspaceId} />
       </div>
-    </PluginsChrome>
+    </div>
   )
 }

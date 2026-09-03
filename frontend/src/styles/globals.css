@@ -9,7 +9,7 @@
   --th-window: #f8f8f9;
   --th-sidebar: #f7f7f8;
   --th-sidebar-2: #f2f2f4;
-  --th-sidebar-line: #dedee2;
+  --th-sidebar-line: #c8c8cc;
   --th-content: #fafafb;
   --th-card: #fff;
   --th-text: #25252d;
@@ -19,8 +19,8 @@
   --th-icon-hover: #e8e8eb;
   --th-selected: #e4e4e8;
   --th-search: #e9e9eb;
-  --th-line: #e3e3e5;
-  --th-header-line: #e2e2e4;
+  --th-line: #c8c8cc;
+  --th-header-line: #c8c8cc;
   --th-compose: #6743ed;
   --th-compose-hover: #7652ed;
   --th-post: #bdabff;

@@ -18,6 +18,19 @@ export type ProviderSummary = {
   oauthAvailable: boolean
 }
 
+/** One row of OpenConnector's FULL catalog (`GET /integrations/catalog`,
+ * ~1451 entries, searchable + paged) — distinct from `ProviderSummary`,
+ * which is the small curated `providers.yaml` list. `service` is the raw
+ * OpenConnector service id and doubles as the connection's `providerId`
+ * once connected via `POST .../integrations/catalog/:service/connect`. */
+export type CatalogProvider = {
+  service: string
+  displayName: string
+  categories: string[]
+  authTypes: string[]
+  homepageUrl: string | null
+}
+
 export type ConnectionStatus = 'pending' | 'connected' | 'needs_reauth' | 'disconnected' | 'error'
 
 export type IntegrationConnection = {

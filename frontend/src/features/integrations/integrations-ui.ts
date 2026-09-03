@@ -27,6 +27,25 @@ export const integrationsUi = {
     'h-8 rounded-lg border border-[var(--th-line)] bg-transparent px-3 text-[13px] font-semibold text-[var(--th-text)] hover:bg-[var(--th-hover)] disabled:opacity-50',
   cancel:
     'h-8 rounded-lg border border-[var(--th-line)] bg-transparent px-3 text-[13px] font-semibold text-[var(--th-text)] hover:bg-[var(--th-hover)]',
+  catalogGrid:
+    'grid grid-cols-3 gap-3 max-[900px]:grid-cols-2 max-[600px]:grid-cols-1',
+  catalogCard:
+    'flex flex-col gap-2 rounded-xl border border-[var(--th-line)] bg-[var(--th-card)] p-4 text-left transition-colors duration-150 hover:bg-[var(--th-hover)] cursor-pointer',
+  catalogCardInstalled:
+    'border-l-[3px] border-l-[var(--th-compose)]',
+  catalogCardTop: 'flex items-start gap-3 flex-1',
+  catalogCardBody: 'min-w-0 flex-1',
+  catalogCardName:
+    'text-[13px] font-semibold leading-snug tracking-[-0.1px] text-[var(--th-text)]',
+  catalogCardCategories:
+    'mt-[3px] text-[11px] font-medium uppercase tracking-[0.6px] text-[var(--th-muted)]',
+  catalogCardUrl:
+    'mt-1 truncate text-[11px] text-[var(--th-muted)] opacity-50',
+  catalogCardFooter: 'flex items-center justify-between mt-auto pt-1 border-t border-[var(--th-line)]',
+  catalogCardAction:
+    'text-[11.5px] font-semibold text-[var(--th-compose)]',
+  catalogCardAuthType:
+    'text-[10.5px] font-medium capitalize tracking-[0.2px] text-[var(--th-muted)] opacity-70',
   agents: 'mt-4 rounded-[10px] border border-[var(--th-line)] border-l-[3px] border-l-[var(--th-compose)] bg-[var(--th-card)] px-4 py-3.5',
   agentsHead: 'flex items-start justify-between gap-3',
   agentsTitle: 'text-[15px] font-semibold text-[var(--th-text)]',

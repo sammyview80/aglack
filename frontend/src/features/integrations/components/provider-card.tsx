@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Card } from '@/components/ui/card'
+import { CheckCircle2 } from 'lucide-react'
 import { ConnectDialog } from '@/features/integrations/components/connect-dialog'
 import { ProviderMark } from '@/features/integrations/components/provider-mark'
 import { integrationsUi } from '@/features/integrations/integrations-ui'
@@ -15,7 +15,7 @@ type ProviderCardProps = {
 }
 
 const STATUS_LABEL: Record<IntegrationConnection['status'], string> = {
-  connected: 'Installed',
+  connected: 'Connected',
   pending: 'Connecting…',
   needs_reauth: 'Reconnect',
   disconnected: 'Available',
@@ -52,42 +52,61 @@ export function ProviderCard({ workspaceId, provider, connection }: ProviderCard
   }
 
   return (
-    <Card className={cn(integrationsUi.card, isConnected && integrationsUi.cardConnected)}>
-      <div className={integrationsUi.cardInner}>
-        <ProviderMark providerId={provider.id} icon={provider.icon} name={provider.name} />
-        <div className={integrationsUi.cardCopy}>
-          <div className="flex items-start justify-between gap-2">
-            <p className={integrationsUi.title}>{provider.name}</p>
-            {connection ? (
-              <span className={statusBadgeClass(connection.status)}>{STATUS_LABEL[connection.status]}</span>
+    <>
+      <div className={cn(integrationsUi.catalogCard, isConnected && integrationsUi.catalogCardInstalled)}>
+        <div className={integrationsUi.catalogCardTop}>
+          <div className="relative shrink-0">
+            <ProviderMark providerId={provider.id} icon={provider.icon} name={provider.name} />
+            {isConnected ? (
+              <span className="absolute -bottom-1 -right-1 flex size-[18px] items-center justify-center rounded-full bg-[#1e9e4e] text-white ring-2 ring-[var(--th-card)]">
+                <CheckCircle2 size={12} strokeWidth={2.5} />
+              </span>
             ) : null}
           </div>
-          <p className={integrationsUi.blurb}>{provider.description ?? provider.id}</p>
-          {account ? <p className={integrationsUi.meta}>as {account}</p> : null}
-          {connection?.lastError ? <p className="text-xs text-[#d1435b]">{connection.lastError}</p> : null}
+          <div className={integrationsUi.catalogCardBody}>
+            <p className={integrationsUi.catalogCardName}>{provider.name}</p>
+            {provider.description ? (
+              <p className={integrationsUi.catalogCardCategories}>{provider.description}</p>
+            ) : null}
+            {account ? <p className={integrationsUi.catalogCardUrl}>as {account}</p> : null}
+            {connection?.lastError ? (
+              <p className="mt-0.5 text-[11px] text-[#d1435b]">{connection.lastError}</p>
+            ) : null}
+          </div>
         </div>
-        <div className={integrationsUi.actions}>
-          {isConnected ? (
-            <button
-              type="button"
-              className={integrationsUi.disconnect}
-              disabled={disconnect.isPending}
-              onClick={() => disconnect.mutate(provider.id)}
-            >
-              {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
-            </button>
+
+        <div className={integrationsUi.catalogCardFooter}>
+          {connection ? (
+            <span className={statusBadgeClass(connection.status)}>{STATUS_LABEL[connection.status]}</span>
           ) : (
-            <button
-              type="button"
-              className={integrationsUi.connect}
-              disabled={isConnectingViaOAuth}
-              onClick={handleConnectClick}
-            >
-              {isConnectingViaOAuth ? 'Waiting for popup…' : 'Connect'}
-            </button>
+            <span className={integrationsUi.catalogCardAuthType}>
+              {provider.oauthAvailable ? 'oauth' : 'api key'}
+            </span>
           )}
+          <div className={integrationsUi.actions}>
+            {isConnected ? (
+              <button
+                type="button"
+                className={integrationsUi.disconnect}
+                disabled={disconnect.isPending}
+                onClick={() => disconnect.mutate(provider.id)}
+              >
+                {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={integrationsUi.connect}
+                disabled={isConnectingViaOAuth}
+                onClick={handleConnectClick}
+              >
+                {isConnectingViaOAuth ? 'Waiting…' : 'Connect →'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
       {!provider.oauthAvailable && (
         <ConnectDialog
           workspaceId={workspaceId}
@@ -96,6 +115,6 @@ export function ProviderCard({ workspaceId, provider, connection }: ProviderCard
           onOpenChange={setDialogOpen}
         />
       )}
-    </Card>
+    </>
   )
 }

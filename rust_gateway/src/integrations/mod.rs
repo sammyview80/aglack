@@ -16,6 +16,7 @@
 //! tracked separately, not silently skipped — see the plan doc's phase
 //! list.
 
+pub mod catalog;
 mod mcp_proxy;
 pub mod openconnector;
 mod providers;
@@ -23,6 +24,7 @@ pub mod route;
 mod store;
 pub mod token_delivery;
 
+pub use catalog::{catalog_connect_route, catalog_route, CatalogCache};
 pub use openconnector::{OpenConnectorApi, OpenConnectorClient};
 pub use providers::{load_providers, Provider, ProvidersError};
 pub use route::{

@@ -4,13 +4,28 @@ import { StatusAlert } from '@/components/status-alert'
 import { integrationsUi } from '@/features/integrations/integrations-ui'
 import { useConnectIntegration } from '@/features/integrations/hooks/use-integrations'
 import { errorMessage } from '@/lib/api'
-import type { ProviderSummary } from '@/features/integrations/types'
 
 type ConnectDialogProps = {
   workspaceId: string
-  provider: ProviderSummary
+  /** Minimal shape this dialog actually reads — satisfied by both
+   * `ProviderSummary` (curated) and a `CatalogProvider` mapped by the
+   * caller (`catalog-tab.tsx`). */
+  provider: { id: string; name: string; description: string | null }
   open: boolean
   onOpenChange: (open: boolean) => void
+  /**
+   * Optional alternate submit path. When omitted, the dialog uses the
+   * curated `useConnectIntegration` mutation exactly as before — every
+   * existing call site (`provider-card.tsx`) is unchanged. `catalog-tab.tsx`
+   * passes its own `useConnectCatalogProvider` mutation through here.
+   */
+  submit?: {
+    connect: (
+      apiKey: string,
+      callbacks: { onSuccess: () => void; onError: (err: unknown) => void },
+    ) => void
+    isPending: boolean
+  }
 }
 
 /**
@@ -19,24 +34,27 @@ type ConnectDialogProps = {
  * implements `api_key` auth today. This is the honest reflection of that
  * in the UI, not a placeholder for a flow that already works elsewhere.
  */
-export function ConnectDialog({ workspaceId, provider, open, onOpenChange }: ConnectDialogProps) {
+export function ConnectDialog({ workspaceId, provider, open, onOpenChange, submit }: ConnectDialogProps) {
   const [apiKey, setApiKey] = useState('')
   const [error, setError] = useState('')
-  const connect = useConnectIntegration(workspaceId)
+  const curatedConnect = useConnectIntegration(workspaceId)
+  const isPending = submit ? submit.isPending : curatedConnect.isPending
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
     setError('')
-    connect.mutate(
-      { providerId: provider.id, apiKey },
-      {
-        onSuccess: () => {
-          setApiKey('')
-          onOpenChange(false)
-        },
-        onError: (err) => setError(errorMessage(err, 'Could not connect.')),
+    const callbacks = {
+      onSuccess: () => {
+        setApiKey('')
+        onOpenChange(false)
       },
-    )
+      onError: (err: unknown) => setError(errorMessage(err, 'Could not connect.')),
+    }
+    if (submit) {
+      submit.connect(apiKey, callbacks)
+    } else {
+      curatedConnect.mutate({ providerId: provider.id, apiKey }, callbacks)
+    }
   }
 
   return (
@@ -72,8 +90,8 @@ export function ConnectDialog({ workspaceId, provider, open, onOpenChange }: Con
               <button type="button" className={integrationsUi.cancel} onClick={() => onOpenChange(false)}>
                 Cancel
               </button>
-              <button type="submit" className={integrationsUi.connect} disabled={connect.isPending || !apiKey.trim()}>
-                {connect.isPending ? 'Connecting…' : 'Connect'}
+              <button type="submit" className={integrationsUi.connect} disabled={isPending || !apiKey.trim()}>
+                {isPending ? 'Connecting…' : 'Connect'}
               </button>
             </div>
           </form>
