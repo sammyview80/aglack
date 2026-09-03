@@ -98,7 +98,7 @@ pub struct OpenConnectorClient {
     http: reqwest::Client,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ConnectionSummary {
     pub id: String,
     pub service: String,
@@ -150,6 +150,14 @@ pub trait OpenConnectorApi: Send + Sync {
         service: &str,
         connection_name: &str,
     ) -> Result<String, OpenConnectorError>;
+
+    /// `GET /api/connections` — EVERY connection OpenConnector holds, for
+    /// every service and every workspace, unfiltered. `route.rs`'s
+    /// `list_integrations_route` calls this once per request to discover
+    /// connections that exist on OpenConnector's side but have no local
+    /// row yet (created out-of-band, e.g. via OpenConnector's own admin
+    /// dashboard); `find_connection` is this plus a client-side filter.
+    async fn list_connections(&self) -> Result<Vec<ConnectionSummary>, OpenConnectorError>;
 
     async fn find_connection(
         &self,
@@ -302,11 +310,15 @@ impl OpenConnectorApi for OpenConnectorClient {
         service: &str,
         connection_name: &str,
     ) -> Result<Option<ConnectionSummary>, OpenConnectorError> {
-        let response = self.admin_request(reqwest::Method::GET, "/api/connections").send().await?;
-        let all: Vec<ConnectionSummary> = parse_or_error(response).await?;
+        let all = self.list_connections().await?;
         Ok(all
             .into_iter()
             .find(|c| c.service == service && c.connection_name == connection_name))
+    }
+
+    async fn list_connections(&self) -> Result<Vec<ConnectionSummary>, OpenConnectorError> {
+        let response = self.admin_request(reqwest::Method::GET, "/api/connections").send().await?;
+        parse_or_error(response).await
     }
 
     async fn delete_connection(
@@ -511,6 +523,12 @@ pub(crate) mod fake {
         /// body is or isn't exposed further up the stack (Issue 2).
         fail_connect_with_api_key: Option<(reqwest::StatusCode, String)>,
         next_token_id: u32,
+        /// What `list_connections` returns — seeded via
+        /// `with_connections` so a test can pretend OpenConnector already
+        /// holds connections this gateway never created itself.
+        connections: Vec<ConnectionSummary>,
+        list_connections_calls: usize,
+        fail_list_connections: bool,
     }
 
     impl FakeOpenConnector {
@@ -545,6 +563,25 @@ pub(crate) mod fake {
             let fake = Self::default();
             fake.state.lock().unwrap().fail_connect_with_api_key = Some((status, body.into()));
             fake
+        }
+
+        /// Seed the fixed list `list_connections` returns (builder-style,
+        /// so it composes with `Self::default()` in one expression).
+        pub(crate) fn with_connections(self, connections: Vec<ConnectionSummary>) -> Self {
+            self.state.lock().unwrap().connections = connections;
+            self
+        }
+
+        /// Forces `list_connections` to fail, for asserting that the
+        /// route's discovery pass degrades gracefully rather than 500s.
+        pub(crate) fn that_fails_list_connections() -> Self {
+            let fake = Self::default();
+            fake.state.lock().unwrap().fail_list_connections = true;
+            fake
+        }
+
+        pub(crate) fn list_connections_calls(&self) -> usize {
+            self.state.lock().unwrap().list_connections_calls
         }
 
         pub(crate) fn create_runtime_token_calls(&self) -> Vec<(String, Vec<String>)> {
@@ -609,6 +646,18 @@ pub(crate) mod fake {
             _connection_name: &str,
         ) -> Result<Option<ConnectionSummary>, OpenConnectorError> {
             Ok(None)
+        }
+
+        async fn list_connections(&self) -> Result<Vec<ConnectionSummary>, OpenConnectorError> {
+            let mut state = self.state.lock().unwrap();
+            state.list_connections_calls += 1;
+            if state.fail_list_connections {
+                return Err(OpenConnectorError {
+                    message: "simulated list_connections failure".to_string(),
+                    status: None,
+                });
+            }
+            Ok(state.connections.clone())
         }
 
         async fn delete_connection(

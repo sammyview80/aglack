@@ -170,6 +170,14 @@ const OAUTH_PENDING_TIMEOUT_SECS: u64 = 600;
 /// the same logic `api_key` connect uses) the moment one shows up
 /// `configured`. The frontend's `ConnectDialog` polls this route every
 /// couple of seconds while a popup is open specifically to drive this.
+///
+/// Also self-healing for providers with NO local row: every registered
+/// provider is checked against OpenConnector's full connection list (one
+/// fetch per request), and a `configured` `ws-<workspace_id>` connection
+/// found there is finished via the same `finish_connection` — otherwise a
+/// connection created out-of-band (OpenConnector's own admin dashboard)
+/// would be reported as absent and a second "Connect" would create a
+/// redundant one. A provider absent on both sides is omitted (available).
 pub async fn list_integrations_route(
     State(state): State<Arc<IntegrationsState>>,
     Path(workspace_id): Path<String>,
@@ -197,6 +205,24 @@ pub async fn list_integrations_route(
         }
     };
 
+    // Self-healing half of this route: ONE OpenConnector-wide fetch per
+    // request (not one per provider), used below to find providers that
+    // are already connected on OpenConnector's side but have NO local row
+    // at all (created out-of-band, e.g. via OpenConnector's own admin
+    // dashboard). Best-effort: a failure here degrades to the local-row
+    // behavior above, never a 500 — the list itself is still correct for
+    // everything this gateway already knows about.
+    let remote_connections = match state.openconnector.list_connections().await {
+        Ok(remote) => remote,
+        Err(err) => {
+            tracing::warn!(workspace_id = %workspace_id, error = %err, "openconnector list_connections failed; skipping discovery of connections with no local row");
+            Vec::new()
+        }
+    };
+
+    let known_provider_ids: Vec<String> =
+        connections.iter().map(|c| c.provider_id.clone()).collect();
+
     let mut out = Vec::with_capacity(connections.len());
     for connection in connections {
         if connection.status != ConnectionStatus::Pending {
@@ -213,7 +239,57 @@ pub async fn list_integrations_route(
             reconcile_pending_connection(&state, &workspace_id, connection).await,
         );
     }
+
+    let connection_name = workspace_connection_name(&workspace_id);
+    for provider in &state.providers {
+        if known_provider_ids.contains(&provider.id) {
+            continue;
+        }
+        let Some(summary) = remote_connections.iter().find(|c| {
+            c.service == provider.openconnector_service
+                && c.connection_name == connection_name
+                && c.configured
+        }) else {
+            // Not present on OpenConnector either = available; omitted, per
+            // this route's existing "not present = available" contract.
+            continue;
+        };
+        out.push(finish_and_summarize(&state, &workspace_id, &provider.id, summary).await);
+    }
+
     success(StatusCode::OK, out)
+}
+
+/// Run `finish_connection` for a connection OpenConnector reports as
+/// `configured` and turn its outcome into this route's row summary —
+/// shared by `reconcile_pending_connection` (a `pending` OAuth row just
+/// completed) and the no-local-row discovery pass above, so both report
+/// success and failure identically. `finish_connection` itself persists
+/// the `error` status on failure (see its own doc comment) — this only
+/// reports it, never writes it a second time.
+async fn finish_and_summarize(
+    state: &IntegrationsState,
+    workspace_id: &str,
+    provider_id: &str,
+    summary: &openconnector::ConnectionSummary,
+) -> ConnectionSummaryOut {
+    match finish_connection(state, workspace_id, provider_id, summary).await {
+        Ok(()) => ConnectionSummaryOut {
+            provider_id: provider_id.to_string(),
+            status: status_str(&ConnectionStatus::Connected).to_string(),
+            account_label: Some(summary.connection_name.clone()),
+            last_error: None,
+        },
+        Err(_) => ConnectionSummaryOut {
+            provider_id: provider_id.to_string(),
+            status: status_str(&ConnectionStatus::Error).to_string(),
+            account_label: None,
+            last_error: Some(
+                "Connected on the provider side but finishing setup failed. Try again."
+                    .to_string(),
+            ),
+        },
+    }
 }
 
 /// Check one `pending` row against OpenConnector and either finish it
@@ -245,28 +321,8 @@ async fn reconcile_pending_connection(
 
     if let Some(summary) = found {
         if summary.configured {
-            let provider_id = connection.provider_id.clone();
-            return match finish_connection(state, workspace_id, &provider_id, &summary).await {
-                Ok(()) => ConnectionSummaryOut {
-                    provider_id,
-                    status: status_str(&ConnectionStatus::Connected).to_string(),
-                    account_label: Some(summary.connection_name),
-                    last_error: None,
-                },
-                // `finish_connection` itself persists the `error` status
-                // on failure now (see its own doc comment) — this branch
-                // just needs to report the same thing back to this call's
-                // caller, not write it a second time.
-                Err(_) => ConnectionSummaryOut {
-                    provider_id,
-                    status: status_str(&ConnectionStatus::Error).to_string(),
-                    account_label: None,
-                    last_error: Some(
-                        "Connected on the provider side but finishing setup failed. Try again."
-                            .to_string(),
-                    ),
-                },
-            };
+            return finish_and_summarize(state, workspace_id, &connection.provider_id, &summary)
+                .await;
         }
     }
 
@@ -1701,6 +1757,161 @@ mod tests {
     async fn body_json(response: Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // ---- Self-healing list: discover OpenConnector connections with no local row ----
+
+    /// A `configured` OpenConnector connection for `(service, ws-<workspace_id>)`
+    /// — the shape OpenConnector's own `GET /api/connections` reports for a
+    /// connection created out-of-band (e.g. via its admin dashboard).
+    fn configured_summary(service: &str, workspace_id: &str) -> openconnector::ConnectionSummary {
+        openconnector::ConnectionSummary {
+            id: format!("conn-{service}-oob"),
+            service: service.to_string(),
+            connection_name: workspace_connection_name(workspace_id),
+            configured: true,
+        }
+    }
+
+    fn entry_for<'a>(body: &'a serde_json::Value, provider_id: &str) -> Option<&'a serde_json::Value> {
+        body["data"]
+            .as_array()
+            .expect("data is an array")
+            .iter()
+            .find(|entry| entry["provider_id"] == provider_id)
+    }
+
+    #[tokio::test]
+    async fn list_discovers_a_configured_openconnector_connection_with_no_local_row() {
+        let workspace_id = "ws-discover";
+        let fake = Arc::new(
+            FakeOpenConnector::default()
+                .with_connections(vec![configured_summary("github", workspace_id)]),
+        );
+        let (state, pool) = integrations_state(fake.clone()).await;
+        ready_workspace(&pool, workspace_id).await;
+
+        let response =
+            list_integrations_route(State(state.clone()), Path(workspace_id.to_string())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+
+        let github = entry_for(&body, "github")
+            .expect("a provider OpenConnector already holds a configured connection for must be reported");
+        // Token delivery always fails in this test process (no real
+        // container behind `"not-a-real-container"` — see `ready_workspace`'s
+        // doc comment), so the SAME `finish_connection` path the OAuth
+        // reconciliation uses lands on its `error` branch here. What this
+        // proves: the provider is no longer invisible, and its status
+        // comes from `finish_connection`'s real outcome, not a shortcut.
+        assert_eq!(github["status"], "error");
+        assert!(
+            fake.create_runtime_token_calls().iter().any(|(name, ids)| {
+                name == &format!("workspace:{workspace_id}")
+                    && ids.contains(&"conn-github-oob".to_string())
+            }),
+            "discovery must run the real finish_connection (token scoped to the discovered \
+             connection id), got {:?}",
+            fake.create_runtime_token_calls()
+        );
+        let row = state
+            .store
+            .find_connection(workspace_id, "github")
+            .await
+            .expect("find_connection succeeds")
+            .expect("discovery must persist a real local row, not just report one");
+        assert_eq!(row.openconnector_connection_id.as_deref(), Some("conn-github-oob"));
+        assert!(
+            entry_for(&body, "slack").is_none(),
+            "a provider OpenConnector has nothing for must stay omitted (= available)"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_omits_a_provider_with_no_local_row_and_no_openconnector_match() {
+        let workspace_id = "ws-discover-none";
+        // Something for a DIFFERENT workspace, and an unconfigured one for
+        // this workspace — neither may count as "already connected here".
+        let mut unconfigured = configured_summary("slack", workspace_id);
+        unconfigured.configured = false;
+        let fake = Arc::new(FakeOpenConnector::default().with_connections(vec![
+            configured_summary("github", "some-other-workspace"),
+            unconfigured,
+        ]));
+        let (state, pool) = integrations_state(fake.clone()).await;
+        ready_workspace(&pool, workspace_id).await;
+
+        let response =
+            list_integrations_route(State(state.clone()), Path(workspace_id.to_string())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+
+        assert_eq!(body["data"], serde_json::json!([]));
+        assert!(fake.create_runtime_token_calls().is_empty());
+        assert!(
+            state.store.find_connection(workspace_id, "github").await.unwrap().is_none()
+                && state.store.find_connection(workspace_id, "slack").await.unwrap().is_none(),
+            "no local row may be created for a provider OpenConnector has no match for"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_calls_openconnector_list_connections_exactly_once_per_request() {
+        let workspace_id = "ws-discover-once";
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        ready_workspace(&pool, workspace_id).await;
+        assert_eq!(state.providers.len(), 2, "two registered providers, no local rows");
+
+        let response =
+            list_integrations_route(State(state.clone()), Path(workspace_id.to_string())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        assert_eq!(
+            fake.list_connections_calls(),
+            1,
+            "one OpenConnector-wide fetch per request, never one per provider"
+        );
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    async fn list_still_succeeds_and_warns_when_openconnector_list_connections_fails() {
+        let workspace_id = "ws-discover-fail";
+        let fake = Arc::new(FakeOpenConnector::that_fails_list_connections());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        ready_workspace(&pool, workspace_id).await;
+        // An existing non-pending local row must still be reported as-is.
+        state
+            .store
+            .upsert_connection(
+                "row-github",
+                workspace_id,
+                "github",
+                &workspace_connection_name(workspace_id),
+                Some("conn-github"),
+                ConnectionStatus::Connected,
+                Some("ws-ws-discover-fail"),
+            )
+            .await
+            .expect("seed github connected");
+
+        let response =
+            list_integrations_route(State(state), Path(workspace_id.to_string())).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "discovery is best-effort: an OpenConnector failure must not fail the list"
+        );
+        let body = body_json(response).await;
+        assert_eq!(entry_for(&body, "github").expect("local row still reported")["status"], "connected");
+        assert!(entry_for(&body, "slack").is_none());
+        assert_eq!(fake.list_connections_calls(), 1);
+        assert!(
+            logs_contain("openconnector list_connections failed"),
+            "the discovery failure must be logged, not silently swallowed"
+        );
     }
 
     // ---- Issue 2: a raw upstream error body must never reach the caller ----
