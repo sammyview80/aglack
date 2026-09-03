@@ -134,4 +134,27 @@ describe('WorkspaceChat clarification layout', () => {
     expect(screen.queryByRole('region', { name: /clarification required/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /scroll to required clarification input/i })).not.toBeInTheDocument()
   })
+
+  it('keeps approval actions pinned when the command is a long script', async () => {
+    mockedAgentHistoryApi.listAgents.mockResolvedValue({ agents: [{ name: 'agent-a', isWorking: false }] })
+    mockedUseChat.mockReturnValue(
+      baseChat({
+        approval: {
+          approvalId: 'a1',
+          description: 'script execution via heredoc',
+          command: Array.from({ length: 80 }, (_, i) => `print(${i})`).join('\n'),
+        },
+      }),
+    )
+
+    renderChat()
+
+    const region = await screen.findByRole('region', { name: /approval requested/i })
+    const command = region.querySelector('pre')
+    const deny = screen.getByRole('button', { name: /^deny$/i })
+    expect(command).not.toBeNull()
+    expect(command?.parentElement?.contains(deny)).toBe(false)
+    expect(region.contains(deny)).toBe(true)
+    expect(screen.getByRole('button', { name: /approve once/i })).toBeInTheDocument()
+  })
 })

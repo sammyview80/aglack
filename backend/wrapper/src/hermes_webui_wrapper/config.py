@@ -90,6 +90,65 @@ def resolve_agent_workspaces_root() -> Path:
     return Path(default_workspace).resolve().parent
 
 
+def resolve_integrations_token_path() -> Path:
+    """Where this container's OpenConnector-tenancy bearer lives on disk —
+    see `../../../../docs/integrations-plan.md`'s security model and
+    `../../../../docs/integrations-poc-findings.md`. Written by the
+    gateway via `docker cp` (see `rust_gateway/src/workspaces/container/`,
+    task #4 — not yet wired as of this function's introduction), never by
+    this process. `INTEGRATIONS_TOKEN_PATH` overrides for local dev; the
+    real container default matches the plan's `/run/hermes/integrations.token`.
+    """
+    override = os.environ.get("INTEGRATIONS_TOKEN_PATH", "").strip()
+    if override:
+        return Path(override)
+    return Path("/run/hermes/integrations.token")
+
+
+def resolve_gateway_internal_url() -> str:
+    """Base URL this container dials to reach the gateway's own
+    `/workspaces/:id/mcp` tenancy proxy (see
+    `features/integrations/service.py`'s `relay_mcp_call`) — NOT the
+    reverse: containers never dial OpenConnector directly. Fails closed
+    like `resolve_agent_workspaces_root()` — a missing value here means a
+    misconfigured container, not a sensible default to guess.
+    """
+    value = os.environ.get("GATEWAY_INTERNAL_URL", "").strip()
+    if not value:
+        raise RuntimeError(
+            "GATEWAY_INTERNAL_URL is not set — required for the integrations "
+            "MCP relay (features/integrations/service.py) to reach the "
+            "gateway's tenancy proxy. Set it to the gateway's address as "
+            "reachable FROM INSIDE this container (e.g. "
+            "http://host.docker.internal:<gateway-port> on macOS/Windows, "
+            "or the host's real address on Linux — see "
+            "docs/integrations-plan.md's infra section)."
+        )
+    return value.rstrip("/")
+
+
+def resolve_integrations_workspace_id() -> str:
+    """This container's OWN workspace id, needed to call
+    `GATEWAY_INTERNAL_URL/workspaces/<id>/mcp` — the gateway's tenancy
+    proxy is keyed by workspace id in the URL path, and nothing inside a
+    container knows its own workspace id today (see boot_script.rs's env
+    vars — no `WORKSPACE_ID` among them as of this function's
+    introduction). Task #4 (delivering the integrations token into a real
+    container) must also thread this through the boot script. Fails
+    closed rather than silently guessing or omitting the path segment.
+    """
+    value = os.environ.get("INTEGRATIONS_WORKSPACE_ID", "").strip()
+    if not value:
+        raise RuntimeError(
+            "INTEGRATIONS_WORKSPACE_ID is not set — this container does not "
+            "yet know its own workspace id. See config.py's "
+            "resolve_integrations_workspace_id docstring: the gateway's boot "
+            "script must set this (not yet wired as of this function's "
+            "introduction — see docs/integrations-plan.md, task #4)."
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     upstream_root: Path

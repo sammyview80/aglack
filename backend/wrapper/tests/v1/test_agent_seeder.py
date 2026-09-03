@@ -189,6 +189,106 @@ def test_apply_seeds_global_and_agent_skills(
     assert (home / "skills" / "widget_skill" / "SKILL.md").is_file()
 
 
+def test_apply_seeds_root_profile_bundled_skills_once(
+    client: TestClient,
+    synthetic_seeder_tree: Path,
+    agent_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_create_profile_if_missing` clones a new agent from the root
+    profile (`clone_from=root_name, clone_config=True`) — upstream's own
+    `create_profile()` then copies the root's `skills/` dir into the
+    clone via `shutil.copytree`. That only actually delivers bundled
+    skills if the ROOT profile's own `skills/` dir has them, which
+    upstream's `create_profile_api` never seeds on this (non-`None`
+    `clone_from`) path. `_ensure_root_profile_has_bundled_skills` covers
+    that gap directly on the root — this pins down that it fires when the
+    root looks unseeded, and does NOT fire again once seeded, since
+    `seed_profile_skills` shells out a subprocess with up to a 60s
+    timeout and must not pay that cost on every agent-creation call."""
+    import shutil
+    import sys
+    import types
+
+    from api.profiles import get_hermes_home_for_profile, list_profiles_api
+
+    root_name = next(p["name"] for p in list_profiles_api() if p.get("is_default"))
+    root_home = get_hermes_home_for_profile(root_name)
+
+    # `HERMES_HOME` is session-scoped (see ../conftest.py) — the real ROOT
+    # profile is shared across every test in this session. This test must
+    # leave the root's `skills/` dir exactly as it found it, so seeding it
+    # here can't leak into any other test's `list_profiles_api()` calls
+    # (upstream computes per-skill stats the moment `skills/` exists at
+    # all — see `_compute_profile_skills_stats` — which needs the `agent`
+    # package: present in the real built image, not necessarily in every
+    # local/dev checkout of this repo).
+    root_skills_dir = root_home / "skills"
+    backup_dir = root_home / "skills.bak-test-restore"
+    had_existing_skills = root_skills_dir.exists()
+    if had_existing_skills:
+        shutil.move(str(root_skills_dir), str(backup_dir))
+
+    try:
+        calls: list[Path] = []
+
+        def _fake_seed_profile_skills(profile_path: Path, *, quiet: bool = False) -> None:
+            calls.append(Path(profile_path))
+            # Mimic the real helper actually populating skills/, so the
+            # "already seeded" check on a later apply sees a non-empty dir.
+            skill_dir = Path(profile_path) / "skills" / "bundled_skill"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: bundled_skill\ndescription: test\n---\n", encoding="utf-8"
+            )
+
+        fake_hermes_cli = types.ModuleType("hermes_cli")
+        fake_hermes_cli_profiles = types.ModuleType("hermes_cli.profiles")
+        fake_hermes_cli_profiles.seed_profile_skills = _fake_seed_profile_skills
+        fake_hermes_cli.profiles = fake_hermes_cli_profiles
+        monkeypatch.setitem(sys.modules, "hermes_cli", fake_hermes_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_hermes_cli_profiles)
+
+        # `list_profiles_api()` (called on every apply, to resolve the root
+        # profile name) computes each profile's skill stats the moment its
+        # `skills/` dir exists at all — see `_compute_profile_skills_stats`
+        # — via `agent.skill_utils`, a module that ships inside the real
+        # built image (part of `hermes_cli`/`agent`) but isn't vendored
+        # into this source checkout. Stub it minimally so seeding the root
+        # here doesn't fail an UNRELATED upstream code path that has
+        # nothing to do with what this test is pinning down.
+        if "agent" not in sys.modules or not hasattr(sys.modules["agent"], "skill_utils"):
+            fake_agent = types.ModuleType("agent")
+            fake_agent_skill_utils = types.ModuleType("agent.skill_utils")
+            fake_agent_skill_utils.iter_skill_index_files = lambda *a, **k: iter(())
+            fake_agent_skill_utils.parse_frontmatter = lambda content: ({}, content)
+            fake_agent_skill_utils.skill_matches_platform = lambda frontmatter: True
+            fake_agent.skill_utils = fake_agent_skill_utils
+            monkeypatch.setitem(sys.modules, "agent", fake_agent)
+            monkeypatch.setitem(sys.modules, "agent.skill_utils", fake_agent_skill_utils)
+
+        # Root starts unseeded (no skills dir at all) — first apply must
+        # seed it exactly once.
+        client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+        assert calls == [root_home]
+        assert (root_skills_dir / "bundled_skill" / "SKILL.md").is_file()
+
+        # A second, distinct agent created against the now-seeded root
+        # must NOT trigger another seed_profile_skills call.
+        second_agent = f"{agent_name}-second"
+        second_agent_dir = _agent_dir(synthetic_seeder_tree, "simple", second_agent)
+        second_agent_dir.mkdir(parents=True, exist_ok=True)
+        (second_agent_dir / "soul.md").write_text(f"# {second_agent}\n", encoding="utf-8")
+
+        response = client.post(f"/api/wrapper/v1/agent-seeder/simple/apply/{second_agent}")
+        assert response.status_code == 200, response.text
+        assert calls == [root_home]
+    finally:
+        shutil.rmtree(root_skills_dir, ignore_errors=True)
+        if had_existing_skills:
+            shutil.move(str(backup_dir), str(root_skills_dir))
+
+
 def test_apply_discovers_global_and_agent_tools(
     client: TestClient, synthetic_seeder_tree: Path
 ) -> None:
@@ -529,6 +629,78 @@ def test_list_modes_empty_when_no_modes_directory(
 
     assert response.status_code == 200
     assert response.json()["data"] == []
+
+
+# --- Connected-provider bundled-skill exclusion ---
+
+
+def test_exclude_connected_provider_bundled_skills_removes_github_auth_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub connected via OpenConnector for this workspace -> the
+    bundled github-* skills that instruct the agent to set up direct
+    git/gh CLI auth must not remain seeded, while an unrelated bundled
+    skill (e.g. a comfyui-style path) and the unrelated
+    github/codebase-inspection sub-skill are left untouched."""
+    skills_dir = tmp_path / "profile" / "skills"
+    for subpath in (
+        "github/github-auth",
+        "github/github-issue-to-pr",
+        "github/codebase-inspection",
+        "comfyui",
+    ):
+        skill_path = skills_dir / subpath
+        skill_path.mkdir(parents=True, exist_ok=True)
+        (skill_path / "SKILL.md").write_text(
+            f"---\nname: {subpath.rsplit('/', maxsplit=1)[-1]}\ndescription: test\n---\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        agent_seeder_service, "_connected_provider_ids", lambda: {"github"}
+    )
+
+    agent_seeder_service._exclude_connected_provider_bundled_skills(skills_dir)
+
+    assert not (skills_dir / "github" / "github-auth").exists()
+    assert not (skills_dir / "github" / "github-issue-to-pr").exists()
+    assert (skills_dir / "github" / "codebase-inspection" / "SKILL.md").is_file()
+    assert (skills_dir / "comfyui" / "SKILL.md").is_file()
+
+
+def test_exclude_connected_provider_bundled_skills_noop_when_nothing_connected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No connections at all (unset workspace, gateway unreachable, or
+    simply nothing connected yet) must be a soft no-op — nothing is
+    removed."""
+    skills_dir = tmp_path / "profile" / "skills"
+    github_auth = skills_dir / "github" / "github-auth"
+    github_auth.mkdir(parents=True, exist_ok=True)
+    (github_auth / "SKILL.md").write_text("---\nname: github-auth\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(agent_seeder_service, "_connected_provider_ids", lambda: set())
+
+    agent_seeder_service._exclude_connected_provider_bundled_skills(skills_dir)
+
+    assert github_auth.is_dir()
+
+
+def test_connected_provider_ids_soft_no_ops_on_relay_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`relay_mcp_call` raises (e.g. no integrations token delivered into
+    this container yet — the common case outside a fully-wired workspace)
+    -- this must never propagate and break agent seeding, just report no
+    connected providers."""
+    def _raise(_body):
+        raise RuntimeError("gateway unreachable")
+
+    monkeypatch.setattr(
+        "hermes_webui_wrapper.features.integrations.service.relay_mcp_call", _raise
+    )
+
+    assert agent_seeder_service._connected_provider_ids() == set()
 
 
 # --- Model-configuration inheritance (a seeded agent must be able to chat) ---

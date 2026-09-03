@@ -11,6 +11,7 @@ from hermes_webui_wrapper.api.v1 import (
     agent_config,
     agent_history,
     agent_seeder,
+    integrations,
     onboarding,
     system,
 )
@@ -24,4 +25,5 @@ def build_api_router(info: UpstreamInfo, service_name: str) -> APIRouter:
     router.include_router(agent_config.build_router())
     router.include_router(agent_seeder.build_router())
     router.include_router(agent_history.build_router())
+    router.include_router(integrations.build_router())
     return router

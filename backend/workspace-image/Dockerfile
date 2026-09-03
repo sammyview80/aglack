@@ -172,7 +172,20 @@ COPY backend/wrapper /opt/hermes-webui/wrapper
 # matters here: this must run AFTER seeder_kit is a real installed
 # package in this venv, or the wrapper's dependency resolution fails
 # needing something named `seeder-kit` that doesn't exist yet.
-RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/seeder_kit
+# `[mcp]` extra pulls in the real `mcp` Python SDK (`mcp>=1.28,<2` —
+# see seeder_kit/pyproject.toml's optional-dependencies). Confirmed LIVE
+# this was missing entirely from the built image (checked every package
+# in the agent venv's site-packages — zero `mcp*` entries): without it,
+# NEITHER `hermes-seeder-runner` (seeder_kit's own stdio MCP server) NOR
+# the agent's own MCP CLIENT (`/opt/hermes/tools/mcp_tool.py`, which
+# lazily `from mcp.client.streamable_http import streamablehttp_client`)
+# can import the package at all — every `mcp_servers` entry in every
+# profile's config.yaml, stdio or HTTP alike, silently fails to connect
+# and `/reload-mcp` reports "No MCP servers connected" no matter how
+# correct the server config is. This is a real bug that predates the
+# integrations feature (docs/integrations-plan.md); fixed here because
+# it was found while verifying that feature end to end.
+RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e "/opt/hermes-webui/seeder_kit[mcp]"
 RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/wrapper
 
 # ---- Stage 3: the final image — webtop desktop + built hermes venv + our own WebUI ----

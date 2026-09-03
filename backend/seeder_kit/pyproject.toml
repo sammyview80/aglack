@@ -7,7 +7,13 @@ name = "seeder-kit"
 version = "0.1.0"
 description = "Framework-agnostic library for declaring MCP tools/skills/agent identity as a folder tree, discovering tools from it, and running them as a stdio MCP server."
 readme = "README.md"
-license = { text = "LicenseRef-PolyForm-Noncommercial-1.0.0" }
+# PolyForm Noncommercial has no OSI-approved SPDX id, so this is a
+# LicenseRef- expression (same convention as rust_gateway/Cargo.toml).
+# Plain string, not the older `{ text = "..." }` table form: setuptools
+# >=77 (PEP 639) rejects the table form with "project.license must be
+# string" — verified live via `docker build`, this is a real toolchain
+# version bump, not a config that ever worked differently before.
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # Deliberately ZERO required dependencies — every function that needs

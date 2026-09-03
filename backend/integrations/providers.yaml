@@ -1,0 +1,81 @@
+# Provider catalog for the integrations feature. Loaded by
+# rust_gateway/src/integrations/providers.rs at startup — validated
+# fail-fast (see that file's loader).
+#
+# `openconnector_service` values are the OpenConnector catalog keys.
+# Verify a new provider against the REAL catalog before adding it here —
+# see ../../docs/integrations-poc-findings.md's "Provider keys confirmed"
+# section: `google` as a single combined key does NOT exist (Gmail,
+# Calendar and Drive are separate catalog entries), and no plain
+# `microsoft-teams`/`teams` key was found at all in the pass done there.
+# Only providers actually confirmed against a running OpenConnector
+# instance belong in this file.
+#
+# `oauth_client_env` names the env-var PREFIX for this provider's OAuth
+# client id/secret (see rust_gateway/src/integrations/providers.rs's
+# `Provider::oauth_credentials` and rust_gateway/.env.example) — e.g.
+# `GITHUB_OAUTH` means `GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`.
+# Omit it entirely for a provider that only supports `api_key` connect.
+# A provider WITH this field but no credentials set in the environment
+# simply reports `oauth_available: false` — never a hard startup error.
+providers:
+  - id: github
+    name: GitHub
+    icon: github
+    openconnector_service: github
+    description: Repos, issues, pull requests
+    oauth_client_env: GITHUB_OAUTH
+
+  # Google is deliberately split into per-service rows, not one combined
+  # "google" row — see the caveat above. Each needs its own OAuth client
+  # registered against the SAME Google Cloud project/credentials; the
+  # split only affects OpenConnector's catalog key and proxy base URL,
+  # not how many times a user has to click through consent (Google's
+  # OAuth app is shared across all three) — all three share the SAME
+  # oauth_client_env prefix for exactly that reason.
+  - id: gmail
+    name: Gmail
+    icon: google
+    openconnector_service: gmail
+    description: Read and send email
+    oauth_client_env: GOOGLE_OAUTH
+
+  - id: google-calendar
+    name: Google Calendar
+    icon: google
+    openconnector_service: googlecalendar
+    description: Events and scheduling
+    oauth_client_env: GOOGLE_OAUTH
+
+  - id: google-drive
+    name: Google Drive
+    icon: google
+    openconnector_service: googledrive
+    description: Files and folders
+    oauth_client_env: GOOGLE_OAUTH
+
+  - id: slack
+    name: Slack
+    icon: slack
+    openconnector_service: slack
+    description: Channels and messages
+    oauth_client_env: SLACK_OAUTH
+
+  - id: notion
+    name: Notion
+    icon: notion
+    openconnector_service: notion
+    description: Pages and databases
+    oauth_client_env: NOTION_OAUTH
+
+  # Microsoft Teams: NOT yet confirmed against the OpenConnector catalog
+  # (see poc-findings.md). Left commented out rather than guessed — a
+  # wrong openconnector_service value would fail fast at connect time
+  # with a confusing error, not at gateway startup like other mistakes
+  # this loader catches. Uncomment once verified.
+  # - id: microsoft-teams
+  #   name: Microsoft Teams
+  #   icon: microsoft-teams
+  #   openconnector_service: <confirm this>
+  #   description: Channels and messages
+  #   oauth_client_env: MICROSOFT_OAUTH

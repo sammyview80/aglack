@@ -50,4 +50,14 @@ export const queryKeys = {
     sessionModel: (workspaceId: string, sessionId: string) =>
       [...queryKeys.models.all, workspaceId, 'sessions', sessionId, 'model'] as const,
   },
+  integrations: {
+    all: ['integrations'] as const,
+    // Not workspace-scoped: the provider catalog is the same for every
+    // workspace (see rust_gateway's GET /integrations/providers).
+    providers: () => [...queryKeys.integrations.all, 'providers'] as const,
+    connections: (workspaceId: string) =>
+      [...queryKeys.integrations.all, workspaceId, 'connections'] as const,
+    agentEnablement: (workspaceId: string) =>
+      [...queryKeys.integrations.all, workspaceId, 'agent-enablement'] as const,
+  },
 } as const

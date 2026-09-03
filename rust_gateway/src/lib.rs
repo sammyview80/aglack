@@ -14,8 +14,11 @@
 //! See AGENTS.md and docs/ in this directory before changing any of these.
 
 pub mod app;
+pub mod auth;
 pub mod config;
+pub mod crypto;
 pub mod db;
+pub mod integrations;
 pub mod proxy;
 pub mod response;
 pub mod workspaces;

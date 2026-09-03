@@ -64,13 +64,17 @@ export const chatUi = {
     'h-[39px] min-w-[72px] rounded-lg bg-[var(--th-compose)] px-[17px] text-sm font-semibold text-white shadow-[0_5px_10px_#6944ee47] transition-all hover:-translate-y-0.5 hover:shadow-[0_8px_15px_#6944ee59] disabled:translate-none disabled:cursor-default disabled:bg-[var(--th-search)] disabled:text-[var(--th-muted)] disabled:shadow-none disabled:hover:translate-none disabled:hover:shadow-none',
   composerStop:
     'flex size-9 shrink-0 items-center justify-center rounded-lg bg-[#d1435b] text-white transition-colors',
+  promptDock: 'min-h-0 shrink-0',
   promptCard:
-    'my-3.5 rounded-[10px] border border-[var(--th-line)] border-l-[3px] border-l-[var(--th-compose)] bg-[var(--th-card)] px-4 py-3.5 shadow-[0_2px_8px_#1f1f2814]',
+    'my-3.5 flex max-h-[min(42vh,22rem)] min-h-0 shrink-0 flex-col overflow-hidden rounded-[10px] border border-[var(--th-line)] border-l-[3px] border-l-[var(--th-compose)] bg-[var(--th-card)] px-4 py-3.5 shadow-[0_2px_8px_#1f1f2814]',
+  promptHeader: 'min-h-0 max-h-28 shrink-0 overflow-auto',
+  promptBody: 'min-h-0 flex-1 overflow-auto',
+  promptFooter: 'mt-2.5 flex shrink-0 flex-col gap-2.5 border-t border-[var(--th-line)] pt-2.5',
   promptTitle: 'mb-2 text-[15px] font-semibold text-[var(--th-text)]',
-  promptDescription: 'mb-2 text-sm text-[var(--th-muted)]',
-  promptCommand: 'mb-2.5 overflow-auto rounded-md bg-[var(--th-sidebar)] px-2.5 py-2 text-[13px]',
+  promptDescription: 'mb-2 text-sm text-[var(--th-muted)] last:mb-0',
+  promptCommand: 'm-0 overflow-x-auto rounded-md bg-[var(--th-sidebar)] px-2.5 py-2 text-[13px]',
   promptChoices: 'flex flex-wrap gap-2',
-  promptAnswer: 'mt-2.5 flex gap-2',
+  promptAnswer: 'flex gap-2',
   promptInput:
     'min-w-0 flex-1 rounded-[10px] border border-[var(--th-line)] bg-[var(--th-card)] px-3 py-2.5 text-sm text-[var(--th-text)] transition-[border-color,box-shadow] focus:border-[var(--th-compose)] focus:outline-none focus:shadow-[0_0_0_2px_#6743ed26] dark:focus:shadow-[0_0_0_2px_#7b5cff33]',
   promptSend:

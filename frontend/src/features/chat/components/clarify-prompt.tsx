@@ -30,34 +30,37 @@ export function ClarifyPrompt({
       role="region"
       ariaLabel="Clarification required"
       ariaLive="polite"
-    >
-      {prompt.choicesOffered.length > 0 ? (
-        <div className={chatUi.promptChoices}>
-          {prompt.choicesOffered.map((choice) => (
-            <button
-              key={choice}
-              type="button"
-              className={chatUi.promptChoice}
-              onClick={() => onRespond(choice, prompt.clarifyId)}
-            >
-              {choice}
+      footer={
+        <>
+          {prompt.choicesOffered.length > 0 ? (
+            <div className={chatUi.promptChoices}>
+              {prompt.choicesOffered.map((choice) => (
+                <button
+                  key={choice}
+                  type="button"
+                  className={chatUi.promptChoice}
+                  onClick={() => onRespond(choice, prompt.clarifyId)}
+                >
+                  {choice}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className={chatUi.promptAnswer}>
+            <input
+              ref={inputRef}
+              className={chatUi.promptInput}
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              placeholder="Type your answer"
+              aria-label="Clarify answer"
+            />
+            <button type="submit" className={chatUi.promptSend} disabled={!answer.trim()}>
+              Send
             </button>
-          ))}
-        </div>
-      ) : null}
-      <div className={chatUi.promptAnswer}>
-        <input
-          ref={inputRef}
-          className={chatUi.promptInput}
-          value={answer}
-          onChange={(e) => setAnswer(e.target.value)}
-          placeholder="Type your answer"
-          aria-label="Clarify answer"
-        />
-        <button type="submit" className={chatUi.promptSend} disabled={!answer.trim()}>
-          Send
-        </button>
-      </div>
-    </ChatPromptCard>
+          </div>
+        </>
+      }
+    />
   )
 }

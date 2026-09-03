@@ -48,7 +48,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 # the upstream response body incrementally instead of buffering it whole
 # (see docs/streaming-proxy-plan.md) — required for SSE responses, which
 # never end, to reach the caller at all.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Loads .env files into the process environment at startup. Used only to
@@ -65,6 +65,36 @@ dotenvy = "0.15"
 # src/db/mod.rs and src/workspaces/store.rs.
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
 uuid = { version = "1", features = ["v4"] }
+# Parses backend/integrations/providers.yaml (src/integrations/providers.rs)
+# — the only YAML this crate reads; everything else is JSON.
+serde_yaml = "0.9"
+# SHA-256 for workspace_runtime_tokens.token_hash (src/integrations/mcp_proxy.rs)
+# — the raw bearer a workspace container holds is never stored, only its
+# hash, so a database read alone cannot recover a valid credential.
+sha2 = "0.10"
+# Password hashing for the gateway's own admin login (src/auth/) — see
+# docs/integrations-plan.md's Phase 0a. Argon2id, OWASP's current
+# recommendation; NOT used for session tokens themselves (those are
+# random + SHA-256-hashed at rest, same pattern as
+# workspace_runtime_tokens.token_hash — no need for a slow KDF on a value
+# that's already high-entropy random, unlike a human-chosen password).
+argon2 = "0.5"
+# Safe Set-Cookie construction/parsing for the gateway's own session
+# cookie (src/auth/) — hand-rolling cookie-string parsing is exactly the
+# class of bug this crate already treats as a real risk elsewhere (see
+# chat_proxy.rs's CRLF-injection test for the hermes_profile cookie);
+# reusing a maintained crate for the SAME concern on the gateway's own
+# auth cookie rather than writing a second, less-tested parser.
+cookie = "0.18"
+# AES-256-GCM for encrypting `workspace_runtime_tokens.openconnector_bearer`
+# at rest (src/crypto.rs) — that column previously stored the raw
+# OpenConnector bearer in plaintext, flagged as a required fix since the
+# column was first introduced (see migration 0005's own comment on it).
+aes-gcm = "0.10"
+# Standard base64 for TokenCipher's on-disk encoding (src/crypto.rs) —
+# used instead of hand-rolling encode/decode for a security-sensitive
+# path; a well-audited crate is worth the dependency here.
+base64 = "0.22"
 # ContainerLauncher (src/workspaces/container/mod.rs) is a trait with async
 # methods; async fn in traits needs this until the language feature is
 # fully stable for our MSRV.

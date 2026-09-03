@@ -23,12 +23,42 @@
 use std::sync::Arc;
 
 use rust_gateway::app::{browser_allowed_origins, build_router};
-use rust_gateway::config::{load_dotenv_files, GatewayConfig, WorkspacesConfig};
+use rust_gateway::auth::{password, AuthState, SessionStore};
+use rust_gateway::config::{
+    load_dotenv_files, GatewayAuthConfig, GatewayConfig, IntegrationsConfig, WorkspacesConfig,
+};
+use rust_gateway::integrations::{
+    load_providers, IntegrationStore, IntegrationsState, OpenConnectorClient,
+};
 use rust_gateway::proxy::ProxyState;
 use rust_gateway::workspaces::{DockerCliLauncher, WorkspaceStore, WorkspacesState};
 
 #[tokio::main]
 async fn main() {
+    // `--hash-password <password>` is a standalone utility mode, not part
+    // of normal startup: it prints an Argon2id hash to paste into
+    // `GATEWAY_ADMIN_PASSWORD_HASH` and exits immediately — deliberately
+    // BEFORE `load_dotenv_files()`/any config loading, since generating a
+    // password hash must never require an already-working `.env` (that
+    // would be circular for a first-time setup).
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(password_arg) = args
+        .iter()
+        .position(|a| a == "--hash-password")
+        .and_then(|i| args.get(i + 1))
+    {
+        match password::hash(password_arg) {
+            Ok(hash) => {
+                println!("{hash}");
+                return;
+            }
+            Err(err) => {
+                eprintln!("rust_gateway: failed to hash password: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     load_dotenv_files();
 
     let config = GatewayConfig::from_env().unwrap_or_else(|err| {
@@ -54,6 +84,67 @@ async fn main() {
             );
             std::process::exit(1);
         });
+    // `SqlitePool` is a cheap `Arc`-backed handle — cloning it (rather
+    // than opening a second connection pool for the integrations feature)
+    // means both features' migrations run against the exact same database
+    // file via the one `db::connect` call above, matching this crate's
+    // existing "one shared SQLite database, feature-specific tables"
+    // convention (see db/mod.rs's own doc comment).
+    let integrations_config = IntegrationsConfig::from_env().unwrap_or_else(|err| {
+        eprintln!("rust_gateway: invalid integrations configuration: {err}");
+        std::process::exit(1);
+    });
+    let providers = load_providers(&integrations_config.providers_path).unwrap_or_else(|err| {
+        eprintln!("rust_gateway: invalid providers registry: {err}");
+        std::process::exit(1);
+    });
+    let token_cipher = rust_gateway::crypto::TokenCipher::new(&integrations_config.token_encryption_key);
+    let integrations_state = Arc::new(IntegrationsState {
+        store: IntegrationStore::new(db_pool.clone()),
+        openconnector: OpenConnectorClient::new(
+            integrations_config.openconnector_url,
+            integrations_config.openconnector_admin_token,
+        ),
+        providers,
+        workspace_store: WorkspaceStore::new(db_pool.clone()),
+        http_client: reqwest::Client::new(),
+        token_cipher,
+    });
+
+    // Push OAuth client credentials to OpenConnector for every provider
+    // that has them configured in this process's environment — required
+    // before `POST /api/oauth/authorizations` can succeed for that
+    // provider (confirmed live in the POC: it fails closed with
+    // `oauth_client_config_required` otherwise). Best-effort at startup:
+    // a provider whose credentials are wrong, or OpenConnector being
+    // briefly unreachable, must not crash the whole gateway — it just
+    // means that one provider's OAuth connect will fail until fixed,
+    // same as any other misconfiguration reported at request time.
+    for provider in &integrations_state.providers {
+        if let Some((client_id, client_secret)) = provider.oauth_credentials() {
+            if let Err(err) = integrations_state
+                .openconnector
+                .upsert_oauth_config(&provider.openconnector_service, &client_id, &client_secret)
+                .await
+            {
+                eprintln!(
+                    "rust_gateway: failed to register OAuth config for {}: {err}",
+                    provider.id
+                );
+            }
+        }
+    }
+
+    let auth_config = GatewayAuthConfig::from_env().unwrap_or_else(|err| {
+        eprintln!("rust_gateway: invalid auth configuration: {err}");
+        std::process::exit(1);
+    });
+    let auth_state = Arc::new(AuthState::new(
+        SessionStore::new(db_pool.clone()),
+        auth_config.admin_password_hash,
+        auth_config.cookie_secure,
+    ));
+
     let workspaces_state = Arc::new(WorkspacesState {
         store: WorkspaceStore::new(db_pool),
         launcher: Arc::new(DockerCliLauncher::new(
@@ -61,6 +152,7 @@ async fn main() {
             config.wrapper_allowed_origins(),
             config.workspace_default_path.clone(),
             config.frontend_origin.clone(),
+            config.workspace_gateway_url.clone(),
         )),
         http_client: reqwest::Client::new(),
     });
@@ -79,12 +171,64 @@ async fn main() {
         rust_gateway::workspaces::DEFAULT_POLL_INTERVAL,
     ));
 
+    // `build_router`'s own CORS layer is applied to ITS router before this
+    // merge, so it does NOT cover the integrations routes merged in below
+    // (a previous version of this file left that as a known gap — fixed
+    // here). A second `CorsLayer`, wrapping the FULLY MERGED router,
+    // covers both: tower's `Layer::layer` wraps outside-in, and
+    // `CorsLayer` answers a browser's OPTIONS preflight directly without
+    // ever calling into the inner service — so this outer layer handles
+    // every preflight itself, including for the routes `build_router`'s
+    // own inner layer already covers, without conflicting with it (a
+    // request that isn't a CORS preflight just passes through both layers
+    // and reaches its handler once, as normal). Real allow-list (never a
+    // wildcard, matching `app::build_router`'s own reasoning) via the
+    // SAME `browser_allowed_origins` helper — one source of truth for
+    // which origins are legitimate, not a second hardcoded guess. Methods
+    // include PUT (needed for `PUT /workspaces/:id/integrations/agents/:agent`
+    // — `build_router`'s own inner layer only allows GET/POST/DELETE).
     let app = build_router(
         proxy_state,
         workspaces_state,
         &config.frontend_origin,
         config.cors_enabled,
-    );
+    )
+    .merge(rust_gateway::integrations::route::router(
+        integrations_state,
+    ))
+    .merge(rust_gateway::auth::router(auth_state.clone()));
+
+    // The session-check middleware wraps everything ABOVE (every route
+    // this process serves), applied via `axum::middleware::from_fn_with_state`
+    // rather than a `tower::Layer` — same reasoning as the `CorsLayer`
+    // additions elsewhere in this file: touching `app::build_router`
+    // itself (ten pinned tests) is worse than composing one more wrapper
+    // around its already-merged output. Applied BEFORE the CORS layer
+    // below (i.e. CORS ends up OUTERMOST) so a browser's cross-origin
+    // preflight — which never carries this gateway's cookie, by the CORS
+    // spec — is answered by `CorsLayer` directly and never reaches the
+    // session check at all; only the real, credentialed request after a
+    // successful preflight does.
+    let app = app.layer(axum::middleware::from_fn_with_state(
+        auth_state,
+        rust_gateway::auth::require_session,
+    ));
+
+    let app = if config.cors_enabled {
+        use axum::http::Method;
+        use tower_http::cors::{AllowOrigin, CorsLayer};
+        app.layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(browser_allowed_origins(
+                    &config.frontend_origin,
+                )))
+                .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+                .allow_headers([axum::http::header::CONTENT_TYPE])
+                .allow_credentials(true),
+        )
+    } else {
+        app
+    };
 
     let listen_addr = config.listen_addr();
     let listener = tokio::net::TcpListener::bind(&listen_addr)

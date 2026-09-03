@@ -271,7 +271,11 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
                   </AnimatedPanel>
                 </div>
                 {pendingInput ? (
-                  <AnimatedPanel swapKey={pendingInput.kind} animation={motionPresets.panelEnter}>
+                  <AnimatedPanel
+                    swapKey={pendingInput.kind}
+                    animation={motionPresets.panelEnter}
+                    className={chatUi.promptDock}
+                  >
                     <PendingInputPanel
                       pendingInput={pendingInput}
                       focusRef={pendingInputFocus.ref}

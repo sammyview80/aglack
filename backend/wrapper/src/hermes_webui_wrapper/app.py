@@ -41,15 +41,35 @@ def create_app(settings: Settings | None = None, runtime_enabled: bool | None = 
 
     bindings: UpstreamBindings = load_bindings(resolved_settings)
 
+    # A real MCP server (not a plain FastAPI route) — see
+    # features/integrations/mcp_server.py's module docstring for why: the
+    # agent's own MCP client needs the actual Streamable HTTP protocol
+    # (session negotiation, SSE), not bare JSON in/out. `build_mcp_app()`
+    # is a factory (fresh `FastMCP` instance per `create_app()` call, NOT
+    # a module-level singleton) — see that module's own doc comment for
+    # the second real bug this works around: a shared session manager can
+    # only be `.run()` once per instance, which broke every test the
+    # moment `create_app()` ran more than once in the same process.
+    from hermes_webui_wrapper.features.integrations.mcp_server import build_mcp_app
+
+    mcp_app, mcp_lifespan = build_mcp_app()
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if resolved_runtime_enabled:
-            start_runtime()
-        try:
-            yield
-        finally:
+        # `mcp_lifespan()` MUST be entered for the mounted MCP sub-app
+        # (below) to serve any request at all — see that function's own
+        # doc comment for the real gotcha this works around. Wrapping the
+        # existing start_runtime/stop_runtime pair inside it, not the
+        # reverse; order between the two doesn't matter, only that both
+        # run for the life of the process.
+        async with mcp_lifespan():
             if resolved_runtime_enabled:
-                stop_runtime()
+                start_runtime()
+            try:
+                yield
+            finally:
+                if resolved_runtime_enabled:
+                    stop_runtime()
 
     app = FastAPI(lifespan=lifespan)
     app.add_middleware(
@@ -60,6 +80,15 @@ def create_app(settings: Settings | None = None, runtime_enabled: bool | None = 
         allow_headers=["Content-Type", "Authorization"],
     )
     app.include_router(build_api_router(bindings.info, resolved_settings.service_name))
+
+    # Mounted at the PARENT path, not `.../integrations/mcp` directly —
+    # see `build_mcp_app`'s own doc comment for the real trailing-slash
+    # trap that mounting at the exact leaf path hits. Registered AFTER
+    # `include_router` above (so `/agents` and `/reload`, already claimed
+    # by that router, keep precedence over this catch-all-ish Mount) and
+    # BEFORE the catch-all route below (so `/mcp` itself reaches FastMCP,
+    # not the passthrough proxy).
+    app.mount("/api/wrapper/v1/integrations", mcp_app)
 
     @app.api_route("/{full_path:path}", methods=_CATCH_ALL_METHODS)
     async def catch_all(request: Request, full_path: str) -> StreamingResponse:

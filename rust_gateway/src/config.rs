@@ -67,6 +67,17 @@ pub struct GatewayConfig {
     /// directly in the boot script, which is exactly the thing this rule
     /// exists to prevent.
     pub workspace_default_path: String,
+    /// This gateway's own address, as reachable FROM INSIDE a workspace
+    /// container — passed to the container as `GATEWAY_INTERNAL_URL` (see
+    /// `workspaces::container::boot_script` and
+    /// `docs/integrations-plan.md`'s infra section). NOT derivable from
+    /// `host`/`port` above: those are what this process binds to, which
+    /// is typically `127.0.0.1`/`0.0.0.0` — meaningless from inside a
+    /// container, where that would resolve to the container itself, not
+    /// the host running the gateway. Required (AGENTS.md rule #2), e.g.
+    /// `http://host.docker.internal:8080` on macOS/Windows Docker Desktop,
+    /// or the host's real bridge/LAN address on Linux.
+    pub workspace_gateway_url: String,
     /// Whether this gateway applies its own browser-facing `CorsLayer`
     /// (see `app::build_router`). Optional — unset means `true`, which
     /// preserves the exact current behavior for every existing
@@ -102,9 +113,8 @@ impl GatewayConfig {
         )?;
         let frontend_origin = required_env("FRONTEND_ORIGIN")?;
         let workspace_default_path = required_env("WORKSPACE_DEFAULT_PATH")?;
-        let cors_enabled = parse_cors_enabled(cors_enabled_env_value(env::var(
-            "CORS_ENABLED",
-        ))?)?;
+        let workspace_gateway_url = required_env("WORKSPACE_GATEWAY_URL")?;
+        let cors_enabled = parse_cors_enabled(cors_enabled_env_value(env::var("CORS_ENABLED"))?)?;
 
         Ok(Self {
             host,
@@ -113,6 +123,7 @@ impl GatewayConfig {
             backend_port,
             frontend_origin,
             workspace_default_path,
+            workspace_gateway_url,
             cors_enabled,
         })
     }
@@ -170,7 +181,9 @@ fn parse_port(raw: &str, key: &str) -> Result<u16, ConfigError> {
 /// isn't valid UTF-8) is a real config error, not a silent default —
 /// `.ok()` alone would collapse both cases into `None` and silently pick
 /// `true` for a value someone actually set.
-fn cors_enabled_env_value(raw: Result<String, env::VarError>) -> Result<Option<String>, ConfigError> {
+fn cors_enabled_env_value(
+    raw: Result<String, env::VarError>,
+) -> Result<Option<String>, ConfigError> {
     match raw {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
@@ -233,6 +246,100 @@ impl WorkspacesConfig {
     }
 }
 
+/// Config for the integrations feature (`crate::integrations`). See
+/// `../../docs/integrations-plan.md` and
+/// `../../docs/integrations-poc-findings.md`.
+pub struct IntegrationsConfig {
+    /// OpenConnector's base URL, no trailing slash, e.g.
+    /// `http://openconnector:3000`. Reachable ONLY from this gateway on
+    /// an internal network in a real deployment — this struct does not
+    /// enforce that, deployment (no published port) does.
+    pub openconnector_url: String,
+    /// OpenConnector's admin API bearer. Never forwarded to a browser or
+    /// a workspace container — see `integrations::openconnector`'s doc
+    /// comment.
+    pub openconnector_admin_token: String,
+    /// Path to `backend/integrations/providers.yaml`. Required, like
+    /// every other path in this file (AGENTS.md rule #2) — no baked-in
+    /// default location.
+    pub providers_path: std::path::PathBuf,
+    /// Base64-encoded 32-byte AES-256-GCM key encrypting
+    /// `workspace_runtime_tokens.openconnector_bearer` at rest — see
+    /// `crypto::TokenCipher`. Generate with `openssl rand -base64 32`.
+    /// Required, not optional: this column held that bearer in plaintext
+    /// from the moment it was introduced, and there is no safe default to
+    /// silently fall back to for a value protecting real provider tokens.
+    pub token_encryption_key: [u8; 32],
+}
+
+impl IntegrationsConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let openconnector_url = required_env("OPENCONNECTOR_URL")?;
+        let openconnector_admin_token = required_env("OPENCONNECTOR_ADMIN_TOKEN")?;
+        let providers_path = required_env("INTEGRATIONS_PROVIDERS_PATH")?.into();
+        let token_encryption_key =
+            crate::crypto::parse_encryption_key(&required_env("GATEWAY_TOKEN_ENCRYPTION_KEY")?)
+                .map_err(|err| ConfigError {
+                    message: err.to_string(),
+                })?;
+
+        Ok(Self {
+            openconnector_url,
+            openconnector_admin_token,
+            providers_path,
+            token_encryption_key,
+        })
+    }
+}
+
+/// Config for the gateway's own admin login (`crate::auth`). See
+/// `docs/integrations-plan.md`'s Phase 0a.
+pub struct GatewayAuthConfig {
+    /// Full Argon2id PHC-format hash string — generate with
+    /// `rust_gateway --hash-password '<password>'` (see
+    /// `bin/rust_gateway.rs`). Never a plaintext password here.
+    pub admin_password_hash: String,
+    /// Whether the session cookie's `Secure` attribute is set. Optional —
+    /// unset means `false` (plain local http dev works out of the box; a
+    /// browser silently drops a `Secure` cookie over http, so defaulting
+    /// to `true` would make login appear to succeed while never actually
+    /// persisting a session — confirmed against real browser behavior,
+    /// not assumed). Set to `true` for any real deployment behind TLS.
+    pub cookie_secure: bool,
+}
+
+impl GatewayAuthConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let admin_password_hash = required_env("GATEWAY_ADMIN_PASSWORD_HASH")?;
+        let cookie_secure = parse_bool_env("GATEWAY_COOKIE_SECURE", false)?;
+
+        Ok(Self {
+            admin_password_hash,
+            cookie_secure,
+        })
+    }
+}
+
+/// Shared optional-bool-env parser — same fail-closed-on-garbage
+/// contract as `parse_cors_enabled` above, generalized past that one
+/// call site now that a second boolean env var (`GATEWAY_COOKIE_SECURE`)
+/// needs the identical parsing rule.
+fn parse_bool_env(key: &str, default: bool) -> Result<bool, ConfigError> {
+    match env::var(key) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(ConfigError {
+                message: format!("{key} must be \"true\" or \"false\", got {value:?}"),
+            }),
+        },
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError {
+            message: format!("{key} is set but not valid UTF-8"),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +353,7 @@ mod tests {
             backend_port: 9999,
             frontend_origin: frontend_origin.to_string(),
             workspace_default_path: "/workspace/default".to_string(),
+            workspace_gateway_url: "http://gateway-internal:8080".to_string(),
             cors_enabled: true,
         }
     }
@@ -309,13 +417,19 @@ mod tests {
 
     #[test]
     fn parse_cors_enabled_parses_false() {
-        assert_eq!(parse_cors_enabled(Some("false".to_string())).unwrap(), false);
+        assert_eq!(
+            parse_cors_enabled(Some("false".to_string())).unwrap(),
+            false
+        );
     }
 
     #[test]
     fn parse_cors_enabled_is_case_insensitive() {
         assert_eq!(parse_cors_enabled(Some("TRUE".to_string())).unwrap(), true);
-        assert_eq!(parse_cors_enabled(Some("False".to_string())).unwrap(), false);
+        assert_eq!(
+            parse_cors_enabled(Some("False".to_string())).unwrap(),
+            false
+        );
     }
 
     #[test]

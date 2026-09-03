@@ -86,7 +86,7 @@ const EXTRA_CHANNELS = [
   { icon: 'hash' as const, label: 'team-updates' },
 ]
 
-const THREAD_SECTIONS = new Set(['Inbox', 'Thread', 'design-www', 'Setup'])
+const THREAD_SECTIONS = new Set(['Inbox', 'Thread', 'design-www', 'Setup', 'Plugins'])
 
 type GuildEntry = { id: string; name: string; mark: string }
 
@@ -313,7 +313,10 @@ export function ThreadsShell({
         <WorkspaceRail
           workspaceId={workspaceId}
           workspaceName={workspaceName}
-          onOpenSettings={() => openSection('Settings')}
+          onOpenSettings={() =>
+            workspaceId &&
+            navigate(`/workspaces/${workspaceId}/integrations`, { state: { name: workspaceName } })
+          }
         />
         <aside className={threadsUi.sidebar}>
           <div className={threadsUi.workspaceRow}>
@@ -442,7 +445,14 @@ export function ThreadsShell({
           </section>
 
           <div className={threadsUi.sidebarFooter}>
-            <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Settings')}>
+            <button
+              type="button"
+              className={cn(threadsUi.footerButton, title === 'Plugins' && threadsUi.navItemActive)}
+              onClick={() =>
+                workspaceId &&
+                navigate(`/workspaces/${workspaceId}/integrations`, { state: { name: workspaceName } })
+              }
+            >
               <Settings2 size={18} /> Settings
             </button>
             <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Help')}>

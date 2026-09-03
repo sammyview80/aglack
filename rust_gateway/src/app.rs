@@ -16,11 +16,10 @@ use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
     agent_history_proxy_route_root, agent_history_proxy_route_with_path,
     agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path, chat_proxy_route_root,
-    chat_proxy_route_with_path, create_workspace_route,
-    delete_workspace_route, desktop_proxy_route_root, desktop_proxy_route_with_path,
-    diagnose_workspace_route, hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path,
-    list_workspaces_route, onboarding_proxy_route_root, onboarding_proxy_route_with_path,
-    WorkspacesState,
+    chat_proxy_route_with_path, create_workspace_route, delete_workspace_route,
+    desktop_proxy_route_root, desktop_proxy_route_with_path, diagnose_workspace_route,
+    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, list_workspaces_route,
+    onboarding_proxy_route_root, onboarding_proxy_route_with_path, WorkspacesState,
 };
 
 /// Register one per-workspace proxy feature's pair of routes: the exact
@@ -73,9 +72,8 @@ where
 /// (e.g. a real deployed domain) gets no sibling added — only these two
 /// well-known local-dev aliases are ever substituted.
 pub fn browser_allowed_origins(frontend_origin: &str) -> Vec<HeaderValue> {
-    let mut origins = vec![HeaderValue::from_str(frontend_origin).unwrap_or_else(|err| {
-        panic!("invalid FRONTEND_ORIGIN {frontend_origin:?}: {err}")
-    })];
+    let mut origins = vec![HeaderValue::from_str(frontend_origin)
+        .unwrap_or_else(|err| panic!("invalid FRONTEND_ORIGIN {frontend_origin:?}: {err}"))];
 
     // `rest` must start with `:` (the port separator) or be empty (no port
     // at all) — otherwise "http://127.0.0.1" would also match the host
@@ -99,9 +97,10 @@ pub fn browser_allowed_origins(frontend_origin: &str) -> Vec<HeaderValue> {
     };
 
     if let Some(sibling) = sibling {
-        origins.push(HeaderValue::from_str(&sibling).unwrap_or_else(|err| {
-            panic!("invalid derived sibling origin {sibling:?}: {err}")
-        }));
+        origins.push(
+            HeaderValue::from_str(&sibling)
+                .unwrap_or_else(|err| panic!("invalid derived sibling origin {sibling:?}: {err}")),
+        );
     }
 
     origins
@@ -227,13 +226,19 @@ mod tests {
             .iter()
             .map(|v| v.to_str().unwrap().to_string())
             .collect();
-        assert_eq!(origins, vec!["http://127.0.0.1:5173", "http://localhost:5173"]);
+        assert_eq!(
+            origins,
+            vec!["http://127.0.0.1:5173", "http://localhost:5173"]
+        );
 
         let origins: Vec<String> = browser_allowed_origins("http://localhost:5173")
             .iter()
             .map(|v| v.to_str().unwrap().to_string())
             .collect();
-        assert_eq!(origins, vec!["http://localhost:5173", "http://127.0.0.1:5173"]);
+        assert_eq!(
+            origins,
+            vec!["http://localhost:5173", "http://127.0.0.1:5173"]
+        );
     }
 
     #[test]
@@ -274,6 +279,7 @@ mod tests {
                 "http://localhost:5173".to_string(),
                 "/workspace/default".to_string(),
                 "http://localhost:5173".to_string(),
+                "http://gateway-internal:8080".to_string(),
             )),
         )
     }

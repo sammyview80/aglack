@@ -139,6 +139,8 @@ pub(crate) fn wrapper_boot_script(
     allowed_origins: &str,
     workspace_default_path: &str,
     frontend_origin: &str,
+    workspace_id: &str,
+    gateway_internal_url: &str,
 ) -> String {
     let workspace_chown_target = workspace_chown_target(workspace_default_path);
     format!(
@@ -149,6 +151,8 @@ pub(crate) fn wrapper_boot_script(
      chown -R abc:abc /config/.hermes 2>/dev/null || true\n\
      mkdir -p {workspace_default_path}\n\
      chown -R abc:abc {workspace_chown_target} 2>/dev/null || true\n\
+     mkdir -p /run/hermes\n\
+     chown -R abc:abc /run/hermes 2>/dev/null || true\n\
      setsid su -s /bin/sh abc -c '\n\
      export HOME=/config\n\
      export HERMES_HOME=/config/.hermes\n\
@@ -158,6 +162,8 @@ pub(crate) fn wrapper_boot_script(
      export HERMES_FRONTEND_ORIGIN={frontend_origin}\n\
      export HERMES_WEBUI_ALLOWED_ORIGINS={allowed_origins}\n\
      export HERMES_WEBUI_DEFAULT_WORKSPACE={workspace_default_path}\n\
+     export INTEGRATIONS_WORKSPACE_ID={workspace_id}\n\
+     export GATEWAY_INTERNAL_URL={gateway_internal_url}\n\
      git config --global --add safe.directory /opt/hermes-webui/upstream \
        || echo \"hermes-webui-wrapper-boot: safe.directory config failed\" >&2\n\
      cd /opt/hermes-webui/wrapper\n\
@@ -168,17 +174,42 @@ pub(crate) fn wrapper_boot_script(
 }
 
 /// Writes `wrapper_boot_script(allowed_origins, workspace_default_path,
-/// frontend_origin)` to a real temp file and `docker cp`'s it into the
-/// (created-but-not-yet-started) container's `/custom-cont-init.d/` —
-/// see `DockerCliLauncher`'s own doc comment for why this must happen
-/// between `create` and `start`, not after.
+/// frontend_origin, workspace_id, gateway_internal_url)` to a real temp
+/// file and `docker cp`'s it into the (created-but-not-yet-started)
+/// container's `/custom-cont-init.d/` — see `DockerCliLauncher`'s own doc
+/// comment for why this must happen between `create` and `start`, not
+/// after.
+///
+/// `workspace_id`/`gateway_internal_url` exist so the container's own
+/// wrapper process can resolve `INTEGRATIONS_WORKSPACE_ID`/
+/// `GATEWAY_INTERNAL_URL` (see `backend/wrapper/src/hermes_webui_wrapper/config.py`'s
+/// `resolve_integrations_workspace_id`/`resolve_gateway_internal_url`) —
+/// without these, nothing inside the container can call the gateway's
+/// `/workspaces/:id/mcp` tenancy proxy for itself, since a container has
+/// no other way to learn its own workspace id (see
+/// `docs/integrations-plan.md`, task #4).
+///
+/// This creates `/run/hermes` (owned by `abc`) at boot so the integrations
+/// token file (`docs/integrations-poc-findings.md`'s security model,
+/// delivered separately, AFTER boot, by
+/// `crate::integrations::token_delivery::deliver_token_file` — connecting
+/// an integration happens long after container creation, not at boot
+/// time) has somewhere writable to land.
 pub(crate) async fn deliver_boot_script(
     container_name: &str,
     allowed_origins: &str,
     workspace_default_path: &str,
     frontend_origin: &str,
+    workspace_id: &str,
+    gateway_internal_url: &str,
 ) -> Result<(), super::super::CreateWorkspaceError> {
-    let script = wrapper_boot_script(allowed_origins, workspace_default_path, frontend_origin);
+    let script = wrapper_boot_script(
+        allowed_origins,
+        workspace_default_path,
+        frontend_origin,
+        workspace_id,
+        gateway_internal_url,
+    );
     let tmp_file = tempfile::Builder::new()
         .prefix("hermes-webui-wrapper-boot-")
         .suffix(".sh")
@@ -189,9 +220,7 @@ pub(crate) async fn deliver_boot_script(
             ))
         })?;
     std::fs::write(tmp_file.path(), script).map_err(|err| {
-        super::super::CreateWorkspaceError::Container(format!(
-            "failed to write boot script: {err}"
-        ))
+        super::super::CreateWorkspaceError::Container(format!("failed to write boot script: {err}"))
     })?;
 
     let dest = format!("{container_name}:/custom-cont-init.d/hermes-webui-wrapper-boot.sh");
@@ -213,9 +242,59 @@ mod tests {
     /// existing convention (see `FakeLauncher`'s own doc comment) is to
     /// keep unit tests Docker-free, not to spin up real containers in
     /// `cargo test`.
+    /// See `docs/integrations-plan.md`, task #4: without these two, the
+    /// wrapper's `resolve_integrations_workspace_id`/
+    /// `resolve_gateway_internal_url` (`backend/wrapper/src/hermes_webui_wrapper/config.py`)
+    /// fail closed and nothing inside the container can call this
+    /// gateway's `/workspaces/:id/mcp` tenancy proxy for itself.
+    #[test]
+    fn boot_script_sets_integrations_env_vars_from_caller_supplied_values() {
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-abc123",
+            "http://host.docker.internal:8080",
+        );
+        assert!(
+            script.contains("export INTEGRATIONS_WORKSPACE_ID=ws-abc123"),
+            "missing INTEGRATIONS_WORKSPACE_ID, or not using the caller-supplied workspace_id"
+        );
+        assert!(
+            script.contains("export GATEWAY_INTERNAL_URL=http://host.docker.internal:8080"),
+            "missing GATEWAY_INTERNAL_URL, or not using the caller-supplied value"
+        );
+    }
+
+    /// `/run/hermes` must exist and be `abc`-owned before the integrations
+    /// token file can ever be `docker cp`'d in post-boot (see
+    /// `crate::integrations::token_delivery::deliver_token_file`) — a
+    /// container whose boot script never created this directory would
+    /// reject that `docker cp` outright.
+    #[test]
+    fn boot_script_creates_and_chowns_run_hermes_for_the_integrations_token_file() {
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+        );
+        assert!(script.contains("mkdir -p /run/hermes"));
+        assert!(script
+            .lines()
+            .any(|line| line.trim() == "chown -R abc:abc /run/hermes 2>/dev/null || true"),);
+    }
+
     #[test]
     fn boot_script_sets_safe_directory_before_starting_wrapper() {
-        let script = wrapper_boot_script("http://localhost:5173", "/workspace/default", "http://localhost:5173");
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+        );
         assert!(
             script.contains("git config --global --add safe.directory /opt/hermes-webui/upstream"),
             "missing the safe.directory fix — without it abc's git rev-parse fails with \
@@ -225,13 +304,25 @@ mod tests {
 
     #[test]
     fn boot_script_runs_wrapper_as_abc_not_root() {
-        let script = wrapper_boot_script("http://localhost:5173", "/workspace/default", "http://localhost:5173");
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+        );
         assert!(script.contains("su -s /bin/sh abc -c"));
     }
 
     #[test]
     fn boot_script_sets_required_wrapper_env_vars() {
-        let script = wrapper_boot_script("http://localhost:5173", "/workspace/default", "http://localhost:5173");
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+        );
         assert!(script.contains("export HERMES_HOME=/config/.hermes"));
         assert!(script.contains("export HERMES_WRAPPER_HOST=0.0.0.0"));
         assert!(script.contains("export HERMES_WRAPPER_PORT=8787"));
@@ -268,7 +359,9 @@ mod tests {
              so abc itself cannot create /workspace"
         );
         assert!(
-            script.lines().any(|line| line.trim() == "chown -R abc:abc /workspace 2>/dev/null || true"),
+            script
+                .lines()
+                .any(|line| line.trim() == "chown -R abc:abc /workspace 2>/dev/null || true"),
             "without chowning /workspace (the PARENT of /workspace/default) to abc, agent-seeder \
              cannot mkdir a per-agent sibling directory like /workspace/pm at runtime as abc — \
              verified live via a real end-to-end apply-mode call: PermissionError: [Errno 13] \
@@ -296,6 +389,8 @@ mod tests {
             "http://localhost:5173,http://127.0.0.1:8080",
             "/workspace/default",
             "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
         );
         assert!(
             script.contains(
@@ -321,6 +416,8 @@ mod tests {
             "http://localhost:5173",
             "/data/agent-workspaces/main",
             "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
         );
         assert!(
             script.contains("export HERMES_WEBUI_DEFAULT_WORKSPACE=/data/agent-workspaces/main"),
@@ -376,6 +473,8 @@ mod tests {
             "http://localhost:5173",
             "/workspace/default",
             "https://app.example.com",
+            "ws-test",
+            "http://gateway-internal:8080",
         );
         assert!(
             script.contains("export HERMES_FRONTEND_ORIGIN=https://app.example.com"),
@@ -386,7 +485,13 @@ mod tests {
 
     #[test]
     fn boot_script_runs_wrapper_under_the_agents_venv_not_a_separate_one() {
-        let script = wrapper_boot_script("http://localhost:5173", "/workspace/default", "http://localhost:5173");
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+        );
         assert!(
             script.contains("exec /opt/hermes/.venv/bin/hermes-webui-wrapper"),
             "the wrapper must run under the AGENT's venv (/opt/hermes/.venv), not a \
@@ -398,7 +503,13 @@ mod tests {
 
     #[test]
     fn boot_script_runs_detached_and_exits_zero_quickly() {
-        let script = wrapper_boot_script("http://localhost:5173", "/workspace/default", "http://localhost:5173");
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+        );
         // custom-cont-init.d hooks must exit 0 quickly (they run before
         // s6's long-running services start) — the wrapper is started
         // detached (setsid ... &) rather than this script waiting on it.

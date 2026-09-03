@@ -29,22 +29,24 @@ export function ApprovalPrompt({
       ariaLabel="Approval requested"
       ariaLive="polite"
       tabIndex={panelRef ? -1 : undefined}
+      footer={
+        <div className={chatUi.promptChoices}>
+          {CHOICES.map((choice) => (
+            <button
+              key={choice.value}
+              type="button"
+              className={cn(
+                choice.value === 'deny' ? chatUi.promptDeny : chatUi.promptApprove,
+              )}
+              onClick={() => onRespond(choice.value, prompt.approvalId)}
+            >
+              {choice.label}
+            </button>
+          ))}
+        </div>
+      }
     >
       {prompt.command ? <pre className={chatUi.promptCommand}>{prompt.command}</pre> : null}
-      <div className={chatUi.promptChoices}>
-        {CHOICES.map((choice) => (
-          <button
-            key={choice.value}
-            type="button"
-            className={cn(
-              choice.value === 'deny' ? chatUi.promptDeny : chatUi.promptApprove,
-            )}
-            onClick={() => onRespond(choice.value, prompt.approvalId)}
-          >
-            {choice.label}
-          </button>
-        ))}
-      </div>
     </ChatPromptCard>
   )
 }

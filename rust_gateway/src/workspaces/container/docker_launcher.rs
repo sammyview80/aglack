@@ -85,6 +85,17 @@ pub struct DockerCliLauncher {
     /// fixed for (AGENTS.md rule #2: no hardcoded path/URL anywhere
     /// outside `config.rs`).
     frontend_origin: String,
+    /// This gateway's own address, as reachable FROM INSIDE a workspace
+    /// container — passed straight into the container's
+    /// `GATEWAY_INTERNAL_URL` (see `boot_script.rs`'s doc comment and
+    /// `docs/integrations-plan.md`'s infra section). NOT the same value
+    /// as `GatewayConfig::listen_addr()` in general — a container-side
+    /// `127.0.0.1`/`localhost` would resolve to the CONTAINER itself, not
+    /// the host, so this is a required, separately-configured value
+    /// (AGENTS.md rule #2: no hardcoded/guessed host here), typically
+    /// `http://host.docker.internal:<port>` on macOS/Windows or the
+    /// host's real LAN/bridge address on Linux.
+    gateway_internal_url: String,
 }
 
 impl DockerCliLauncher {
@@ -93,12 +104,14 @@ impl DockerCliLauncher {
         allowed_origins: String,
         workspace_default_path: String,
         frontend_origin: String,
+        gateway_internal_url: String,
     ) -> Self {
         Self {
             image_tag,
             allowed_origins,
             workspace_default_path,
             frontend_origin,
+            gateway_internal_url,
         }
     }
 }
@@ -138,6 +151,8 @@ impl ContainerLauncher for DockerCliLauncher {
             &self.allowed_origins,
             &self.workspace_default_path,
             &self.frontend_origin,
+            workspace_id,
+            &self.gateway_internal_url,
         )
         .await?;
 
