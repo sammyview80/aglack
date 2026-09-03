@@ -13,7 +13,14 @@
 //! abstraction. Revisit if a THIRD caller ever needs the same thing.
 
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
+
+/// How long one `docker` invocation is allowed to run before this module
+/// gives up on it. A hung `docker exec`/`docker cp` (e.g. the daemon
+/// itself wedged) would otherwise pin the calling tokio task forever,
+/// same root cause as Issue 1's HTTP client timeouts.
+const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug)]
 pub struct TokenDeliveryError {
@@ -122,14 +129,26 @@ pub async fn remove_token_file(container_name: &str) -> Result<(), TokenDelivery
 }
 
 async fn run_docker(args: &[&str]) -> Result<(), TokenDeliveryError> {
-    let output = Command::new("docker")
+    let spawned = Command::new("docker")
         .args(args)
         .stdin(Stdio::null())
-        .output()
-        .await
-        .map_err(|err| TokenDeliveryError {
-            message: format!("failed to spawn docker {args:?}: {err}"),
-        })?;
+        .output();
+
+    let output = match tokio::time::timeout(DOCKER_COMMAND_TIMEOUT, spawned).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return Err(TokenDeliveryError {
+                message: format!("failed to spawn docker {args:?}: {err}"),
+            })
+        }
+        Err(_) => {
+            return Err(TokenDeliveryError {
+                message: format!(
+                    "docker {args:?} timed out after {DOCKER_COMMAND_TIMEOUT:?}"
+                ),
+            })
+        }
+    };
 
     if output.status.success() {
         Ok(())

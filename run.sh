@@ -20,7 +20,15 @@
 # workspace container — that is a separate, explicit step (see
 # backend/workspace-image/Dockerfile and rust_gateway/.env's
 # WORKSPACE_IMAGE_TAG) since it is slow and not needed for routing-only dev.
+#
+# OpenConnector is a remote, already-hosted instance this repo never
+# starts — see rust_gateway/.env.example's OPENCONNECTOR_URL comment.
 set -euo pipefail
+
+if [ "$#" -gt 0 ]; then
+  echo "run.sh: unknown argument: $1" >&2
+  exit 1
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$ROOT/logs"

@@ -85,3 +85,33 @@ pub async fn resolve_ready_workspace(
         desktop_port: desktop_port as u16,
     })
 }
+
+/// Bare existence check: 404s on an unknown `workspace_id` but, unlike
+/// `resolve_ready_workspace`, does NOT require `Ready` or live ports —
+/// any other status (`Creating`, `Failed`, ...) passes. For routes that
+/// only read/mutate rows in another table keyed by `workspace_id` (e.g.
+/// integrations `list`/`disconnect`) and never touch the workspace's
+/// container: they still need to reject a typo'd/deleted workspace id,
+/// but gate-keeping on a live container would be over-strict for
+/// bookkeeping that needs no container at all.
+pub async fn resolve_existing_workspace(
+    store: &WorkspaceStore,
+    workspace_id: &str,
+) -> Result<(), Response> {
+    match store.find_by_workspace_id(workspace_id).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(error(
+            StatusCode::NOT_FOUND,
+            "workspace_not_found",
+            format!("no workspace with id {workspace_id:?}"),
+        )),
+        Err(err) => {
+            eprintln!("rust_gateway: workspace lookup error: {err}");
+            Err(error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "workspace_lookup_failed",
+                "failed to look up workspace",
+            ))
+        }
+    }
+}

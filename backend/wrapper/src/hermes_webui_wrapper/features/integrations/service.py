@@ -107,6 +107,26 @@ def relay_mcp_call(body: dict[str, Any]) -> dict[str, Any]:
             "integrations_gateway_unreachable", str(exc), 502
         ) from exc
 
+    if response.status_code >= 400:
+        # Non-2xx from the gateway is a real failure, not a JSON-RPC-shaped
+        # payload to hand back verbatim — map its own `{"ok": false,
+        # "error": {"code", "message"}}` envelope (see `rust_gateway/src/
+        # response.rs`) when parseable, falling back to a generic code/
+        # message for a non-JSON or differently-shaped error body (e.g. an
+        # HTML error page from a proxy in front of the gateway).
+        try:
+            payload = response.json()
+            err = payload.get("error") if isinstance(payload, dict) else None
+        except ValueError:
+            err = None
+        if not isinstance(err, dict):
+            err = {}
+        raise IntegrationsError(
+            err.get("code", "integrations_gateway_error"),
+            err.get("message", f"Gateway returned HTTP {response.status_code}"),
+            response.status_code,
+        )
+
     try:
         return response.json()
     except ValueError as exc:

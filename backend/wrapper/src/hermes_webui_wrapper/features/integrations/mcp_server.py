@@ -38,14 +38,45 @@ see `find_action`'s own doc comment below).
 """
 from __future__ import annotations
 
+import functools
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, Coroutine, TypeVar
 
 import anyio
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 
-from hermes_webui_wrapper.features.integrations.service import relay_mcp_call
+from hermes_webui_wrapper.features.integrations.service import (
+    IntegrationsError,
+    relay_mcp_call,
+)
+
+_T = TypeVar("_T", bound=dict[str, Any])
+
+
+def _tool_error_boundary(
+    fn: Callable[..., Coroutine[Any, Any, _T]]
+) -> Callable[..., Coroutine[Any, Any, dict[str, Any]]]:
+    """Wraps one `@mcp.tool()` body so a gateway-side failure surfaces to
+    the calling agent as the SAME `{"ok": false, "error": {code, message}}`
+    shape `_unwrap` already returns for an in-band gateway error, and that
+    `backend/seeder/skills/org-integrations/SKILL.md` teaches agents to
+    expect — rather than an uncaught `IntegrationsError` propagating up
+    through FastMCP's own tool-call machinery as an opaque failure. After
+    Bug WR-01's fix, `relay_mcp_call` raises `IntegrationsError` for every
+    non-2xx gateway response, not just network failures, so every tool
+    that calls it needs this same boundary; one shared decorator instead
+    of repeating identical try/except in each of the 3 tool bodies below.
+    """
+
+    @functools.wraps(fn)
+    async def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return await fn(*args, **kwargs)
+        except IntegrationsError as exc:
+            return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+
+    return wrapped
 
 
 def _unwrap(response: dict[str, Any]) -> dict[str, Any]:
@@ -91,6 +122,7 @@ def build_mcp_app() -> tuple[Starlette, Callable[[], "AsyncIterator[None]"]]:
     mcp = FastMCP(name="integrations", stateless_http=True)
 
     @mcp.tool()
+    @_tool_error_boundary
     async def list_connections(service: str | None = None) -> dict[str, Any]:
         """List this workspace's connected integration providers,
         optionally filtered to one provider's service id (e.g. "github")."""
@@ -107,6 +139,7 @@ def build_mcp_app() -> tuple[Starlette, Callable[[], "AsyncIterator[None]"]]:
         return _unwrap(response)
 
     @mcp.tool()
+    @_tool_error_boundary
     async def execute_action(
         action_id: str, input: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -126,6 +159,7 @@ def build_mcp_app() -> tuple[Starlette, Callable[[], "AsyncIterator[None]"]]:
         return _unwrap(response)
 
     @mcp.tool()
+    @_tool_error_boundary
     async def find_action(service: str, query: str, limit: int = 5) -> dict[str, Any]:
         """Single-call replacement for the first two steps of the
         `search_actions` -> `get_action_guide` -> `execute_action` flow
@@ -231,7 +265,7 @@ def build_mcp_app() -> tuple[Starlette, Callable[[], "AsyncIterator[None]"]]:
             }
             guide_response = await anyio.to_thread.run_sync(relay_mcp_call, guide_body)
             guide_result = _unwrap(guide_response)
-            guide_ok = guide_result.get("ok", True)
+            guide_ok = guide_result.get("ok") is True
 
             enriched.append(
                 {

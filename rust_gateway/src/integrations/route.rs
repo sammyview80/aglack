@@ -19,9 +19,9 @@ use super::mcp_proxy::sha256_hex;
 use super::openconnector;
 use super::store::ConnectionStatus;
 use super::token_delivery;
-use super::{IntegrationStore, OpenConnectorClient, Provider};
+use super::{IntegrationStore, OpenConnectorApi, Provider};
 use crate::response::{error, success};
-use crate::workspaces::resolve::resolve_ready_workspace;
+use crate::workspaces::resolve::{resolve_existing_workspace, resolve_ready_workspace};
 use crate::workspaces::WorkspaceStore;
 
 pub use super::mcp_proxy::integration_mcp_route;
@@ -31,7 +31,12 @@ pub use super::mcp_proxy::integration_mcp_route;
 /// `WorkspacesState`'s existing convention in this crate.
 pub struct IntegrationsState {
     pub store: IntegrationStore,
-    pub openconnector: OpenConnectorClient,
+    /// `Arc<dyn OpenConnectorApi>`, not the concrete `OpenConnectorClient`
+    /// — mirrors `WorkspacesState::launcher`'s own `Arc<dyn
+    /// ContainerLauncher>` (see that struct's doc comment): lets tests
+    /// substitute `openconnector::fake::FakeOpenConnector` without a real
+    /// OpenConnector container.
+    pub openconnector: Arc<dyn OpenConnectorApi>,
     pub providers: Vec<Provider>,
     /// Separate `WorkspaceStore` handle over the SAME underlying SQLite
     /// pool `workspaces::WorkspacesState` uses (see `bin/rust_gateway.rs`
@@ -54,6 +59,11 @@ pub struct IntegrationsState {
     /// — `IntegrationStore` itself stores whatever string it's given and
     /// has no opinion on whether it's encrypted.
     pub token_cipher: crate::crypto::TokenCipher,
+    /// Per-workspace bearer-guess lockout for `/workspaces/:id/mcp` — see
+    /// `mcp_proxy::McpBearerLockout`'s own doc comment. `/mcp` is
+    /// session-exempt (`auth/middleware.rs`), so this is the only brute-
+    /// force mitigation that route has.
+    pub mcp_bearer_lockout: super::mcp_proxy::McpBearerLockout,
 }
 
 impl IntegrationsState {
@@ -61,6 +71,33 @@ impl IntegrationsState {
         self.providers
             .iter()
             .find(|provider| provider.id == provider_id)
+    }
+}
+
+/// Best-effort audit write — same semantics `IntegrationStore::record_audit`
+/// already documents (never fails the caller's own request if the
+/// underlying SQLite write itself fails), but now OBSERVABLE: every call
+/// site in this module (and `mcp_proxy.rs`) used to do
+/// `let _ = state.store.record_audit(...).await;`, which silently
+/// dropped a real write failure (disk full, locked DB) with zero signal
+/// anywhere that the security audit trail was just lost. One choke point
+/// here means every call site gets this for free rather than needing the
+/// same `if let Err(...) = ... { tracing::error!(...) }` repeated at each
+/// of the seven places that write an audit event.
+pub(super) async fn audit(
+    state: &IntegrationsState,
+    workspace_id: Option<&str>,
+    provider_id: Option<&str>,
+    event: &str,
+    success: bool,
+    detail: Option<&str>,
+) {
+    if let Err(err) = state
+        .store
+        .record_audit(workspace_id, provider_id, event, success, detail)
+        .await
+    {
+        tracing::error!(event = %event, error = %err, "audit write failed");
     }
 }
 
@@ -137,6 +174,18 @@ pub async fn list_integrations_route(
     State(state): State<Arc<IntegrationsState>>,
     Path(workspace_id): Path<String>,
 ) -> Response {
+    // Bug 2 (revised): validate the workspace exists BEFORE anything else
+    // — reporting a clean 404 immediately (rather than an empty
+    // connection list for a workspace that never existed) keeps this
+    // route consistent with the others below. Only existence, not
+    // `Ready`/ports: viewing the integration list is bookkeeping against
+    // `integration_connections`, not container access, so a workspace
+    // stuck `Creating`/`Failed` must still be viewable.
+    if let Err(response) = resolve_existing_workspace(&state.workspace_store, &workspace_id).await
+    {
+        return response;
+    }
+
     let connections = match state.store.list_connections(&workspace_id).await {
         Ok(connections) => connections,
         Err(err) => {
@@ -294,6 +343,13 @@ pub async fn start_oauth_route(
     State(state): State<Arc<IntegrationsState>>,
     Path((workspace_id, provider_id)): Path<(String, String)>,
 ) -> Response {
+    // Bug 2: reject an unknown/not-ready workspace BEFORE ever writing a
+    // `pending` row or calling OpenConnector — a bad workspace id must
+    // never reach either.
+    if let Err(response) = resolve_ready_workspace(&state.workspace_store, &workspace_id).await {
+        return response;
+    }
+
     let Some(provider) = state.find_provider(&provider_id) else {
         return error(
             StatusCode::NOT_FOUND,
@@ -312,6 +368,29 @@ pub async fn start_oauth_route(
 
     let connection_name = workspace_connection_name(&workspace_id);
 
+    // Bug 3: attempt the OpenConnector call FIRST. Only write the
+    // `pending` row once OpenConnector has actually confirmed it started
+    // an authorization — otherwise a failure here left a row stuck
+    // `pending` until the 10-minute reconciliation timeout expired it, a
+    // bad spinner-forever UX for something that failed instantly. On
+    // failure, no row is written at all (a prior row from an earlier
+    // attempt, if any, is left untouched — nothing here overwrote it yet).
+    let result = state
+        .openconnector
+        .create_oauth_authorization(&provider.openconnector_service, &connection_name)
+        .await;
+
+    audit(&state, Some(&workspace_id), Some(&provider_id), "oauth_start", result.is_ok(), None)
+        .await;
+
+    let authorization_url = match result {
+        Ok(authorization_url) => authorization_url,
+        Err(err) => {
+            tracing::warn!(workspace_id = %workspace_id, provider = %provider_id, error = %err, "openconnector create_oauth_authorization failed");
+            return error(StatusCode::BAD_GATEWAY, err.safe_code(), err.safe_message());
+        }
+    };
+
     if let Err(err) = state
         .store
         .mark_pending(&Uuid::new_v4().to_string(), &workspace_id, &provider_id, &connection_name)
@@ -324,33 +403,10 @@ pub async fn start_oauth_route(
         );
     }
 
-    let result = state
-        .openconnector
-        .create_oauth_authorization(&provider.openconnector_service, &connection_name)
-        .await;
-
-    let _ = state
-        .store
-        .record_audit(
-            Some(&workspace_id),
-            Some(&provider_id),
-            "oauth_start",
-            result.is_ok(),
-            None,
-        )
-        .await;
-
-    match result {
-        Ok(authorization_url) => success(
-            StatusCode::OK,
-            OAuthStartResponseData { authorization_url },
-        ),
-        Err(err) => error(
-            StatusCode::BAD_GATEWAY,
-            "openconnector_oauth_start_failed",
-            err.to_string(),
-        ),
-    }
+    success(
+        StatusCode::OK,
+        OAuthStartResponseData { authorization_url },
+    )
 }
 
 /// `GET /oauth/callback` — MUST be this exact path, not a namespaced one
@@ -422,6 +478,15 @@ pub async fn connect_integration_route(
     Path((workspace_id, provider_id)): Path<(String, String)>,
     Json(request): Json<ConnectRequest>,
 ) -> Response {
+    // Bug 2: reject an unknown/not-ready workspace BEFORE ever calling
+    // OpenConnector. Confirmed live: skipping this let a real
+    // `connect_with_api_key` call create a real, working OpenConnector
+    // connection (`ws-<bad-id>`) for a workspace that doesn't exist or
+    // isn't ready — nothing ever cleaned that up.
+    if let Err(response) = resolve_ready_workspace(&state.workspace_store, &workspace_id).await {
+        return response;
+    }
+
     let Some(provider) = state.find_provider(&provider_id) else {
         return error(
             StatusCode::NOT_FOUND,
@@ -442,12 +507,12 @@ pub async fn connect_integration_route(
         .await
     {
         Ok(summary) => summary,
+        // Nothing was created on OpenConnector's side in this branch —
+        // `connect_with_api_key` itself is what failed — so no
+        // compensation is needed here.
         Err(err) => {
-            return error(
-                StatusCode::BAD_GATEWAY,
-                "openconnector_connect_failed",
-                err.to_string(),
-            )
+            tracing::warn!(workspace_id = %workspace_id, provider = %provider_id, error = %err, "openconnector connect_with_api_key failed");
+            return error(StatusCode::BAD_GATEWAY, err.safe_code(), err.safe_message());
         }
     };
 
@@ -460,7 +525,27 @@ pub async fn connect_integration_route(
                 account_label: Some(connection_summary.connection_name),
             },
         ),
-        Err(response) => response,
+        Err(response) => {
+            // Compensation: `connect_with_api_key` above DID succeed —
+            // OpenConnector really holds this connection now — but
+            // something after it failed. Best-effort delete so this
+            // connection doesn't orphan forever; never let a compensation
+            // failure mask/replace the real error being returned.
+            let compensation_result = state
+                .openconnector
+                .delete_connection(&provider.openconnector_service, &connection_name)
+                .await;
+            audit(
+                &state,
+                Some(&workspace_id),
+                Some(&provider_id),
+                "connect_compensated",
+                compensation_result.is_ok(),
+                None,
+            )
+            .await;
+            response
+        }
     }
 }
 
@@ -506,51 +591,45 @@ async fn finish_connection(
             )
             .await;
     }
-    let _ = state
-        .store
-        .record_audit(
-            Some(workspace_id),
-            Some(provider_id),
-            "connect_finished",
-            result.is_ok(),
-            None,
-        )
+    audit(state, Some(workspace_id), Some(provider_id), "connect_finished", result.is_ok(), None)
         .await;
     result
 }
 
-async fn finish_connection_inner(
+/// Create a fresh OpenConnector runtime token scoped to exactly
+/// `allowed_connection_ids`, store it (encrypted) for `workspace_id`,
+/// deliver it into `container_name`, THEN revoke whatever token the
+/// workspace held before — shared by `finish_connection_inner` (a
+/// provider just connected) and `disconnect_integration_route`'s
+/// narrowing path (a provider was disconnected but others remain), so
+/// the create→hash→encrypt→store→deliver→revoke-old sequence exists in
+/// exactly one place (Bug 1's fix).
+///
+/// Rotation atomicity: the OLD token is only ever revoked AFTER the new
+/// one is confirmed stored AND delivered — never the reverse — so a
+/// mid-rotation failure (any `?` below) leaves the workspace with its
+/// OLD, still-valid token rather than none at all. Skipped when there is
+/// no previous token, or when "previous" IS the token just created (a
+/// call re-entered on the same token — should not happen, but revoking a
+/// token this call itself just issued would be a real bug if it ever did).
+async fn rotate_workspace_token(
     state: &IntegrationsState,
     workspace_id: &str,
-    provider_id: &str,
-    connection_summary: &openconnector::ConnectionSummary,
+    container_name: &str,
+    allowed_connection_ids: &[String],
 ) -> Result<(), Response> {
-    let connection_name = workspace_connection_name(workspace_id);
-
-    // Capture the workspace's CURRENT runtime token (if any) BEFORE
-    // creating a new one — this is what makes rotation atomic: the old
-    // token is only ever revoked AFTER the new one is confirmed stored
-    // and delivered (see the end of this function), never the reverse,
-    // so a mid-rotation failure never leaves the workspace with NO valid
-    // token at all.
-    let previous_token = state.store.find_runtime_token(workspace_id).await.ok().flatten();
-
-    state
+    // Bug 5: a transient DB error here is NOT "no previous token" — that
+    // would silently skip revoking a real, still-valid OpenConnector
+    // token, leaking it forever. Propagate the error instead of
+    // swallowing it with `.ok().flatten()`.
+    let previous_token = state
         .store
-        .upsert_connection(
-            &Uuid::new_v4().to_string(),
-            workspace_id,
-            provider_id,
-            &connection_name,
-            Some(&connection_summary.id),
-            ConnectionStatus::Connected,
-            Some(&connection_summary.connection_name),
-        )
+        .find_runtime_token(workspace_id)
         .await
         .map_err(|err| {
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "integrations_store_failed",
+                "runtime_token_lookup_failed",
                 err.to_string(),
             )
         })?;
@@ -558,14 +637,11 @@ async fn finish_connection_inner(
     let token_name = format!("workspace:{workspace_id}");
     let runtime_token = state
         .openconnector
-        .create_runtime_token(&token_name, &connection_summary.id)
+        .create_runtime_token(&token_name, allowed_connection_ids)
         .await
         .map_err(|err| {
-            error(
-                StatusCode::BAD_GATEWAY,
-                "openconnector_token_failed",
-                err.to_string(),
-            )
+            tracing::warn!(workspace_id = %workspace_id, error = %err, "openconnector create_runtime_token failed");
+            error(StatusCode::BAD_GATEWAY, err.safe_code(), err.safe_message())
         })?;
 
     let token_hash = sha256_hex(&runtime_token.bearer);
@@ -593,13 +669,46 @@ async fn finish_connection_inner(
             )
         })?;
 
-    // Deliver the bearer into the actual container so an agent can use
-    // it — see token_delivery.rs. This can only succeed for a workspace
-    // whose container is up (`Ready`, with a real `container_name`); a
-    // workspace still `Creating` at connect time (an edge case — the
-    // frontend would not normally offer Connect before onboarding
-    // finishes) is reported as a clean error rather than silently
-    // storing a token no container will ever pick up.
+    // `runtime_token.bearer` itself must never be logged or returned to a
+    // caller — it is now ONLY on disk inside the container (as a 0400
+    // file) and, encrypted, in `workspace_runtime_tokens.openconnector_bearer`;
+    // this local variable goes out of scope at the end of this function.
+    token_delivery::deliver_token_file(container_name, &runtime_token.bearer)
+        .await
+        .map_err(|err| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "integrations_token_delivery_failed",
+                err.to_string(),
+            )
+        })?;
+
+    if let Some(previous) = previous_token {
+        if previous.openconnector_token_id != runtime_token.openconnector_token_id {
+            let _ = state
+                .openconnector
+                .revoke_runtime_token(&previous.openconnector_token_id)
+                .await;
+        }
+    }
+
+    Ok(())
+}
+
+async fn finish_connection_inner(
+    state: &IntegrationsState,
+    workspace_id: &str,
+    provider_id: &str,
+    connection_summary: &openconnector::ConnectionSummary,
+) -> Result<(), Response> {
+    let connection_name = workspace_connection_name(workspace_id);
+
+    // Bug 2 (narrow half fixed here too): resolve the container BEFORE
+    // touching OpenConnector's token or this row's status — a workspace
+    // still `Creating` at connect time is reported as a clean error
+    // rather than silently storing a token no container will ever pick
+    // up. Moved ahead of the token/connected-row writes below (Bug 4's
+    // reorder) rather than staying as the very last check.
     let record = state
         .workspace_store
         .find_by_workspace_id(workspace_id)
@@ -620,38 +729,92 @@ async fn finish_connection_inner(
         ));
     };
 
-    // `runtime_token.bearer` itself must never be logged or returned to a
-    // caller — it is now ONLY on disk inside the container (as a 0400
-    // file) and, encrypted, in `workspace_runtime_tokens.openconnector_bearer`;
-    // this local variable goes out of scope at the end of this function.
-    token_delivery::deliver_token_file(&container_name, &runtime_token.bearer)
+    // Bug 1: the token must allow EVERY provider this workspace still has
+    // `Connected`, not just the one being connected right now — otherwise
+    // each new connect narrows the token down to just itself, silently
+    // revoking every other provider's access (confirmed live: connect
+    // GitHub, then Slack, and GitHub's `execute_action` calls started
+    // failing `connection_not_allowed`). This connection's own row is not
+    // necessarily `Connected` in the DB yet at this point (see Bug 4's
+    // reorder below — the `Connected` write now happens LAST), so its id
+    // is added explicitly rather than relying on `list_connections`
+    // already reporting it.
+    let mut allowed_connection_ids: Vec<String> = state
+        .store
+        .list_connections(workspace_id)
         .await
         .map_err(|err| {
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "integrations_token_delivery_failed",
+                "integrations_store_failed",
+                err.to_string(),
+            )
+        })?
+        .into_iter()
+        .filter(|c| c.status == ConnectionStatus::Connected)
+        .filter_map(|c| c.openconnector_connection_id)
+        .collect();
+    if !allowed_connection_ids.contains(&connection_summary.id) {
+        allowed_connection_ids.push(connection_summary.id.clone());
+    }
+
+    // Write this connection's row as `Pending` (not `Connected` — see
+    // Bug 4 below) BEFORE attempting the token rotation. This is NOT the
+    // `Connected` write itself; it exists only so the outer
+    // `finish_connection`'s `mark_error` compensation (an UPDATE, not an
+    // upsert — see `IntegrationStore::mark_error`) always has a row to
+    // flip to `error` if rotation fails below, rather than silently
+    // no-op-ing against a row that was never created. Overwritten by the
+    // real `Connected` write on success, a few lines down.
+    state
+        .store
+        .upsert_connection(
+            &Uuid::new_v4().to_string(),
+            workspace_id,
+            provider_id,
+            &connection_name,
+            Some(&connection_summary.id),
+            ConnectionStatus::Pending,
+            None,
+        )
+        .await
+        .map_err(|err| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "integrations_store_failed",
                 err.to_string(),
             )
         })?;
 
-    // Rotation atomicity: only NOW — after the new token is stored AND
-    // successfully delivered into the container — revoke whatever token
-    // this workspace held before. A failure at any earlier step returns
-    // `Err` above and never reaches this line, so the workspace keeps its
-    // OLD, still-valid token rather than being left with none. Skipped
-    // entirely when there was no previous token (first connect), or when
-    // the "previous" token IS the one just created (this same connect
-    // call, re-entered — should not happen in practice, but revoking a
-    // token this function itself just issued would be a real bug if it
-    // ever did).
-    if let Some(previous) = previous_token {
-        if previous.openconnector_token_id != runtime_token.openconnector_token_id {
-            let _ = state
-                .openconnector
-                .revoke_runtime_token(&previous.openconnector_token_id)
-                .await;
-        }
-    }
+    // Bug 4: token creation + storage + delivery ALL happen BEFORE this
+    // connection's row is written `Connected` — previously the
+    // `Connected` write ran first, so a later token/delivery failure left
+    // the row lying about having a working token (a real bug hit live via
+    // a container missing `/run/hermes`). The outer `finish_connection`
+    // still applies its `mark_error` compensation on ANY failure here as
+    // a safety net — this reorder is what stops the happy path from ever
+    // showing that lie in the first place.
+    rotate_workspace_token(state, workspace_id, &container_name, &allowed_connection_ids).await?;
+
+    state
+        .store
+        .upsert_connection(
+            &Uuid::new_v4().to_string(),
+            workspace_id,
+            provider_id,
+            &connection_name,
+            Some(&connection_summary.id),
+            ConnectionStatus::Connected,
+            Some(&connection_summary.connection_name),
+        )
+        .await
+        .map_err(|err| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "integrations_store_failed",
+                err.to_string(),
+            )
+        })?;
 
     Ok(())
 }
@@ -661,6 +824,17 @@ pub async fn disconnect_integration_route(
     State(state): State<Arc<IntegrationsState>>,
     Path((workspace_id, provider_id)): Path<(String, String)>,
 ) -> Response {
+    // Bug 2 (revised): reject an unknown workspace id BEFORE ever calling
+    // OpenConnector or touching the store — but only existence, not
+    // `Ready`/ports: disconnecting a provider is bookkeeping against
+    // `integration_connections` (plus a best-effort OpenConnector
+    // delete), not container access, so a workspace stuck
+    // `Creating`/`Failed` must still be allowed to disconnect.
+    if let Err(response) = resolve_existing_workspace(&state.workspace_store, &workspace_id).await
+    {
+        return response;
+    }
+
     let Some(provider) = state.find_provider(&provider_id) else {
         return error(
             StatusCode::NOT_FOUND,
@@ -675,15 +849,12 @@ pub async fn disconnect_integration_route(
         .delete_connection(&provider.openconnector_service, &connection_name)
         .await
     {
-        let _ = state
-            .store
-            .record_audit(Some(&workspace_id), Some(&provider_id), "disconnect", false, None)
-            .await;
-        return error(
-            StatusCode::BAD_GATEWAY,
-            "openconnector_disconnect_failed",
-            err.to_string(),
-        );
+        audit(&state, Some(&workspace_id), Some(&provider_id), "disconnect", false, None).await;
+        // Issue 2: `err` may embed OpenConnector's raw response body —
+        // log the real detail server-side, return only the fixed,
+        // non-leaking message to the caller (a browser here).
+        tracing::warn!(workspace_id = %workspace_id, provider = %provider_id, error = %err, "openconnector delete_connection failed");
+        return error(StatusCode::BAD_GATEWAY, err.safe_code(), err.safe_message());
     }
 
     if let Err(err) = state
@@ -698,55 +869,81 @@ pub async fn disconnect_integration_route(
         );
     }
 
-    // If this was the workspace's LAST connection, tear down its token
-    // entirely — no connections left means nothing this workspace's
-    // agents should be able to call. A workspace with other still-
-    // connected providers keeps its existing token as-is: narrowing it
-    // onto a smaller `allowedConnections` set on partial disconnect is
-    // real follow-up work (see the plan's rotation-atomicity phase), not
-    // silently skipped without a comment.
-    match state.store.list_connections(&workspace_id).await {
-        Ok(remaining)
-            if remaining
-                .iter()
-                .all(|c| c.status != ConnectionStatus::Connected) =>
-        {
-            if let Some(token) = state
-                .store
-                .find_runtime_token(&workspace_id)
-                .await
-                .ok()
-                .flatten()
-            {
-                let _ = state
-                    .openconnector
-                    .revoke_runtime_token(&token.openconnector_token_id)
-                    .await;
-                let _ = state.store.delete_runtime_token(&workspace_id).await;
+    // Bug 1: a workspace with OTHER still-connected providers must have
+    // its token ROTATED to a narrower `allowedConnections` set, not left
+    // pointing at a connection that no longer exists — previously this
+    // case was silently left alone entirely (see the removed comment this
+    // replaces). Only a workspace with NO connections left tears its
+    // token down completely (existing behavior, unchanged).
+    let remaining = match state.store.list_connections(&workspace_id).await {
+        Ok(remaining) => remaining,
+        Err(err) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "integrations_store_failed",
+                err.to_string(),
+            )
+        }
+    };
+    let remaining_connection_ids: Vec<String> = remaining
+        .iter()
+        .filter(|c| c.status == ConnectionStatus::Connected)
+        .filter_map(|c| c.openconnector_connection_id.clone())
+        .collect();
+
+    if remaining_connection_ids.is_empty() {
+        // Bug 5: propagate a real DB error rather than treating it the
+        // same as "no previous token" — that would silently skip
+        // revoking a real, still-valid OpenConnector token.
+        let previous_token = match state.store.find_runtime_token(&workspace_id).await {
+            Ok(token) => token,
+            Err(err) => {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "runtime_token_lookup_failed",
+                    err.to_string(),
+                )
             }
-            if let Ok(Some(record)) = state
-                .workspace_store
-                .find_by_workspace_id(&workspace_id)
-                .await
-            {
-                if let Some(container_name) = record.container_name {
-                    let _ = token_delivery::remove_token_file(&container_name).await;
-                }
+        };
+        if let Some(token) = previous_token {
+            let _ = state
+                .openconnector
+                .revoke_runtime_token(&token.openconnector_token_id)
+                .await;
+            let _ = state.store.delete_runtime_token(&workspace_id).await;
+        }
+        if let Ok(Some(record)) = state
+            .workspace_store
+            .find_by_workspace_id(&workspace_id)
+            .await
+        {
+            if let Some(container_name) = record.container_name {
+                let _ = token_delivery::remove_token_file(&container_name).await;
             }
         }
-        _ => {}
+    } else if let Ok(Some(record)) = state
+        .workspace_store
+        .find_by_workspace_id(&workspace_id)
+        .await
+    {
+        if let Some(container_name) = record.container_name {
+            // Best-effort: a rotation failure here must not fail the
+            // disconnect itself (the disconnect already succeeded on
+            // OpenConnector's side and in the store above) — the
+            // workspace is simply left holding its previous, now
+            // slightly-too-broad token until the next successful
+            // connect/disconnect rotates it again.
+            let _ = rotate_workspace_token(
+                &state,
+                &workspace_id,
+                &container_name,
+                &remaining_connection_ids,
+            )
+            .await;
+        }
     }
 
-    let _ = state
-        .store
-        .record_audit(
-            Some(&workspace_id),
-            Some(&provider_id),
-            "disconnect",
-            true,
-            None,
-        )
-        .await;
+    audit(&state, Some(&workspace_id), Some(&provider_id), "disconnect", true, None).await;
 
     success(
         StatusCode::OK,
@@ -849,6 +1046,10 @@ pub fn router(state: Arc<IntegrationsState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrations::openconnector::fake::FakeOpenConnector;
+    use crate::integrations::store::IntegrationStore;
+    use crate::workspaces::WorkspaceStore;
+    use tracing_test::traced_test;
 
     fn seconds_ago(seconds: u64) -> String {
         let now = std::time::SystemTime::now()
@@ -882,5 +1083,679 @@ mod tests {
     #[test]
     fn workspace_connection_name_is_gateway_generated_never_user_supplied() {
         assert_eq!(workspace_connection_name("abc-123"), "ws-abc-123");
+    }
+
+    // ---- shared test setup ------------------------------------------
+
+    /// Fresh, isolated SQLite pool with every migration applied (both
+    /// `workspace_creations` and `integration_connections`/
+    /// `workspace_runtime_tokens`) — same "leak the tempdir, pool outlives
+    /// it for this short-lived test process" convention as
+    /// `workspaces::test_support::temp_store`.
+    async fn temp_pool() -> sqlx::SqlitePool {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("test.db");
+        std::mem::forget(dir);
+        crate::db::connect(&db_path).await.expect("connect to fresh sqlite db")
+    }
+
+    fn test_token_cipher() -> crate::crypto::TokenCipher {
+        crate::crypto::TokenCipher::new(&[7u8; 32])
+    }
+
+    /// Build an `IntegrationsState` wired to a fresh store + the given
+    /// fake OpenConnector — mirrors `workspaces::test_support::state_with_store`'s
+    /// "launcher is a parameter" reasoning: different tests need
+    /// different `FakeOpenConnector` failure behavior.
+    async fn integrations_state(
+        openconnector: Arc<FakeOpenConnector>,
+    ) -> (Arc<IntegrationsState>, sqlx::SqlitePool) {
+        let pool = temp_pool().await;
+        let state = Arc::new(IntegrationsState {
+            store: IntegrationStore::new(pool.clone()),
+            openconnector,
+            providers: vec![test_provider("github"), test_provider("slack")],
+            workspace_store: WorkspaceStore::new(pool.clone()),
+            http_client: reqwest::Client::new(),
+            token_cipher: test_token_cipher(),
+            mcp_bearer_lockout: Default::default(),
+        });
+        (state, pool)
+    }
+
+    fn test_provider(id: &str) -> Provider {
+        Provider {
+            id: id.to_string(),
+            name: id.to_string(),
+            icon: None,
+            openconnector_service: id.to_string(),
+            description: None,
+            // `Some` (not `None`) so `start_oauth_route`'s
+            // `oauth_not_supported` check does not short-circuit before
+            // ever reaching OpenConnector — every OAuth-path test in this
+            // module needs a provider that actually supports it. The
+            // referenced env vars are never set in this test process, but
+            // `start_oauth_route` itself never calls `oauth_credentials()`
+            // (only `bin/rust_gateway.rs`'s startup wiring does), so that
+            // does not matter here.
+            oauth_client_env: Some(format!("TEST_{}_OAUTH", id.to_uppercase())),
+            allowed_actions: Vec::new(),
+        }
+    }
+
+    /// Create a `Ready` workspace row (with a `container_name`, though it
+    /// is never a real, reachable container — every test here that
+    /// reaches `token_delivery::deliver_token_file` expects that real
+    /// `docker` call to fail, matching Bug 4's "token delivery fails"
+    /// scenario, since this crate has no Docker-free fake for
+    /// `token_delivery` to substitute — see this module's own doc
+    /// comment on `IntegrationsState::workspace_store`).
+    async fn ready_workspace(pool: &sqlx::SqlitePool, workspace_id: &str) -> WorkspaceStore {
+        let store = WorkspaceStore::new(pool.clone());
+        let idempotency_key = format!("key-{workspace_id}");
+        store
+            .begin_creation(&idempotency_key, workspace_id)
+            .await
+            .expect("begin_creation");
+        store
+            .mark_ready(&idempotency_key, "not-a-real-container", 1, 2)
+            .await
+            .expect("mark_ready");
+        store
+    }
+
+    // ---- Bug 1: second connect must not narrow the first provider out ----
+
+    #[tokio::test]
+    async fn connecting_a_second_provider_includes_both_connection_ids_in_the_new_token() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        let workspace_id = "ws-1";
+        ready_workspace(&pool, workspace_id).await;
+
+        // First connect: `finish_connection` will fail at token delivery
+        // (no real container — see `ready_workspace`'s doc comment), but
+        // `create_runtime_token` is called BEFORE delivery, so the fake
+        // still records what it was asked to allow.
+        let github_summary = openconnector::ConnectionSummary {
+            id: "conn-github".to_string(),
+            service: "github".to_string(),
+            connection_name: "ws-ws-1".to_string(),
+            configured: true,
+        };
+        let _ = finish_connection(&state, workspace_id, "github", &github_summary).await;
+
+        // GitHub's row is NOT `Connected` (delivery failed — see Bug 4),
+        // so simulate the invariant Bug 1's fix must not depend on it
+        // being there: manually mark it Connected as if delivery HAD
+        // succeeded, the same state a real successful first connect would
+        // leave behind, then connect Slack.
+        state
+            .store
+            .upsert_connection(
+                "row-github",
+                workspace_id,
+                "github",
+                "ws-ws-1",
+                Some("conn-github"),
+                ConnectionStatus::Connected,
+                Some("ws-ws-1"),
+            )
+            .await
+            .expect("mark github connected");
+
+        let slack_summary = openconnector::ConnectionSummary {
+            id: "conn-slack".to_string(),
+            service: "slack".to_string(),
+            connection_name: "ws-ws-1".to_string(),
+            configured: true,
+        };
+        let _ = finish_connection(&state, workspace_id, "slack", &slack_summary).await;
+
+        let calls = fake.create_runtime_token_calls();
+        assert_eq!(calls.len(), 2, "one create_runtime_token call per connect");
+        let (_, second_call_allowed_ids) = &calls[1];
+        assert!(
+            second_call_allowed_ids.contains(&"conn-github".to_string()),
+            "connecting Slack must not drop GitHub's connection id: {second_call_allowed_ids:?}"
+        );
+        assert!(
+            second_call_allowed_ids.contains(&"conn-slack".to_string()),
+            "connecting Slack must include its own connection id: {second_call_allowed_ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnecting_one_of_two_providers_rotates_the_token_to_the_remaining_one() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        let workspace_id = "ws-2";
+        ready_workspace(&pool, workspace_id).await;
+
+        // Seed both providers as already `Connected` (as if a real
+        // container had made their earlier connects fully succeed) plus
+        // an existing runtime token, so disconnect's narrowing path has
+        // something real to rotate away from.
+        state
+            .store
+            .upsert_connection(
+                "row-github",
+                workspace_id,
+                "github",
+                "ws-ws-2",
+                Some("conn-github"),
+                ConnectionStatus::Connected,
+                Some("ws-ws-2"),
+            )
+            .await
+            .expect("seed github connected");
+        state
+            .store
+            .upsert_connection(
+                "row-slack",
+                workspace_id,
+                "slack",
+                "ws-ws-2",
+                Some("conn-slack"),
+                ConnectionStatus::Connected,
+                Some("ws-ws-2"),
+            )
+            .await
+            .expect("seed slack connected");
+        state
+            .store
+            .upsert_runtime_token(workspace_id, "old-token-id", "hash", "encrypted-bearer")
+            .await
+            .expect("seed existing runtime token");
+
+        let response = disconnect_integration_route(
+            State(state.clone()),
+            Path((workspace_id.to_string(), "slack".to_string())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // A NEW token must have been created scoped to ONLY GitHub's
+        // connection id — not simply left unchanged (the old bug), and
+        // not torn down entirely (GitHub is still connected).
+        let calls = fake.create_runtime_token_calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "disconnecting Slack while GitHub remains must rotate to a new, narrower token"
+        );
+        let (_, allowed_ids) = &calls[0];
+        assert_eq!(allowed_ids, &vec!["conn-github".to_string()]);
+
+        // The old token is revoked only AFTER the new one is delivered
+        // (rotation atomicity — see `rotate_workspace_token`'s own doc
+        // comment). Delivery always fails in this test process (no real
+        // Docker container behind `"not-a-real-container"` — see
+        // `ready_workspace`'s doc comment), so the old token is correctly
+        // NOT revoked here: the atomicity guarantee itself is what this
+        // asserts, not an unrelated skip.
+        assert!(
+            fake.revoke_runtime_token_calls().is_empty(),
+            "must not revoke the old token until the new one is confirmed delivered"
+        );
+    }
+
+    // ---- Bug 2: a bad workspace id must never reach OpenConnector ----
+
+    #[tokio::test]
+    async fn connect_to_unknown_workspace_never_calls_openconnector() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, _pool) = integrations_state(fake.clone()).await;
+
+        let response = connect_integration_route(
+            State(state),
+            Path(("does-not-exist".to_string(), "github".to_string())),
+            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "workspace_not_found");
+        assert!(
+            fake.create_runtime_token_calls().is_empty(),
+            "an unknown workspace must never reach OpenConnector at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_start_on_not_ready_workspace_never_calls_openconnector() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        let workspace_id = "ws-creating";
+        let store = WorkspaceStore::new(pool.clone());
+        store
+            .begin_creation("key-creating", workspace_id)
+            .await
+            .expect("begin_creation");
+
+        let response = start_oauth_route(
+            State(state),
+            Path((workspace_id.to_string(), "github".to_string())),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "workspace_not_ready");
+    }
+
+    #[tokio::test]
+    async fn connect_compensates_by_deleting_the_openconnector_connection_on_post_connect_failure(
+    ) {
+        // `resolve_ready_workspace` requires `Ready`, so the workspace
+        // must be `Ready` to get past `connect_integration_route`'s early
+        // check at all. Once past it, `finish_connection_inner` still
+        // fails — this crate has no Docker-free fake for
+        // `token_delivery`, so delivering into `"not-a-real-container"`
+        // always fails a real `docker exec` — a genuine failure AFTER
+        // `connect_with_api_key` already created something on
+        // OpenConnector's side, exactly the case compensation exists for.
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        let workspace_id = "ws-not-ready-2";
+        ready_workspace(&pool, workspace_id).await;
+
+        let response = connect_integration_route(
+            State(state),
+            Path((workspace_id.to_string(), "github".to_string())),
+            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+        )
+        .await;
+
+        assert_ne!(response.status(), StatusCode::OK);
+        assert_eq!(
+            fake.delete_connection_calls(),
+            vec![("github".to_string(), format!("ws-{workspace_id}"))],
+            "a post-connect failure must compensate by deleting the OpenConnector connection"
+        );
+    }
+
+    /// Read back one `integration_audit` row's `outcome` column for
+    /// `(workspace_id, event)` — most recent first, since some events
+    /// (e.g. `connect_finished`) may be written more than once per test.
+    /// No public `IntegrationStore` read exists for this table (write-only,
+    /// best-effort audit trail — see `record_audit`'s own doc comment), so
+    /// this queries the same underlying pool directly, matching this
+    /// module's existing convention of reaching straight into `sqlx` for
+    /// test-only assertions (see e.g. the `DROP TABLE` calls above).
+    async fn last_audit_outcome(
+        pool: &sqlx::SqlitePool,
+        workspace_id: &str,
+        event: &str,
+    ) -> Option<String> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT outcome FROM integration_audit \
+             WHERE workspace_id = ? AND event = ? \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(workspace_id)
+        .bind(event)
+        .fetch_optional(pool)
+        .await
+        .expect("query integration_audit")
+    }
+
+    // ---- Compensation audit must not lie about its own outcome ----
+
+    #[tokio::test]
+    async fn connect_compensation_failure_is_recorded_as_failure_not_success() {
+        // Same trigger as
+        // `connect_compensates_by_deleting_the_openconnector_connection_on_post_connect_failure`:
+        // a `Ready` workspace whose token delivery always fails (no real
+        // container behind `"not-a-real-container"`), so
+        // `connect_integration_route` reaches its compensation branch.
+        // Here `delete_connection` itself ALSO fails, so the audit row
+        // must honestly say so rather than hardcoding success.
+        let fake = Arc::new(FakeOpenConnector::that_fails_delete_connection());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        let workspace_id = "ws-compensation-fails";
+        ready_workspace(&pool, workspace_id).await;
+
+        let response = connect_integration_route(
+            State(state),
+            Path((workspace_id.to_string(), "github".to_string())),
+            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+        )
+        .await;
+
+        assert_ne!(response.status(), StatusCode::OK);
+        assert_eq!(
+            fake.delete_connection_calls(),
+            vec![("github".to_string(), format!("ws-{workspace_id}"))],
+            "compensation must still attempt delete_connection even though it fails"
+        );
+
+        let outcome = last_audit_outcome(&pool, workspace_id, "connect_compensated")
+            .await
+            .expect("connect_compensated audit row was written");
+        assert_eq!(
+            outcome, "failure",
+            "a failed delete_connection must not be logged as a successful compensation"
+        );
+    }
+
+    // ---- Finding 2: list/disconnect need only existence, not Ready ----
+
+    #[tokio::test]
+    async fn list_integrations_succeeds_on_a_workspace_still_creating() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake).await;
+        let workspace_id = "ws-list-creating";
+        let store = WorkspaceStore::new(pool.clone());
+        store
+            .begin_creation("key-list-creating", workspace_id)
+            .await
+            .expect("begin_creation");
+
+        let response =
+            list_integrations_route(State(state), Path(workspace_id.to_string())).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "viewing the integration list must not require a Ready workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_succeeds_on_a_workspace_that_failed_to_launch() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake).await;
+        let workspace_id = "ws-disconnect-failed";
+        let store = WorkspaceStore::new(pool.clone());
+        store
+            .begin_creation("key-disconnect-failed", workspace_id)
+            .await
+            .expect("begin_creation");
+        store
+            .mark_failed("key-disconnect-failed")
+            .await
+            .expect("mark_failed");
+
+        let response = disconnect_integration_route(
+            State(state),
+            Path((workspace_id.to_string(), "github".to_string())),
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "disconnecting a provider must not require a Ready workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_integrations_still_404s_on_an_unknown_workspace() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, _pool) = integrations_state(fake).await;
+
+        let response =
+            list_integrations_route(State(state), Path("does-not-exist".to_string())).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "workspace_not_found");
+    }
+
+    #[tokio::test]
+    async fn disconnect_still_404s_on_an_unknown_workspace() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, _pool) = integrations_state(fake).await;
+
+        let response = disconnect_integration_route(
+            State(state),
+            Path(("does-not-exist".to_string(), "github".to_string())),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "workspace_not_found");
+    }
+
+    // ---- Bug 3: start_oauth_route must not leave a stuck pending row ----
+
+    #[tokio::test]
+    async fn oauth_start_failure_leaves_no_pending_row() {
+        let fake = Arc::new(FakeOpenConnector::that_fails_create_oauth_authorization());
+        let (state, pool) = integrations_state(fake).await;
+        let workspace_id = "ws-oauth-fail";
+        ready_workspace(&pool, workspace_id).await;
+
+        let response = start_oauth_route(
+            State(state.clone()),
+            Path((workspace_id.to_string(), "github".to_string())),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let connection = state
+            .store
+            .find_connection(workspace_id, "github")
+            .await
+            .expect("find_connection succeeds");
+        assert!(
+            connection.is_none(),
+            "a failed create_oauth_authorization must not leave any row behind, got {connection:?}"
+        );
+    }
+
+    // ---- Bug 4: Connected must never be written before the token exists ----
+
+    #[tokio::test]
+    async fn connection_row_is_not_connected_when_token_delivery_fails() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake).await;
+        let workspace_id = "ws-4";
+        ready_workspace(&pool, workspace_id).await;
+
+        let summary = openconnector::ConnectionSummary {
+            id: "conn-1".to_string(),
+            service: "github".to_string(),
+            connection_name: "ws-ws-4".to_string(),
+            configured: true,
+        };
+        let result = finish_connection(&state, workspace_id, "github", &summary).await;
+        assert!(result.is_err(), "token delivery must fail (no real container in tests)");
+
+        let connection = state
+            .store
+            .find_connection(workspace_id, "github")
+            .await
+            .expect("find_connection succeeds")
+            .expect("row was written (mark_error path)");
+        assert_ne!(
+            connection.status,
+            ConnectionStatus::Connected,
+            "must never be left Connected when the token was never actually delivered"
+        );
+    }
+
+    // ---- Bug 5: a DB error on the previous-token lookup must propagate ----
+
+    /// Minimal store double for Bug 5 only: everything else in this
+    /// module uses the real `IntegrationStore` against a real temp
+    /// SQLite pool, but propagating a genuine `sqlx::Error` from
+    /// `find_runtime_token` needs a store that can be told to fail that
+    /// one call on demand — dropping the underlying SQLite file/table is
+    /// the simplest way to force a REAL `sqlx::Error` without inventing a
+    /// second store trait for this one bug.
+    #[tokio::test]
+    async fn rotate_workspace_token_propagates_a_db_error_from_the_previous_token_lookup() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        let workspace_id = "ws-5";
+        ready_workspace(&pool, workspace_id).await;
+
+        // Force a real DB error on the next `find_runtime_token` call by
+        // dropping the table it reads from — any query against it now
+        // returns `Err`, never silently `Ok(None)`.
+        sqlx::query("DROP TABLE workspace_runtime_tokens")
+            .execute(&pool)
+            .await
+            .expect("drop table");
+
+        let result = rotate_workspace_token(
+            &state,
+            workspace_id,
+            "not-a-real-container",
+            &["conn-1".to_string()],
+        )
+        .await;
+
+        let response = result.expect_err("a DB error must propagate, not be swallowed as None");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            fake.create_runtime_token_calls().is_empty(),
+            "must fail BEFORE ever creating a new token — a real previous token must still be \
+             revocable, not orphaned by a token this call issued anyway"
+        );
+    }
+
+    /// Same DB-error propagation, but through `disconnect_integration_route`'s
+    /// own lookup (the narrowing path), not `rotate_workspace_token`
+    /// directly — the second call site Bug 5 named explicitly.
+    #[tokio::test]
+    async fn disconnect_narrowing_path_propagates_a_db_error_from_the_previous_token_lookup() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake.clone()).await;
+        let workspace_id = "ws-6";
+        ready_workspace(&pool, workspace_id).await;
+
+        state
+            .store
+            .upsert_connection(
+                "row-github",
+                workspace_id,
+                "github",
+                "ws-ws-6",
+                Some("conn-github"),
+                ConnectionStatus::Connected,
+                Some("ws-ws-6"),
+            )
+            .await
+            .expect("seed github connected");
+        state
+            .store
+            .upsert_connection(
+                "row-slack",
+                workspace_id,
+                "slack",
+                "ws-ws-6",
+                Some("conn-slack"),
+                ConnectionStatus::Connected,
+                Some("ws-ws-6"),
+            )
+            .await
+            .expect("seed slack connected");
+
+        sqlx::query("DROP TABLE workspace_runtime_tokens")
+            .execute(&pool)
+            .await
+            .expect("drop table");
+
+        // Disconnecting Slack (GitHub remains) takes the narrowing path,
+        // which calls `rotate_workspace_token` — best-effort there (see
+        // its call site's own comment), so the HTTP response itself still
+        // succeeds; what matters for Bug 5 is that no new token was
+        // created off of a swallowed DB error.
+        let response = disconnect_integration_route(
+            State(state.clone()),
+            Path((workspace_id.to_string(), "slack".to_string())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            fake.create_runtime_token_calls().is_empty(),
+            "a DB error on the previous-token lookup must stop rotation before a new token is \
+             ever created"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_workspace_token_surfaces_a_create_runtime_token_failure() {
+        let fake = Arc::new(FakeOpenConnector::that_fails_create_runtime_token());
+        let (state, pool) = integrations_state(fake).await;
+        let workspace_id = "ws-7";
+        ready_workspace(&pool, workspace_id).await;
+
+        let result = rotate_workspace_token(
+            &state,
+            workspace_id,
+            "not-a-real-container",
+            &["conn-1".to_string()],
+        )
+        .await;
+
+        let response = result.expect_err("must surface the OpenConnector failure");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    async fn body_json(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // ---- Issue 2: a raw upstream error body must never reach the caller ----
+
+    #[tokio::test]
+    async fn connect_failure_response_never_contains_the_raw_openconnector_body() {
+        let fake = Arc::new(FakeOpenConnector::that_fails_connect_with_api_key(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "SECRET-MARKER-XYZ",
+        ));
+        let (state, pool) = integrations_state(fake).await;
+        let workspace_id = "ws-leak-check";
+        ready_workspace(&pool, workspace_id).await;
+
+        let response = connect_integration_route(
+            State(state),
+            Path((workspace_id.to_string(), "github".to_string())),
+            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body_text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !body_text.contains("SECRET-MARKER-XYZ"),
+            "the raw upstream error body must never reach the caller, got: {body_text}"
+        );
+    }
+
+    // ---- Issue 3: an audit write failure must be observable, not silent ----
+
+    /// Same "drop the table to force a real `sqlx::Error`" convention as
+    /// Bug 5's tests above (`rotate_workspace_token_propagates_a_db_error_from_the_previous_token_lookup`)
+    /// — forces `record_audit` itself to fail, and asserts the failure is
+    /// actually logged (`tracing::error!`) via `tracing-test`'s log
+    /// capture, not silently swallowed the way `let _ = ...` used to.
+    #[traced_test]
+    #[tokio::test]
+    async fn audit_write_failure_is_logged_not_silently_swallowed() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, pool) = integrations_state(fake).await;
+
+        sqlx::query("DROP TABLE integration_audit")
+            .execute(&pool)
+            .await
+            .expect("drop table");
+
+        audit(&state, Some("ws-audit-fail"), None, "test_event", true, None).await;
+
+        assert!(
+            logs_contain("audit write failed"),
+            "a failed audit write must be logged, not silently dropped"
+        );
     }
 }

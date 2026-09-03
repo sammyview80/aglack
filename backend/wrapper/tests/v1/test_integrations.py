@@ -230,6 +230,42 @@ class TestMcpServer:
 
 
     @pytest.mark.anyio
+    async def test_execute_action_converts_integrations_error_to_clean_envelope(
+        self, server_url, monkeypatch
+    ) -> None:
+        """Bug WR-03 (part 2): once `relay_mcp_call` raises `IntegrationsError`
+        (Bug WR-01's fix — any non-2xx gateway response), the tool call must
+        not surface an opaque/uncaught failure through FastMCP — it must
+        return the same `{"ok": false, "error": {"code", "message"}}` shape
+        `SKILL.md` teaches agents to expect."""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        from hermes_webui_wrapper.features.integrations.service import IntegrationsError
+
+        def fake_relay_mcp_call(body):
+            raise IntegrationsError("tool_not_allowed", "action not permitted", 403)
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.integrations.mcp_server.relay_mcp_call",
+            fake_relay_mcp_call,
+        )
+
+        async with streamablehttp_client(server_url) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "execute_action",
+                    {"action_id": "github.get_current_user", "input": {}},
+                )
+
+        assert result.structuredContent == {
+            "ok": False,
+            "error": {"code": "tool_not_allowed", "message": "action not permitted"},
+        }
+        assert not result.isError
+
+    @pytest.mark.anyio
     async def test_find_action_merges_search_and_guide_for_top_candidates(
         self, server_url, monkeypatch
     ) -> None:
@@ -295,6 +331,57 @@ class TestMcpServer:
         assert captured_bodies[1]["params"]["name"] == "get_action_guide"
 
     @pytest.mark.anyio
+    async def test_find_action_treats_guide_result_missing_ok_key_as_failure(
+        self, server_url, monkeypatch
+    ) -> None:
+        """Bug WR-03 (part 1): a `get_action_guide` result with NO `ok` key
+        at all (some error shape other than `{"ok": False, ...}`) must be
+        treated as a guide failure — never defaulted to success just
+        because the key is absent."""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        def fake_relay_mcp_call(body):
+            tool_name = body["params"]["name"]
+            if tool_name == "search_actions":
+                return {
+                    "result": {
+                        "structuredContent": {
+                            "ok": True,
+                            "data": [
+                                {
+                                    "id": "github.search_repositories",
+                                    "name": "Search repositories",
+                                    "description": "Search GitHub repositories.",
+                                }
+                            ],
+                        }
+                    }
+                }
+            assert tool_name == "get_action_guide"
+            # No "ok" key at all — neither True nor False.
+            return {"result": {"structuredContent": {"weird_shape": True}}}
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.integrations.mcp_server.relay_mcp_call",
+            fake_relay_mcp_call,
+        )
+
+        async with streamablehttp_client(server_url) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "find_action", {"service": "github", "query": "search repos"}
+                )
+
+        [action] = result.structuredContent["data"]
+        assert action["input_schema"] is None
+        # guide_result has no "error" key either — guide_error surfaces
+        # whatever's there (None here), the key assertion is input_schema
+        # being None instead of the raw {"weird_shape": True} dict.
+        assert action["guide_error"] is None
+
+    @pytest.mark.anyio
     async def test_find_action_returns_clean_empty_result_on_zero_matches(
         self, server_url, monkeypatch
     ) -> None:
@@ -325,6 +412,108 @@ class TestMcpServer:
         assert result.structuredContent == {"ok": True, "data": []}
         assert len(captured_bodies) == 1
         assert captured_bodies[0]["params"]["name"] == "search_actions"
+
+
+class TestRelayMcpCallStatusCodeHandling:
+    """Bug WR-01: `relay_mcp_call` must raise `IntegrationsError` for ANY
+    non-2xx gateway response, mapping the gateway's own `{"ok": false,
+    "error": {"code", "message"}}` envelope when the body parses as that
+    shape, and falling back to a generic code/the raw status code
+    otherwise. `httpx.post` (the genuinely external call to the gateway)
+    is mocked here — everything else (token file, env resolvers) is real,
+    matching this module's own convention.
+    """
+
+    @pytest.fixture()
+    def _wired_relay(self, tmp_path, monkeypatch):
+        """Wires every resolver `relay_mcp_call` needs so the only unknown
+        left is the gateway's own HTTP response, which each test mocks."""
+        token_path = tmp_path / "integrations.token"
+        token_path.write_text("test-bearer", encoding="utf-8")
+        monkeypatch.setenv("INTEGRATIONS_TOKEN_PATH", str(token_path))
+        monkeypatch.setenv("GATEWAY_INTERNAL_URL", "http://gateway.internal.test")
+        monkeypatch.setenv("INTEGRATIONS_WORKSPACE_ID", "ws-test")
+
+    @pytest.mark.parametrize(
+        "status_code,json_body,expected_code,expected_message",
+        [
+            (
+                401,
+                {"ok": False, "error": {"code": "invalid_bearer", "message": "bad token"}},
+                "invalid_bearer",
+                "bad token",
+            ),
+            (
+                403,
+                {"ok": False, "error": {"code": "tool_not_allowed", "message": "nope"}},
+                "tool_not_allowed",
+                "nope",
+            ),
+            (429, None, "integrations_gateway_error", "Gateway returned HTTP 429"),
+            (502, None, "integrations_gateway_error", "Gateway returned HTTP 502"),
+            (500, None, "integrations_gateway_error", "Gateway returned HTTP 500"),
+            (
+                400,
+                {"error": "just a string not a dict"},
+                "integrations_gateway_error",
+                "Gateway returned HTTP 400",
+            ),
+        ],
+    )
+    def test_non_2xx_raises_integrations_error_with_mapped_or_fallback_code(
+        self,
+        _wired_relay,
+        monkeypatch,
+        status_code,
+        json_body,
+        expected_code,
+        expected_message,
+    ):
+        import httpx
+
+        from hermes_webui_wrapper.features.integrations.service import (
+            IntegrationsError,
+            relay_mcp_call,
+        )
+
+        def fake_post(url, json, headers, timeout):
+            if json_body is not None:
+                content = __import__("json").dumps(json_body).encode()
+                return httpx.Response(status_code, content=content, request=httpx.Request("POST", url))
+            # Non-JSON body — e.g. an HTML error page from a proxy, or an
+            # empty body for a bare 429/502.
+            return httpx.Response(
+                status_code, content=b"<html>error</html>", request=httpx.Request("POST", url)
+            )
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.integrations.service.httpx.post", fake_post
+        )
+
+        with pytest.raises(IntegrationsError) as excinfo:
+            relay_mcp_call({"jsonrpc": "2.0", "id": 1, "method": "tools/call"})
+
+        assert excinfo.value.code == expected_code
+        assert excinfo.value.message == expected_message
+        assert excinfo.value.status_code == status_code
+
+    def test_2xx_response_still_returns_parsed_json_unaffected(
+        self, _wired_relay, monkeypatch
+    ):
+        import httpx
+
+        from hermes_webui_wrapper.features.integrations.service import relay_mcp_call
+
+        def fake_post(url, json, headers, timeout):
+            content = b'{"result": {"structuredContent": {"ok": true}}}'
+            return httpx.Response(200, content=content, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.integrations.service.httpx.post", fake_post
+        )
+
+        result = relay_mcp_call({"jsonrpc": "2.0", "id": 1, "method": "tools/call"})
+        assert result == {"result": {"structuredContent": {"ok": True}}}
 
 
 def test_reload_reports_a_clean_error_when_mcp_runtime_is_unavailable(

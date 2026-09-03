@@ -59,28 +59,52 @@ async fn main() {
         }
     }
 
+    // `GATEWAY_LOG_FORMAT` is read directly here via `std::env::var`
+    // rather than through `config.rs` (a deliberate, narrow deviation
+    // from AGENTS.md's "config.rs is the only place env is read" rule):
+    // the log format has to be decided BEFORE `tracing_subscriber::init()`
+    // runs, and that in turn has to happen before any other startup step
+    // so early failures are logged too — the same ordering constraint
+    // `--hash-password` above already has for the same reason (it also
+    // runs before `load_dotenv_files()`/config loading). Piping this one
+    // bootstrap-time value through `GatewayConfig` would mean either
+    // loading config twice or moving subscriber init after config
+    // loading, silently losing every log line config loading itself
+    // could emit. Every OTHER env var in this process still goes through
+    // `config.rs` exactly as before.
+    let json_logs = std::env::var("GATEWAY_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    if json_logs {
+        tracing_subscriber::fmt().json().with_env_filter(env_filter).init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    }
+
     load_dotenv_files();
 
     let config = GatewayConfig::from_env().unwrap_or_else(|err| {
-        eprintln!("rust_gateway: invalid configuration: {err}");
+        tracing::error!("invalid configuration: {err}");
         std::process::exit(1);
     });
     let workspaces_config = WorkspacesConfig::from_env().unwrap_or_else(|err| {
-        eprintln!("rust_gateway: invalid workspaces configuration: {err}");
+        tracing::error!("invalid workspaces configuration: {err}");
         std::process::exit(1);
     });
 
     let proxy_state = Arc::new(ProxyState {
-        http_client: reqwest::Client::new(),
+        http_client: rust_gateway::shared::http::json_client(),
         backend_addr: config.backend_addr(),
     });
 
     let db_pool = rust_gateway::db::connect(&workspaces_config.database_path)
         .await
         .unwrap_or_else(|err| {
-            eprintln!(
-                "rust_gateway: failed to open database at {}: {err}",
-                workspaces_config.database_path.display()
+            tracing::error!(
+                path = %workspaces_config.database_path.display(),
+                "failed to open database: {err}"
             );
             std::process::exit(1);
         });
@@ -91,24 +115,33 @@ async fn main() {
     // existing "one shared SQLite database, feature-specific tables"
     // convention (see db/mod.rs's own doc comment).
     let integrations_config = IntegrationsConfig::from_env().unwrap_or_else(|err| {
-        eprintln!("rust_gateway: invalid integrations configuration: {err}");
+        tracing::error!("invalid integrations configuration: {err}");
         std::process::exit(1);
     });
     let providers = load_providers(&integrations_config.providers_path).unwrap_or_else(|err| {
-        eprintln!("rust_gateway: invalid providers registry: {err}");
+        tracing::error!("invalid providers registry: {err}");
         std::process::exit(1);
     });
     let token_cipher = rust_gateway::crypto::TokenCipher::new(&integrations_config.token_encryption_key);
+    let openconnector_client = Arc::new(OpenConnectorClient::new(
+        integrations_config.openconnector_url,
+        integrations_config.openconnector_admin_token,
+    ));
     let integrations_state = Arc::new(IntegrationsState {
         store: IntegrationStore::new(db_pool.clone()),
-        openconnector: OpenConnectorClient::new(
-            integrations_config.openconnector_url,
-            integrations_config.openconnector_admin_token,
-        ),
+        openconnector: openconnector_client.clone(),
         providers,
         workspace_store: WorkspaceStore::new(db_pool.clone()),
-        http_client: reqwest::Client::new(),
+        // `stream_client()`, not `json_client()`: this client feeds
+        // `forward_to` for `put_integration_agent_route`/
+        // `list_integration_agents_route`/`oauth_callback_route`, which
+        // relay a workspace wrapper's/OpenConnector's response body via
+        // `Body::from_stream` — a fixed overall `.timeout()` would cut off
+        // a response that legitimately takes longer than that to finish
+        // streaming, not just one that never starts answering.
+        http_client: rust_gateway::shared::http::stream_client(),
         token_cipher,
+        mcp_bearer_lockout: Default::default(),
     });
 
     // Push OAuth client credentials to OpenConnector for every provider
@@ -122,21 +155,20 @@ async fn main() {
     // same as any other misconfiguration reported at request time.
     for provider in &integrations_state.providers {
         if let Some((client_id, client_secret)) = provider.oauth_credentials() {
-            if let Err(err) = integrations_state
-                .openconnector
+            if let Err(err) = openconnector_client
                 .upsert_oauth_config(&provider.openconnector_service, &client_id, &client_secret)
                 .await
             {
-                eprintln!(
-                    "rust_gateway: failed to register OAuth config for {}: {err}",
-                    provider.id
+                tracing::error!(
+                    provider = %provider.id,
+                    "failed to register OAuth config: {err}"
                 );
             }
         }
     }
 
     let auth_config = GatewayAuthConfig::from_env().unwrap_or_else(|err| {
-        eprintln!("rust_gateway: invalid auth configuration: {err}");
+        tracing::error!("invalid auth configuration: {err}");
         std::process::exit(1);
     });
     let auth_state = Arc::new(AuthState::new(
@@ -154,7 +186,12 @@ async fn main() {
             config.frontend_origin.clone(),
             config.workspace_gateway_url.clone(),
         )),
-        http_client: reqwest::Client::new(),
+        // `stream_client()`: this client also backs the chat/desktop/
+        // hermes-webui/onboarding proxies' `forward_to` calls, which
+        // relay a workspace's real, potentially long-lived (SSE) response
+        // body straight through — see `integrations_state`'s own comment
+        // above for why a bounded `.timeout()` client is wrong here.
+        http_client: rust_gateway::shared::http::stream_client(),
     });
 
     // Background watcher: if the Docker daemon itself goes down (e.g.
@@ -235,12 +272,12 @@ async fn main() {
         .await
         .unwrap_or_else(|err| panic!("failed to bind {listen_addr}: {err}"));
 
-    println!("rust_gateway listening on http://{listen_addr}");
-    println!(
+    tracing::info!("rust_gateway listening on http://{listen_addr}");
+    tracing::info!(
         "forwarding every request to http://{}",
         config.backend_addr()
     );
-    // Printed on every startup, not just on error: a CORS rejection is
+    // Logged on every startup, not just on error: a CORS rejection is
     // silent on the server side (the browser blocks it, this process
     // never logs anything wrong) and looks identical to a real gateway
     // bug from the browser's console alone. Having the exact allowed
@@ -257,13 +294,13 @@ async fn main() {
             .iter()
             .map(|v| v.to_str().unwrap_or("<invalid>").to_string())
             .collect();
-        println!(
+        tracing::info!(
             "CORS: only {} may make browser (fetch/XHR) requests here — \
              if your frontend is open at a different origin, this is why chat/onboarding calls fail with a CORS error",
             allowed.join(" or ")
         );
     } else {
-        println!("CORS: disabled");
+        tracing::info!("CORS: disabled");
     }
 
     axum::serve(listener, app)

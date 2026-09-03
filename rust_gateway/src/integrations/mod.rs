@@ -23,7 +23,7 @@ pub mod route;
 mod store;
 pub mod token_delivery;
 
-pub use openconnector::OpenConnectorClient;
+pub use openconnector::{OpenConnectorApi, OpenConnectorClient};
 pub use providers::{load_providers, Provider, ProvidersError};
 pub use route::{
     connect_integration_route, disconnect_integration_route, integration_mcp_route,

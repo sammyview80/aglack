@@ -1,0 +1,50 @@
+# Control-plane compose for this repo's gateway.
+#
+# OpenConnector is NOT run by this repo. It is a remote, already-running,
+# third-party-hosted instance operated separately — this gateway reaches
+# it over the regular internet via OPENCONNECTOR_URL/OPENCONNECTOR_ADMIN_TOKEN
+# (see ../rust_gateway/.env.example). This compose file has no opinion on
+# how that remote instance itself is secured or run; it only starts and
+# configures the gateway that talks to it.
+#
+#   cp .env.example .env      # fill in real values, see comments below
+#   docker compose -f deploy/docker-compose.yml up -d
+services:
+  gateway:
+    build:
+      # Context is the repo root (`deploy/` -> `..` -> `revamp/`), NOT
+      # `../rust_gateway` — rust_gateway/Dockerfile's `COPY
+      # backend/integrations/providers.yaml ./providers.yaml` needs
+      # `backend/` as a sibling in the build context, which a
+      # rust_gateway-scoped context would not include. Confirmed live:
+      # `docker compose build gateway` fails at that COPY step with the
+      # narrower context.
+      context: ..
+      dockerfile: rust_gateway/Dockerfile
+    environment:
+      OPENCONNECTOR_URL: ${OPENCONNECTOR_URL}
+      OPENCONNECTOR_ADMIN_TOKEN: ${OPENCONNECTOR_ADMIN_TOKEN}
+      GATEWAY_TOKEN_ENCRYPTION_KEY: ${GATEWAY_TOKEN_ENCRYPTION_KEY}
+      GATEWAY_ADMIN_PASSWORD_HASH: ${GATEWAY_ADMIN_PASSWORD_HASH}
+      GATEWAY_HOST: ${GATEWAY_HOST}
+      GATEWAY_PORT: ${GATEWAY_PORT}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
+      GATEWAY_BACKEND_HOST: ${GATEWAY_BACKEND_HOST}
+      GATEWAY_BACKEND_PORT: ${GATEWAY_BACKEND_PORT}
+      INTEGRATIONS_PROVIDERS_PATH: ${INTEGRATIONS_PROVIDERS_PATH}
+      WORKSPACE_IMAGE_TAG: ${WORKSPACE_IMAGE_TAG}
+      WORKSPACE_DEFAULT_PATH: ${WORKSPACE_DEFAULT_PATH}
+      WORKSPACE_GATEWAY_URL: ${WORKSPACE_GATEWAY_URL}
+      DATABASE_URL: ${DATABASE_URL}
+    ports:
+      # Gateway's own port stays published to the host, unchanged from
+      # today's dev workflow.
+      - "${GATEWAY_PORT}:${GATEWAY_PORT}"
+    volumes:
+      # rust_gateway's workspaces feature shells out to the `docker` CLI to
+      # create/start/inspect workspace containers (see
+      # rust_gateway/src/workspaces/container/docker_cli.rs, docker_launcher.rs)
+      # — it needs the host's Docker socket to orchestrate sibling
+      # containers, not just its own filesystem.
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped

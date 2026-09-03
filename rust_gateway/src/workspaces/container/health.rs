@@ -19,7 +19,12 @@ pub(crate) async fn wait_for_wrapper_ready(
     timeout: Duration,
 ) -> Result<(), super::super::CreateWorkspaceError> {
     let health_url = format!("http://127.0.0.1:{wrapper_port}/api/wrapper/v1/health");
-    let client = reqwest::Client::new();
+    // `json_client()`, not a bare `reqwest::Client::new()`: without a
+    // per-request timeout, one hung `send()` (the wrapper accepting the
+    // TCP connection but never answering) can itself outlast this
+    // function's own `timeout`/`deadline` loop below, since the deadline
+    // is only checked BETWEEN calls, never during one.
+    let client = crate::shared::http::json_client();
     let deadline = tokio::time::Instant::now() + timeout;
     let poll_interval = Duration::from_millis(500);
 
@@ -57,7 +62,8 @@ pub(crate) async fn wait_for_desktop_ready(
         "http://127.0.0.1:{desktop_port}{}",
         desktop_subpath(workspace_id)
     );
-    let client = reqwest::Client::new();
+    // See `wait_for_wrapper_ready`'s identical comment above.
+    let client = crate::shared::http::json_client();
     let deadline = tokio::time::Instant::now() + timeout;
     let poll_interval = Duration::from_millis(500);
 

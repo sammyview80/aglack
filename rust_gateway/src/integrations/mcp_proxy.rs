@@ -28,9 +28,13 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use dashmap::DashMap;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
 
+use super::route::audit;
 use super::IntegrationsState;
 use crate::response::error;
 
@@ -86,6 +90,152 @@ const ALLOWED_TOOLS: &[&str] = &[
 /// doc comment for why `auth::route` needed the same primitive).
 pub use crate::crypto::sha256_hex;
 
+/// `/workspaces/:id/mcp` is session-exempt (`auth/middleware.rs`) — a
+/// workspace container's own bearer is the only gate, and anything that
+/// can reach this gateway's port can send unlimited guesses at it. This
+/// mirrors `auth::route`'s own login lockout (`LoginAttempts` /
+/// `MAX_FAILURES_PER_WINDOW` / `LOCKOUT_WINDOW`) — same threshold (10
+/// failures) and window (5 minutes) for consistency — but keyed per
+/// workspace id via `DashMap` rather than one global `Mutex`, since a
+/// bad guess against one workspace must not lock out every other one.
+const MAX_BEARER_FAILURES_PER_WINDOW: u32 = 10;
+const BEARER_LOCKOUT_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// How often a repeated `mcp_proxy_invalid_bearer` audit row is written
+/// for the SAME workspace while it keeps failing — without this, the
+/// exact flood this lockout throttles at the HTTP layer would still
+/// unboundedly grow `integration_audit` one row per rejected guess.
+const INVALID_BEARER_AUDIT_INTERVAL: Duration = Duration::from_secs(60);
+
+struct WorkspaceBearerFailures {
+    count: u32,
+    window_start: Instant,
+    last_audited: Option<Instant>,
+}
+
+impl Default for WorkspaceBearerFailures {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            window_start: Instant::now(),
+            last_audited: None,
+        }
+    }
+}
+
+/// Per-workspace failure tracker for the MCP bearer check — see the
+/// module-level doc comment above for why this exists and what it
+/// mirrors. Lives on `IntegrationsState` (constructed once at process
+/// start, `Default` for tests) so every request task shares the same map.
+#[derive(Default)]
+pub struct McpBearerLockout {
+    workspaces: DashMap<String, WorkspaceBearerFailures>,
+}
+
+/// Outcome of a lockout check: whether to short-circuit with 429, and
+/// (only when NOT locked out) whether this particular call should also
+/// write an audit row once it goes on to fail — computed up front so the
+/// lock is only held for one quick, synchronous critical section, never
+/// across an `.await`.
+enum LockoutDecision {
+    Locked,
+    Allowed { should_audit_on_failure: bool },
+}
+
+impl McpBearerLockout {
+    /// Checked BEFORE `find_runtime_token`/`sha256_hex` — a workspace
+    /// already in lockout must cost this process nothing beyond a map
+    /// lookup, never a DB read or a hash.
+    fn check(&self, workspace_id: &str) -> LockoutDecision {
+        let mut entry = self.workspaces.entry(workspace_id.to_string()).or_default();
+        if entry.window_start.elapsed() > BEARER_LOCKOUT_WINDOW {
+            *entry = WorkspaceBearerFailures::default();
+        }
+        if entry.count >= MAX_BEARER_FAILURES_PER_WINDOW {
+            return LockoutDecision::Locked;
+        }
+        // Audit at most once per `INVALID_BEARER_AUDIT_INTERVAL` for this
+        // workspace, decided now (not after the failure) so the decision
+        // and the state update happen in the same critical section.
+        let should_audit_on_failure = match entry.last_audited {
+            None => true,
+            Some(last) => last.elapsed() >= INVALID_BEARER_AUDIT_INTERVAL,
+        };
+        LockoutDecision::Allowed { should_audit_on_failure }
+    }
+
+    /// Record one failed bearer check. Bumps the failure count, and marks
+    /// "just audited" when `did_audit` (the caller actually wrote the
+    /// audit row `check`'s `should_audit_on_failure` told it to).
+    fn record_failure(&self, workspace_id: &str, did_audit: bool) {
+        let mut entry = self.workspaces.entry(workspace_id.to_string()).or_default();
+        entry.count += 1;
+        if did_audit {
+            entry.last_audited = Some(Instant::now());
+        }
+    }
+
+    /// A legitimate request after some failures must not stay throttled —
+    /// mirrors `auth::route::record_login_success` resetting
+    /// `LoginAttempts` back to `Default`.
+    fn record_success(&self, workspace_id: &str) {
+        self.workspaces
+            .insert(workspace_id.to_string(), WorkspaceBearerFailures::default());
+    }
+}
+
+/// Cheap shape check, rejected BEFORE `sha256_hex`/any DB read — see
+/// `IntegrationsState::mcp_bearer_lockout`'s own doc comment for why this
+/// runs first. OpenConnector's own runtime-token bearer format is not
+/// documented anywhere in this crate (`RuntimeToken.bearer` is just an
+/// opaque `String` OpenConnector hands back — see `openconnector.rs`), so
+/// this is a conservative sanity bound, not the real format: reject
+/// anything too short to plausibly be a real high-entropy bearer (under
+/// 20 chars) or implausibly long for one (over 512 chars — generous
+/// headroom past any realistic token/JWT length), rather than inventing a
+/// precise number the real format doesn't document.
+const MIN_BEARER_LEN: usize = 20;
+const MAX_BEARER_LEN: usize = 512;
+
+fn bearer_is_plausibly_shaped(bearer: &str) -> bool {
+    (MIN_BEARER_LEN..=MAX_BEARER_LEN).contains(&bearer.len())
+}
+
+/// Constant-time comparison of two sha256 hex digests — decodes both to
+/// raw bytes first (comparing the hex STRINGS directly would still leak
+/// timing tied to the first differing hex character, finer-grained than
+/// but still related to the underlying byte differences) then uses
+/// `subtle::ConstantTimeEq` on the byte slices. A hex-decode failure on
+/// either side (should not happen — `stored_hash` is always this
+/// gateway's own `sha256_hex` output, and `computed_hash` always is too)
+/// fails the check rather than panicking.
+fn hashes_match_constant_time(computed_hash: &str, stored_hash: &str) -> bool {
+    let (Some(computed), Some(stored)) =
+        (decode_sha256_hex(computed_hash), decode_sha256_hex(stored_hash))
+    else {
+        return false;
+    };
+    computed.ct_eq(&stored).into()
+}
+
+/// Decodes a lowercase sha256 hex digest (`crypto::sha256_hex`'s exact
+/// output shape: 64 hex chars) into its 32 raw bytes. `None` on anything
+/// malformed rather than panicking — a hex-decode failure must fail the
+/// auth check, not crash the process.
+fn decode_sha256_hex(hex: &str) -> Option<[u8; 32]> {
+    let hex = hex.as_bytes();
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let hi = (hex[i * 2] as char).to_digit(16)?;
+        let lo = (hex[i * 2 + 1] as char).to_digit(16)?;
+        *byte = ((hi << 4) | lo) as u8;
+    }
+    Some(out)
+}
+
 /// `POST /workspaces/:id/mcp`
 pub async fn integration_mcp_route(
     State(state): State<Arc<IntegrationsState>>,
@@ -104,9 +254,39 @@ pub async fn integration_mcp_route(
         }
     };
 
+    // Cheapest possible rejection first: an implausibly-shaped bearer
+    // never even reaches the DB read or a hash — see
+    // `bearer_is_plausibly_shaped`'s own doc comment.
+    if !bearer_is_plausibly_shaped(&bearer) {
+        return error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_bearer",
+            "Bearer token does not match this workspace's current token.",
+        );
+    }
+
+    // Per-workspace lockout, checked BEFORE the DB read/hash — a
+    // workspace already flooding this route with wrong guesses must cost
+    // this process nothing beyond a map lookup. See `McpBearerLockout`'s
+    // own doc comment for the threshold/window (mirrors `auth::route`'s
+    // login lockout).
+    let should_audit_on_failure = match state.mcp_bearer_lockout.check(&workspace_id) {
+        LockoutDecision::Locked => {
+            return error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_attempts",
+                "Too many failed bearer attempts for this workspace. Try again later.",
+            )
+        }
+        LockoutDecision::Allowed { should_audit_on_failure } => should_audit_on_failure,
+    };
+
     let token_record = match state.store.find_runtime_token(&workspace_id).await {
         Ok(Some(record)) => record,
         Ok(None) => {
+            state
+                .mcp_bearer_lockout
+                .record_failure(&workspace_id, false);
             return error(
                 StatusCode::UNAUTHORIZED,
                 "unknown_workspace_token",
@@ -122,33 +302,29 @@ pub async fn integration_mcp_route(
         }
     };
 
-    // Constant-time-in-spirit: comparing hashes rather than raw bearers
-    // means a timing side channel would only ever leak information about
-    // a SHA-256 digest, not the credential itself. A dedicated
-    // constant-time compare is worth adding before this handles real
-    // traffic; noted rather than silently assumed sufficient.
-    if sha256_hex(&bearer) != token_record.token_hash {
+    if !hashes_match_constant_time(&sha256_hex(&bearer), &token_record.token_hash) {
         // The security-relevant audit event in this whole route: a bearer
         // that doesn't match ITS OWN workspace's stored hash is exactly
         // what a cross-tenant attempt (or a stale bearer post-rotation)
         // looks like. Never logs the bearer itself, only that this
-        // workspace saw a rejected attempt.
-        let _ = state
-            .store
-            .record_audit(
-                Some(&workspace_id),
-                None,
-                "mcp_proxy_invalid_bearer",
-                false,
-                None,
-            )
-            .await;
+        // workspace saw a rejected attempt. Rate-limited to roughly once
+        // per minute per workspace (`should_audit_on_failure`, decided by
+        // the lockout above) so a flood of guesses cannot also flood
+        // `integration_audit` — the exact attack this lockout mitigates.
+        if should_audit_on_failure {
+            audit(&state, Some(&workspace_id), None, "mcp_proxy_invalid_bearer", false, None)
+                .await;
+        }
+        state
+            .mcp_bearer_lockout
+            .record_failure(&workspace_id, should_audit_on_failure);
         return error(
             StatusCode::UNAUTHORIZED,
             "invalid_bearer",
             "Bearer token does not match this workspace's current token.",
         );
     }
+    state.mcp_bearer_lockout.record_success(&workspace_id);
 
     let request: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
@@ -195,11 +371,19 @@ pub async fn integration_mcp_route(
 
     match state.openconnector.forward_mcp(&decrypted_bearer, &sanitized).await {
         Ok(value) => (StatusCode::OK, axum::Json(value)).into_response(),
-        Err(err) => error(
-            StatusCode::BAD_GATEWAY,
-            "openconnector_unreachable",
-            err.to_string(),
-        ),
+        Err(err) => {
+            // Issue 2: `err.message` may embed OpenConnector's raw
+            // response body verbatim (see `response_to_error`) — this
+            // proxy is reached directly by a WORKSPACE CONTAINER, so
+            // returning it unfiltered here is the single worst leak
+            // point in this module (worse than the browser-facing routes
+            // in `route.rs`: a compromised/misbehaving container is
+            // exactly this proxy's own threat model — see the module doc
+            // comment). Log the real detail server-side; return only the
+            // fixed, non-leaking message.
+            tracing::warn!(workspace_id = %workspace_id, error = %err, "openconnector forward_mcp failed");
+            error(StatusCode::BAD_GATEWAY, err.safe_code(), err.safe_message())
+        }
     }
 }
 
@@ -355,6 +539,196 @@ fn workspace_connection_name(workspace_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrations::openconnector::fake::FakeOpenConnector;
+    use crate::integrations::store::IntegrationStore;
+    use crate::workspaces::WorkspaceStore;
+    use axum::http::header::AUTHORIZATION;
+    use std::sync::Arc as StdArc;
+
+    // ---- constant-time compare -----------------------------------------
+
+    #[test]
+    fn hashes_match_constant_time_accepts_the_correct_hash() {
+        let hash = sha256_hex("correct-bearer");
+        assert!(hashes_match_constant_time(&sha256_hex("correct-bearer"), &hash));
+    }
+
+    #[test]
+    fn hashes_match_constant_time_rejects_a_wrong_hash() {
+        let stored = sha256_hex("correct-bearer");
+        assert!(!hashes_match_constant_time(&sha256_hex("wrong-bearer"), &stored));
+    }
+
+    #[test]
+    fn hashes_match_constant_time_fails_closed_on_a_malformed_stored_hash() {
+        // Must not panic on a hex-decode failure — fails the check instead.
+        let computed = sha256_hex("anything");
+        assert!(!hashes_match_constant_time(&computed, "not-valid-hex-and-wrong-length"));
+    }
+
+    #[test]
+    fn bearer_shape_prefilter_rejects_too_short_and_too_long() {
+        assert!(!bearer_is_plausibly_shaped("short"));
+        assert!(!bearer_is_plausibly_shaped(&"a".repeat(600)));
+        assert!(bearer_is_plausibly_shaped(&"a".repeat(64)));
+    }
+
+    // ---- lockout + audit throttling, end to end via integration_mcp_route --
+
+    async fn temp_pool() -> sqlx::SqlitePool {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("test.db");
+        std::mem::forget(dir);
+        crate::db::connect(&db_path).await.expect("connect to fresh sqlite db")
+    }
+
+    /// `IntegrationsState` wired to a fresh store/`FakeOpenConnector`, with
+    /// a `Ready` workspace holding a known runtime token — enough to drive
+    /// `integration_mcp_route` end to end without a real OpenConnector or
+    /// Docker container, mirroring `route::tests::integrations_state`/
+    /// `ready_workspace`'s own setup (kept local to this file since those
+    /// two are private to `route`'s test module).
+    async fn state_with_runtime_token(
+        workspace_id: &str,
+        correct_bearer: &str,
+    ) -> (Arc<IntegrationsState>, sqlx::SqlitePool) {
+        let pool = temp_pool().await;
+        let workspace_store = WorkspaceStore::new(pool.clone());
+        let idempotency_key = format!("key-{workspace_id}");
+        workspace_store
+            .begin_creation(&idempotency_key, workspace_id)
+            .await
+            .expect("begin_creation");
+        workspace_store
+            .mark_ready(&idempotency_key, "not-a-real-container", 1, 2)
+            .await
+            .expect("mark_ready");
+
+        let store = IntegrationStore::new(pool.clone());
+        let token_cipher = crate::crypto::TokenCipher::new(&[9u8; 32]);
+        let encrypted_bearer = token_cipher.encrypt("openconnector-bearer").expect("encrypt");
+        store
+            .upsert_runtime_token(workspace_id, "token-id-1", &sha256_hex(correct_bearer), &encrypted_bearer)
+            .await
+            .expect("seed runtime token");
+
+        let state = Arc::new(IntegrationsState {
+            store,
+            openconnector: StdArc::new(FakeOpenConnector::default()),
+            providers: Vec::new(),
+            workspace_store,
+            http_client: reqwest::Client::new(),
+            token_cipher,
+            mcp_bearer_lockout: McpBearerLockout::default(),
+        });
+        (state, pool)
+    }
+
+    fn mcp_request_with_bearer(bearer: &str) -> (HeaderMap, Bytes) {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, format!("Bearer {bearer}").parse().unwrap());
+        let body = Bytes::from(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":"ping"})).unwrap());
+        (headers, body)
+    }
+
+    async fn audit_row_count(pool: &sqlx::SqlitePool, workspace_id: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM integration_audit WHERE workspace_id = ? AND event = ?",
+        )
+        .bind(workspace_id)
+        .bind("mcp_proxy_invalid_bearer")
+        .fetch_one(pool)
+        .await
+        .expect("count audit rows")
+    }
+
+    #[tokio::test]
+    async fn the_21st_wrong_bearer_in_a_row_is_locked_out_with_429() {
+        let workspace_id = "ws-lockout";
+        // Long enough to pass `bearer_is_plausibly_shaped` but never the
+        // right value, so every attempt fails the hash check, not the
+        // shape prefilter.
+        let wrong_bearer = "x".repeat(40);
+        let (state, pool_handle) =
+            state_with_runtime_token(workspace_id, "the-real-bearer-is-different-1234").await;
+
+        let mut last_status = StatusCode::OK;
+        for _ in 0..21 {
+            let (headers, body) = mcp_request_with_bearer(&wrong_bearer);
+            let response = integration_mcp_route(
+                State(state.clone()),
+                Path(workspace_id.to_string()),
+                headers,
+                body,
+            )
+            .await;
+            last_status = response.status();
+        }
+
+        assert_eq!(
+            last_status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "the 21st wrong-bearer attempt for one workspace must be locked out"
+        );
+
+        let audited = audit_row_count(&pool_handle, workspace_id).await;
+        assert!(
+            audited < 21,
+            "audit rows for repeated failures must stay bounded, not one per attempt: got {audited}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_bearer_after_failures_resets_the_lockout() {
+        let workspace_id = "ws-reset";
+        let correct_bearer = "the-actual-correct-bearer-value-here";
+        let wrong_bearer = "y".repeat(40);
+        let (state, _pool) = state_with_runtime_token(workspace_id, correct_bearer).await;
+
+        for _ in 0..5 {
+            let (headers, body) = mcp_request_with_bearer(&wrong_bearer);
+            let _ = integration_mcp_route(
+                State(state.clone()),
+                Path(workspace_id.to_string()),
+                headers,
+                body,
+            )
+            .await;
+        }
+
+        let (headers, body) = mcp_request_with_bearer(correct_bearer);
+        let response = integration_mcp_route(
+            State(state.clone()),
+            Path(workspace_id.to_string()),
+            headers,
+            body,
+        )
+        .await;
+        // `FakeOpenConnector::forward_mcp` succeeds by default, so a
+        // correct bearer must reach and pass `forward_mcp`, not be
+        // rejected at the auth layer — 401/429 here would mean the
+        // lockout state was wrong, not this test's own setup.
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // Failure counter must be back at 0: another burst of wrong
+        // guesses right after must NOT immediately re-lock.
+        for _ in 0..5 {
+            let (headers, body) = mcp_request_with_bearer(&wrong_bearer);
+            let response = integration_mcp_route(
+                State(state.clone()),
+                Path(workspace_id.to_string()),
+                headers,
+                body,
+            )
+            .await;
+            assert_ne!(
+                response.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "a reset lockout must allow a fresh run of attempts under the threshold"
+            );
+        }
+    }
 
     #[test]
     fn rejects_unknown_method() {

@@ -1,0 +1,12 @@
+-- `workspace_runtime_tokens.generation` (migration 0005) was documented
+-- as "used by the MCP proxy to reject a stale bearer" but never actually
+-- read anywhere in `mcp_proxy.rs` — the real protection against a stale
+-- bearer is the token_hash comparison in `integration_mcp_route`, which
+-- simply stops matching once a token is rotated. The increment was also
+-- non-atomic (read-then-write in `upsert_runtime_token`), racy under
+-- concurrent connects for no actual benefit. Drop it rather than
+-- implementing it properly, since nothing needs it.
+--
+-- Requires SQLite >= 3.35 (2021-03) for `ALTER TABLE ... DROP COLUMN`,
+-- well below what this crate's bundled `sqlx`/`libsqlite3-sys` ships.
+ALTER TABLE workspace_runtime_tokens DROP COLUMN generation;

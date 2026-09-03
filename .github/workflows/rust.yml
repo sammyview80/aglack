@@ -14,7 +14,9 @@ on:
     # branch, development currently happens on `refactor/folder`, and a
     # source-available release may rename the default to `main`. Listing all
     # three means CI keeps running through a rename instead of going silent.
-    branches: [main, master, aglack]
+    # `integration/**` added so pushes directly to integration branches
+    # (e.g. `integration/openconnector`) get CI signal without a PR first.
+    branches: [main, master, aglack, 'integration/**']
   pull_request:
 
 # Least privilege: these jobs only read the checkout.

@@ -107,8 +107,41 @@ tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 # writes the generated boot script to a real temp file before `docker cp`
 # delivers it into a container — see container/mod.rs's `deliver_boot_script`.
 tempfile = "3"
+# Structured logging (Issue 3) — replaces this crate's previous
+# println!/eprintln! startup messages and the previously-silent
+# `let _ = state.store.record_audit(...).await;` audit-write failures
+# with real, filterable log events. `tracing` is the call-site macro
+# surface used throughout src/; `tracing-subscriber` (with `env-filter`)
+# is what actually renders/filters those events at process start (see
+# `bin/rust_gateway.rs`'s `main`) — a library crate would only need
+# `tracing` itself, but this crate also owns its own binaries.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Constant-time byte comparison for the MCP bearer check
+# (src/integrations/mcp_proxy.rs) — a plain `!=` on the hex-encoded hash
+# leaks timing proportional to the first differing byte, small but real
+# for a route reachable without session auth (see `auth/middleware.rs`'s
+# `/workspaces/:id/mcp` exemption). Small, standard crate for exactly
+# this comparison, nothing else.
+subtle = "2"
+# Per-workspace MCP bearer failure lockout (src/integrations/mcp_proxy.rs)
+# — needs a concurrent map keyed by workspace id updated from any request
+# task, unlike `auth/route.rs`'s single global `Mutex<LoginAttempts>`
+# (one shared credential, no per-key dimension there).
+dashmap = "6"
 
 [dev-dependencies]
 # "util" enables ServiceExt::oneshot, used to exercise build_router's
 # response headers (CORS) directly in a test without binding a real port.
 tower = { version = "0.5", features = ["util"] }
+# Mock HTTP server for OpenConnectorClient's own HTTP-calling methods
+# (src/integrations/openconnector.rs) — e.g. asserting `forward_mcp`
+# checks the response status before parsing its body, against a REAL
+# HTTP response (status + headers + body), not a hand-built
+# `reqwest::Response` (which `reqwest` does not expose a public
+# constructor for). Standard, widely used for exactly this.
+wiremock = "0.6"
+# Captures `tracing` output into test-visible logs (Issue 3) —
+# `#[traced_test]` + `logs_contain(...)` to assert an audit-write failure
+# is actually logged rather than silently swallowed.
+tracing-test = "0.2"

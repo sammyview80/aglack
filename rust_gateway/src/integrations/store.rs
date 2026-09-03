@@ -59,7 +59,6 @@ pub struct IntegrationConnection {
 #[derive(Debug, Clone)]
 pub struct WorkspaceRuntimeToken {
     pub workspace_id: String,
-    pub generation: i64,
     pub openconnector_token_id: String,
     pub token_hash: String,
     /// See migration 0005's column comment: plaintext, needs
@@ -237,7 +236,7 @@ impl IntegrationStore {
         workspace_id: &str,
     ) -> Result<Option<WorkspaceRuntimeToken>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT workspace_id, generation, openconnector_token_id, token_hash, \
+            "SELECT workspace_id, openconnector_token_id, token_hash, \
              openconnector_bearer FROM workspace_runtime_tokens WHERE workspace_id = ?",
         )
         .bind(workspace_id)
@@ -245,53 +244,42 @@ impl IntegrationStore {
         .await?;
         Ok(row.map(|row| WorkspaceRuntimeToken {
             workspace_id: row.get("workspace_id"),
-            generation: row.get("generation"),
             openconnector_token_id: row.get("openconnector_token_id"),
             token_hash: row.get("token_hash"),
             openconnector_bearer: row.get("openconnector_bearer"),
         }))
     }
 
-    /// Replace (or create) the workspace's runtime token record.
-    /// Generation always increments — the MCP proxy uses this to reject a
-    /// stale bearer a container might still be holding mid-rotation (a
-    /// container-side reapply of the new token file is expected to follow
-    /// immediately; a real atomic rollout sequence is tracked as
-    /// follow-up work, see this module's doc comment).
+    /// Replace (or create) the workspace's runtime token record. A stale
+    /// bearer post-rotation is rejected by `mcp_proxy.rs`'s token_hash
+    /// comparison alone (it simply stops matching) — no separate
+    /// generation counter needed.
     pub async fn upsert_runtime_token(
         &self,
         workspace_id: &str,
         openconnector_token_id: &str,
         token_hash: &str,
         openconnector_bearer: &str,
-    ) -> Result<i64, sqlx::Error> {
-        let previous_generation = self
-            .find_runtime_token(workspace_id)
-            .await?
-            .map(|record| record.generation)
-            .unwrap_or(0);
-        let next_generation = previous_generation + 1;
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO workspace_runtime_tokens \
-             (workspace_id, generation, openconnector_token_id, token_hash, \
+             (workspace_id, openconnector_token_id, token_hash, \
               openconnector_bearer, rotated_at) \
-             VALUES (?, ?, ?, ?, ?, ?) \
+             VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT (workspace_id) DO UPDATE SET \
-               generation = excluded.generation, \
                openconnector_token_id = excluded.openconnector_token_id, \
                token_hash = excluded.token_hash, \
                openconnector_bearer = excluded.openconnector_bearer, \
                rotated_at = excluded.rotated_at",
         )
         .bind(workspace_id)
-        .bind(next_generation)
         .bind(openconnector_token_id)
         .bind(token_hash)
         .bind(openconnector_bearer)
         .bind(now_rfc3339())
         .execute(&self.pool)
         .await?;
-        Ok(next_generation)
+        Ok(())
     }
 
     pub async fn delete_runtime_token(&self, workspace_id: &str) -> Result<(), sqlx::Error> {
