@@ -1008,3 +1008,50 @@ describe('useChat does not refetch agents or sessions on send or stream end', ()
     })
   })
 })
+
+describe('useChat.pushLocalCommandResult', () => {
+  // Mirrors upstream Hermes WebUI's own slash-command interception EXACTLY
+  // (backend/upstream/static/messages.js pushes {role:'user',...} then
+  // {role:'assistant',...} into S.messages directly for a command's echo
+  // + result) — a real chat turn pair, purely local state, never a
+  // network call, never persisted server-side.
+  it('pushes an assistant-only turn when echoCommand is not set', async () => {
+    const { result } = renderHook(() => useChat('ws-1', 'agent-a'), { wrapper })
+    await waitFor(() => expect(result.current.isLoadingTranscript).toBe(false))
+
+    act(() => result.current.pushLocalCommandResult('/credits', 'Credits remaining: 42'))
+
+    expect(result.current.turns).toHaveLength(1)
+    expect(result.current.turns[0]).toMatchObject({ role: 'assistant', text: 'Credits remaining: 42' })
+  })
+
+  it('pushes BOTH the command echo (user) and its result (assistant) when echoCommand is true', async () => {
+    const { result } = renderHook(() => useChat('ws-1', 'agent-a'), { wrapper })
+    await waitFor(() => expect(result.current.isLoadingTranscript).toBe(false))
+
+    act(() =>
+      result.current.pushLocalCommandResult('/loop', 'Not available from this chat.', {
+        echoCommand: true,
+        errored: true,
+      }),
+    )
+
+    expect(result.current.turns).toHaveLength(2)
+    expect(result.current.turns[0]).toMatchObject({ role: 'user', text: '/loop' })
+    expect(result.current.turns[1]).toMatchObject({
+      role: 'assistant',
+      text: 'Not available from this chat.',
+      errored: true,
+    })
+  })
+
+  it('never touches the network or any session id — purely local state', async () => {
+    const { result } = renderHook(() => useChat('ws-1', 'agent-a'), { wrapper })
+    await waitFor(() => expect(result.current.isLoadingTranscript).toBe(false))
+
+    act(() => result.current.pushLocalCommandResult('/new', 'ignored'))
+
+    expect(mockedApi.createSession).not.toHaveBeenCalled()
+    expect(mockedApi.startTurn).not.toHaveBeenCalled()
+  })
+})

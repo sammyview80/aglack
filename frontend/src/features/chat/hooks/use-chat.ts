@@ -707,6 +707,42 @@ export function useChat(
     lastFilesRef.current = undefined
   }
 
+  /** Local-only user+assistant turn pair for a slash command's echo +
+   * result — mirrors upstream Hermes WebUI's own command interception
+   * EXACTLY (`backend/upstream/static/messages.js`'s slash-command
+   * intercept block): `S.messages.push({role:'user',...})` for the typed
+   * command text, then `S.messages.push({role:'assistant',...})` for its
+   * result (bundle/exec output, a cli_only explanation, etc.) — a real
+   * chat message pair, not a floating toast/banner. Never touches the
+   * server or any session id: purely client-side state, exactly like
+   * upstream's own in-memory `S.messages` push for these. `echoCommand`
+   * mirrors upstream's `noEcho` flag inverted — most of upstream's
+   * COMMANDS table sets `noEcho:true` for pure actions (e.g. `/new`
+   * itself never appears in the transcript, see `cmdNew`'s own toast-only
+   * feedback) so the default here is to skip the user-message half for a
+   * pure local action; pass `true` for anything that actually produces
+   * a result worth seeing in context (bundle resolve, exec output). */
+  function pushLocalCommandResult(
+    commandText: string,
+    resultText: string,
+    options?: { echoCommand?: boolean; errored?: boolean },
+  ) {
+    const now = Date.now()
+    setTurns((prev) => [
+      ...prev,
+      ...(options?.echoCommand
+        ? [{ id: `local-cmd-${now}`, role: 'user' as const, text: commandText, at: now }]
+        : []),
+      {
+        id: `local-cmd-${now}-result`,
+        role: 'assistant' as const,
+        text: resultText,
+        at: now,
+        errored: options?.errored,
+      },
+    ])
+  }
+
   /** User-triggered recovery after a dropped connection (see canRetry) —
    * resends the last message (and any attachments it had) as a fresh
    * turn. Not a true replay: partial assistant output from the dropped
@@ -757,6 +793,7 @@ export function useChat(
     stop,
     retry,
     newChat,
+    pushLocalCommandResult,
     reloadMessages,
     isReloadingMessages: reloadMutation.isPending,
     loadOlderMessages,

@@ -327,6 +327,16 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
               isStreaming={chat.isStreaming}
               onSend={sendAndScroll}
               onStop={chat.stop}
+              // Same action as the header's own "New chat" button
+              // (see `newChat` above) — `/new`/`/reset` typed in the
+              // composer now does exactly what that button does, not a
+              // second, divergent reset path.
+              onNewChat={newChat}
+              // A slash command's echo + result now renders as a REAL
+              // chat message pair, matching upstream Hermes WebUI's own
+              // command interception exactly (see `pushLocalCommandResult`'s
+              // own doc comment) — not a floating banner.
+              onCommandResult={chat.pushLocalCommandResult}
             />
           ) : null}
         </article>

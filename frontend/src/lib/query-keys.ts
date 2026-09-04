@@ -50,6 +50,15 @@ export const queryKeys = {
     sessionModel: (workspaceId: string, sessionId: string) =>
       [...queryKeys.models.all, workspaceId, 'sessions', sessionId, 'model'] as const,
   },
+  commands: {
+    all: ['commands'] as const,
+    // Agent-scoped: the wrapper resolves the command/bundle list per Hermes
+    // profile (`?agent=`), so two agents may legitimately see different lists.
+    list: (workspaceId: string, agent: string) =>
+      [...queryKeys.commands.all, workspaceId, 'agents', agent, 'list'] as const,
+    bundles: (workspaceId: string, agent: string) =>
+      [...queryKeys.commands.all, workspaceId, 'agents', agent, 'bundles'] as const,
+  },
   integrations: {
     all: ['integrations'] as const,
     // Not workspace-scoped: the provider catalog is the same for every

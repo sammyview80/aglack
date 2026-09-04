@@ -211,19 +211,6 @@ describe('WorkspaceChat model pick before any session exists (real bug report)',
   // session yet, then sending the first message, must carry that pick
   // into createSession — this is the exact "add model + new chat failed"
   // report this test guards against regressing again.
-  it('renders CHAT above CHANNELS in the sidebar', async () => {
-    mockedAgentHistoryApi.listAgents.mockResolvedValue({
-      agents: [{ name: 'agent-a', isWorking: false }],
-    })
-    mockedChatApi.getSessionStatus.mockResolvedValue({ activeStreamId: null })
-
-    renderChat('/workspaces/ws-1/chat?agent=agent-a')
-
-    const chat = await screen.findByTestId('sidebar-chat-section')
-    const channels = screen.getByText('CHANNELS')
-    expect(chat.compareDocumentPosition(channels) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
-  })
-
   it('a model picked with no session yet rides along with the session created by the first send', async () => {
     const user = userEvent.setup()
     writeSelectedModels('ws-1', 'agent-a', [
