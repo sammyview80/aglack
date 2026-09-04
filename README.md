@@ -13,12 +13,10 @@ a single control-plane API. No shared state between tenants beyond the
 gateway's own SQLite registry.
 
 > [!WARNING]
-> **There is no authentication gate on the gateway routes yet** —
-> including `agent-config` and `agent-seeder`. Anyone who can reach the
-> gateway can create, inspect, and delete workspaces and their
-> containers. **Do not deploy this on a public network or an untrusted
-> LAN as-is.** Run it on `localhost` or behind your own authenticating
-> reverse proxy. See [Known gaps](#known-gaps).
+> Google OAuth protects the main gateway/workspace UI, but this is still a
+> local/dev deployment. Keep it on `localhost` or behind a trusted network;
+> do not expose the gateway publicly until the remaining service-to-service
+> authorization gaps are closed.
 
 | A real control-plane API | `POST/GET/DELETE /workspaces`, per-workspace proxy namespaces (`onboarding`, `agent-seeder`, `hermes-webui`, `desktop`), SQLite-backed registry, real `docker` CLI orchestration under `rust_gateway/`. |
 | --- | --- |
@@ -92,6 +90,34 @@ overwrites an `.env` file you've already customized.
 Already set up and just want to run again? Use `./run.sh` directly — it
 is what `bootstrap.sh` hands off to; see its own header comment for
 exactly what it starts.
+
+### Google OAuth login
+
+The gateway uses Google OAuth for login. Password login is not used. Create a
+Google Cloud **Web application** OAuth client and add this exact local callback
+URL under **Authorized redirect URIs**:
+
+```text
+http://localhost:8080/auth/google/callback
+```
+
+Copy the client ID and secret into `rust_gateway/.env` (or `deploy/.env` for
+Docker). Keep the provider endpoints at their Google defaults:
+
+```dotenv
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:8080/auth/google/callback
+GOOGLE_AUTHORIZE_URL=https://accounts.google.com/o/oauth2/v2/auth
+GOOGLE_TOKEN_URL=https://oauth2.googleapis.com/token
+GOOGLE_USERINFO_URL=https://openidconnect.googleapis.com/v1/userinfo
+```
+
+For a deployed HTTPS domain, replace `localhost:8080` everywhere with the
+gateway's public origin and register the matching HTTPS callback in Google
+Cloud. Any Google account can sign in in this development setup; workspace
+ownership is keyed to the authenticated Google account, and each account can
+own multiple isolated workspaces.
 
 ## `aglack` CLI
 
@@ -220,9 +246,8 @@ container-permissions bug once (see `checkpoints/CHECKPOINT5.md`).
 
 ## Known gaps
 
-- **No auth gate yet on gateway routes** (including `agent-config` /
-  `agent-seeder`) — do not expose publicly as-is. See the warning at the
-  top of this file.
+- Some internal/service routes still need a complete production authorization
+  review. Keep deployments private until that review is complete.
 - No billing; SQLite single-machine stage (see
   `backend/wrapper/docs/rust-gateway-architecture.md` for the target).
 
