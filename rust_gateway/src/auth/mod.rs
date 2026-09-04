@@ -1,7 +1,5 @@
-//! Gateway admin authentication — Phase 0a of
-//! `docs/integrations-plan.md`. One deployment-wide admin credential
-//! (Phase 0b, per-user accounts, is separate later work); an opaque
-//! random session cookie, SHA-256-hashed at rest, no signing secret.
+//! Google OAuth login with opaque random session cookies, SHA-256-hashed
+//! at rest.
 //!
 //! Closes a real, previously-acknowledged gap: before this module,
 //! ANYONE who could reach this gateway could create/delete workspaces
@@ -11,10 +9,17 @@
 //! that module's own doc comment).
 
 mod middleware;
-pub mod password;
 mod route;
 mod store;
 
 pub use middleware::require_session;
-pub use route::{login_route, logout_route, me_route, router, AuthState};
+pub use route::{
+    google_callback_route, google_start_route, logout_route, me_route, router, AuthState,
+};
 pub use store::SessionStore;
+
+#[derive(Clone, Debug)]
+pub struct AuthenticatedUser {
+    pub google_sub: String,
+    pub email: String,
+}

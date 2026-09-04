@@ -404,13 +404,8 @@ impl IntegrationsConfig {
     }
 }
 
-/// Config for the gateway's own admin login (`crate::auth`). See
-/// `docs/integrations-plan.md`'s Phase 0a.
+/// Config for the gateway's Google login (`crate::auth`).
 pub struct GatewayAuthConfig {
-    /// Full Argon2id PHC-format hash string — generate with
-    /// `rust_gateway --hash-password '<password>'` (see
-    /// `bin/rust_gateway.rs`). Never a plaintext password here.
-    pub admin_password_hash: String,
     /// Whether the session cookie's `Secure` attribute is set. Optional —
     /// unset means `false` (plain local http dev works out of the box; a
     /// browser silently drops a `Secure` cookie over http, so defaulting
@@ -418,16 +413,26 @@ pub struct GatewayAuthConfig {
     /// persisting a session — confirmed against real browser behavior,
     /// not assumed). Set to `true` for any real deployment behind TLS.
     pub cookie_secure: bool,
+    pub google_client_id: String,
+    pub google_client_secret: String,
+    pub google_redirect_uri: String,
+    pub google_authorize_url: String,
+    pub google_token_url: String,
+    pub google_userinfo_url: String,
 }
 
 impl GatewayAuthConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let admin_password_hash = required_env("GATEWAY_ADMIN_PASSWORD_HASH")?;
         let cookie_secure = parse_bool_env("GATEWAY_COOKIE_SECURE", false)?;
 
         Ok(Self {
-            admin_password_hash,
             cookie_secure,
+            google_client_id: required_env("GOOGLE_CLIENT_ID")?,
+            google_client_secret: required_env("GOOGLE_CLIENT_SECRET")?,
+            google_redirect_uri: required_env("GOOGLE_REDIRECT_URI")?,
+            google_authorize_url: required_env("GOOGLE_AUTHORIZE_URL")?,
+            google_token_url: required_env("GOOGLE_TOKEN_URL")?,
+            google_userinfo_url: required_env("GOOGLE_USERINFO_URL")?,
         })
     }
 }

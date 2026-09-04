@@ -33,7 +33,7 @@ pub use proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_pat
 pub use proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
 pub use route::{
     create_workspace_route, delete_workspace_route, diagnose_workspace_route,
-    list_workspaces_route, WorkspacesState,
+    list_workspaces_route, create_workspace_route_authenticated, list_workspaces_route_authenticated, WorkspacesState,
 };
 pub use store::{WorkspaceRecord, WorkspaceStatus, WorkspaceStore};
 

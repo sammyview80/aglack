@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use rust_gateway::app::{browser_allowed_origins, build_router};
-use rust_gateway::auth::{password, AuthState, SessionStore};
+use rust_gateway::auth::{AuthState, SessionStore};
 use rust_gateway::config::{
     load_dotenv_files, GatewayAuthConfig, GatewayConfig, IntegrationsConfig, WorkspacesConfig,
 };
@@ -35,39 +35,13 @@ use rust_gateway::workspaces::{DockerCliLauncher, WorkspaceStore, WorkspacesStat
 
 #[tokio::main]
 async fn main() {
-    // `--hash-password <password>` is a standalone utility mode, not part
-    // of normal startup: it prints an Argon2id hash to paste into
-    // `GATEWAY_ADMIN_PASSWORD_HASH` and exits immediately — deliberately
-    // BEFORE `load_dotenv_files()`/any config loading, since generating a
-    // password hash must never require an already-working `.env` (that
-    // would be circular for a first-time setup).
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(password_arg) = args
-        .iter()
-        .position(|a| a == "--hash-password")
-        .and_then(|i| args.get(i + 1))
-    {
-        match password::hash(password_arg) {
-            Ok(hash) => {
-                println!("{hash}");
-                return;
-            }
-            Err(err) => {
-                eprintln!("rust_gateway: failed to hash password: {err}");
-                std::process::exit(1);
-            }
-        }
-    }
-
     // `GATEWAY_LOG_FORMAT` is read directly here via `std::env::var`
     // rather than through `config.rs` (a deliberate, narrow deviation
     // from AGENTS.md's "config.rs is the only place env is read" rule):
     // the log format has to be decided BEFORE `tracing_subscriber::init()`
     // runs, and that in turn has to happen before any other startup step
-    // so early failures are logged too — the same ordering constraint
-    // `--hash-password` above already has for the same reason (it also
-    // runs before `load_dotenv_files()`/config loading). Piping this one
-    // bootstrap-time value through `GatewayConfig` would mean either
+    // so early failures are logged too. Piping this bootstrap-time value
+    // through `GatewayConfig` would mean either
     // loading config twice or moving subscriber init after config
     // loading, silently losing every log line config loading itself
     // could emit. Every OTHER env var in this process still goes through
@@ -178,8 +152,10 @@ async fn main() {
     });
     let auth_state = Arc::new(AuthState::new(
         SessionStore::new(db_pool.clone()),
-        auth_config.admin_password_hash,
-        auth_config.cookie_secure,
+        db_pool.clone(),
+        auth_config,
+        config.frontend_origin.clone(),
+        rust_gateway::shared::http::json_client(),
     ));
 
     let workspaces_state = Arc::new(WorkspacesState {

@@ -72,13 +72,6 @@ serde_yaml = "0.9"
 # — the raw bearer a workspace container holds is never stored, only its
 # hash, so a database read alone cannot recover a valid credential.
 sha2 = "0.10"
-# Password hashing for the gateway's own admin login (src/auth/) — see
-# docs/integrations-plan.md's Phase 0a. Argon2id, OWASP's current
-# recommendation; NOT used for session tokens themselves (those are
-# random + SHA-256-hashed at rest, same pattern as
-# workspace_runtime_tokens.token_hash — no need for a slow KDF on a value
-# that's already high-entropy random, unlike a human-chosen password).
-argon2 = "0.5"
 # Safe Set-Cookie construction/parsing for the gateway's own session
 # cookie (src/auth/) — hand-rolling cookie-string parsing is exactly the
 # class of bug this crate already treats as a real risk elsewhere (see

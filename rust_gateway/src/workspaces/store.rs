@@ -208,6 +208,18 @@ impl WorkspaceStore {
             .collect())
     }
 
+    pub async fn list_for_owner(&self, owner: &str, limit: i64, offset: i64) -> Result<Vec<WorkspaceListItem>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT workspace_id, idempotency_key, status, host_port, desktop_port, browser_port, created_at FROM workspace_creations WHERE owner_google_sub = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?",
+        ).bind(owner).bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|row| WorkspaceListItem { workspace_id: row.get("workspace_id"), name: row.get("idempotency_key"), status: WorkspaceStatus::from_db_str(row.get("status")), host_port: row.get("host_port"), desktop_port: row.get("desktop_port"), browser_port: row.get("browser_port"), created_at: row.get("created_at") }).collect())
+    }
+
+    pub async fn set_owner(&self, workspace_id: &str, owner: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workspace_creations SET owner_google_sub = ? WHERE workspace_id = ?").bind(owner).bind(workspace_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
     fn record_from_row(row: sqlx::sqlite::SqliteRow) -> WorkspaceRecord {
         WorkspaceRecord {
             workspace_id: row.get("workspace_id"),

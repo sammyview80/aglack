@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::StatusCode,
     response::Response,
 };
@@ -12,6 +12,7 @@ use crate::response::{error, success};
 use crate::workspaces::container::check_wrapper_health;
 use crate::workspaces::store::WorkspaceListItem;
 use crate::workspaces::WorkspaceStatus;
+use crate::auth::AuthenticatedUser;
 
 /// Default page size for `GET /workspaces` when `limit` is omitted.
 const DEFAULT_LIST_LIMIT: i64 = 50;
@@ -84,6 +85,22 @@ pub async fn list_workspaces_route(
     State(state): State<Arc<WorkspacesState>>,
     Query(query): Query<ListWorkspacesQuery>,
 ) -> Response {
+    list_workspaces_route_inner(state, query, None).await
+}
+
+pub async fn list_workspaces_route_authenticated(
+    State(state): State<Arc<WorkspacesState>>,
+    user: Option<Extension<AuthenticatedUser>>,
+    Query(query): Query<ListWorkspacesQuery>,
+) -> Response {
+    list_workspaces_route_inner(state, query, user.map(|Extension(user)| user)).await
+}
+
+async fn list_workspaces_route_inner(
+    state: Arc<WorkspacesState>,
+    query: ListWorkspacesQuery,
+    user: Option<AuthenticatedUser>,
+) -> Response {
     let offset = query.offset.unwrap_or(0);
     if offset < 0 {
         return error(
@@ -114,7 +131,11 @@ pub async fn list_workspaces_route(
         }
     };
 
-    match state.store.list(limit, offset).await {
+    let listed = match user.as_ref() {
+        Some(user) => state.store.list_for_owner(&user.google_sub, limit, offset).await,
+        None => state.store.list(limit, offset).await,
+    };
+    match listed {
         Ok(items) => {
             let healthy_by_index = match health_mode {
                 HealthMode::Live => run_health_checks(&state.http_client, &items).await,

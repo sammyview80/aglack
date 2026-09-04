@@ -25,6 +25,7 @@ use axum::{
 use std::sync::Arc;
 
 use super::route::{read_session_cookie, AuthState};
+use super::AuthenticatedUser;
 use crate::crypto::sha256_hex;
 use crate::response::error;
 
@@ -62,7 +63,7 @@ fn is_workspace_browser_path(path: &str) -> bool {
 
 pub async fn require_session(
     State(state): State<Arc<AuthState>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     if is_exempt(request.uri().path()) {
@@ -77,19 +78,30 @@ pub async fn require_session(
         );
     };
 
-    match state.sessions.is_valid(&sha256_hex(&raw_token)).await {
-        Ok(true) => next.run(request).await,
-        Ok(false) => error(
+    let user = match state.sessions.user_for_token(&sha256_hex(&raw_token)).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return error(
             StatusCode::UNAUTHORIZED,
             "not_authenticated",
             "Log in first.",
         ),
-        Err(err) => error(
+        Err(err) => return error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "session_lookup_failed",
             err.to_string(),
         ),
+    };
+    if let Some(workspace_id) = request.uri().path().strip_prefix("/workspaces/").and_then(|p| p.split('/').next()).filter(|id| !id.is_empty()) {
+        let owned = sqlx::query_scalar::<_, i64>("SELECT 1 FROM workspace_creations WHERE workspace_id = ? AND owner_google_sub = ?")
+            .bind(workspace_id).bind(&user.google_sub).fetch_optional(&state.workspace_pool).await;
+        match owned {
+            Ok(Some(_)) => {}
+            Ok(None) => return error(StatusCode::NOT_FOUND, "workspace_not_found", "Workspace not found."),
+            Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, "workspace_lookup_failed", err.to_string()),
+        }
     }
+    request.extensions_mut().insert::<AuthenticatedUser>(user);
+    next.run(request).await
 }
 
 #[cfg(test)]
@@ -98,7 +110,8 @@ mod tests {
 
     #[test]
     fn auth_routes_are_exempt() {
-        assert!(is_exempt("/auth/login"));
+        assert!(is_exempt("/auth/google"));
+        assert!(is_exempt("/auth/google/callback"));
         assert!(is_exempt("/auth/logout"));
         assert!(is_exempt("/auth/me"));
     }

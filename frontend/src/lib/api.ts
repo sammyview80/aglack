@@ -83,9 +83,8 @@ export async function apiFetch<T>(
   if (!body.ok) {
     // A session that never existed or has expired — send the whole app
     // back to `/login` rather than letting every single feature grow its
-    // own "not authenticated" fallback UI. `/auth/login` itself never
-    // returns this code (a wrong password is `invalid_password`, a
-    // distinct code — see `auth/route.rs`), so this cannot loop.
+    // own "not authenticated" fallback UI. The login page itself does
+    // not call this API, so this cannot loop.
     if (body.error.code === 'not_authenticated' && window.location.pathname !== '/login') {
       window.location.href = '/login'
     }

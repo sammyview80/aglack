@@ -1,4 +1,4 @@
-use axum::{extract::State, http::StatusCode, response::Response, Json};
+use axum::{extract::{Extension, State}, http::StatusCode, response::Response, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -6,6 +6,7 @@ use super::WorkspacesState;
 use crate::integrations::route::issue_and_deliver_runtime_token;
 use crate::response::{error, success};
 use crate::workspaces::{create_workspace, CreateWorkspaceError, WorkspaceRecord, WorkspaceStatus};
+use crate::auth::AuthenticatedUser;
 
 #[derive(Deserialize)]
 pub struct CreateWorkspaceRequest {
@@ -42,6 +43,22 @@ struct CreateWorkspaceData {
 pub async fn create_workspace_route(
     State(state): State<Arc<WorkspacesState>>,
     Json(request): Json<CreateWorkspaceRequest>,
+) -> Response {
+    create_workspace_route_inner(state, request, None).await
+}
+
+pub async fn create_workspace_route_authenticated(
+    State(state): State<Arc<WorkspacesState>>,
+    user: Option<Extension<AuthenticatedUser>>,
+    Json(request): Json<CreateWorkspaceRequest>,
+) -> Response {
+    create_workspace_route_inner(state, request, user.map(|Extension(user)| user)).await
+}
+
+async fn create_workspace_route_inner(
+    state: Arc<WorkspacesState>,
+    request: CreateWorkspaceRequest,
+    user: Option<AuthenticatedUser>,
 ) -> Response {
     let name = request.name.trim();
     if name.is_empty() {
@@ -87,6 +104,12 @@ pub async fn create_workspace_route(
 
     match create_workspace(&state.store, state.launcher.as_ref(), name).await {
         Ok(record) => {
+            if let Some(user) = user.as_ref() {
+                if let Err(err) = state.store.set_owner(&record.workspace_id, &user.google_sub).await {
+                    eprintln!("rust_gateway: workspace owner update failed: {err}");
+                    return error(StatusCode::INTERNAL_SERVER_ERROR, "workspace_store_failed", "failed to assign workspace owner");
+                }
+            }
             // Best-effort, AFTER the workspace already exists and is
             // `Ready`: deliver `/run/hermes/integrations.token` at
             // creation time, not only on this workspace's first real

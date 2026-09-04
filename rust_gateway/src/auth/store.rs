@@ -1,9 +1,10 @@
-//! SQLite-backed session store for the gateway's own admin login (see
-//! `docs/integrations-plan.md`'s Phase 0a). Pattern mirrors
+//! SQLite-backed session store for Google login. Pattern mirrors
 //! `integrations::store::IntegrationStore` — opaque random tokens,
 //! SHA-256-hashed at rest, no signing secret.
 
 use sqlx::{Row, SqlitePool};
+
+use super::AuthenticatedUser;
 
 pub struct SessionStore {
     pool: SqlitePool,
@@ -17,16 +18,34 @@ impl SessionStore {
     /// Insert a new session row. `token_hash` is the caller's
     /// SHA-256 hex digest of the raw session token — the raw token itself
     /// is never stored, only ever held in memory long enough to set the
-    /// cookie (see `route.rs`'s `login_route`).
-    pub async fn create(&self, token_hash: &str, expires_at: &str) -> Result<(), sqlx::Error> {
+    /// cookie (see `route.rs`'s `google_callback_route`).
+    pub async fn create(
+        &self,
+        token_hash: &str,
+        expires_at: &str,
+        google_sub: &str,
+        email: &str,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO gateway_sessions (token_hash, created_at, expires_at) VALUES (?, ?, ?)",
+            "INSERT INTO gateway_users (google_sub, email, email_verified, created_at) VALUES (?, ?, 1, ?) \
+             ON CONFLICT(google_sub) DO UPDATE SET email = excluded.email, email_verified = 1",
+        )
+        .bind(google_sub)
+        .bind(email)
+        .bind(now())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO gateway_sessions (token_hash, created_at, expires_at, google_sub) VALUES (?, ?, ?, ?)",
         )
         .bind(token_hash)
         .bind(now())
         .bind(expires_at)
-        .execute(&self.pool)
+        .bind(google_sub)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -45,6 +64,17 @@ impl SessionStore {
             Some(row) => row.get::<String, _>("expires_at").as_str() > now().as_str(),
             None => false,
         })
+    }
+
+    pub async fn user_for_token(&self, token_hash: &str) -> Result<Option<AuthenticatedUser>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT u.google_sub, u.email FROM gateway_sessions s JOIN gateway_users u ON u.google_sub = s.google_sub WHERE s.token_hash = ? AND s.expires_at > ?",
+        )
+        .bind(token_hash)
+        .bind(now())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| AuthenticatedUser { google_sub: row.get("google_sub"), email: row.get("email") }))
     }
 
     pub async fn delete(&self, token_hash: &str) -> Result<(), sqlx::Error> {
@@ -112,7 +142,10 @@ mod tests {
             .as_secs()
             + 3600)
             .to_string();
-        store.create("hash-a", &future).await.expect("create");
+        store
+            .create("hash-a", &future, "sub-a", "a@example.com")
+            .await
+            .expect("create");
         assert!(store.is_valid("hash-a").await.expect("is_valid"));
     }
 
@@ -125,7 +158,10 @@ mod tests {
     #[tokio::test]
     async fn an_expired_session_is_not_valid() {
         let store = SessionStore::new(temp_pool().await);
-        store.create("hash-expired", "0").await.expect("create");
+        store
+            .create("hash-expired", "0", "sub-expired", "expired@example.com")
+            .await
+            .expect("create");
         assert!(!store.is_valid("hash-expired").await.expect("is_valid"));
     }
 
@@ -138,7 +174,10 @@ mod tests {
             .as_secs()
             + 3600)
             .to_string();
-        store.create("hash-b", &future).await.expect("create");
+        store
+            .create("hash-b", &future, "sub-b", "b@example.com")
+            .await
+            .expect("create");
         store.delete("hash-b").await.expect("delete");
         assert!(!store.is_valid("hash-b").await.expect("is_valid"));
     }
@@ -152,8 +191,14 @@ mod tests {
             .as_secs()
             + 3600)
             .to_string();
-        store.create("hash-live", &future).await.expect("create");
-        store.create("hash-dead", "0").await.expect("create");
+        store
+            .create("hash-live", &future, "sub-live", "live@example.com")
+            .await
+            .expect("create");
+        store
+            .create("hash-dead", "0", "sub-dead", "dead@example.com")
+            .await
+            .expect("create");
         store.prune_expired().await.expect("prune");
         assert!(store.is_valid("hash-live").await.expect("is_valid"));
         assert!(!store.is_valid("hash-dead").await.expect("is_valid"));

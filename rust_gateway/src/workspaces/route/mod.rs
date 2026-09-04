@@ -20,7 +20,8 @@ mod delete;
 mod diagnose;
 mod list;
 
-pub use create::create_workspace_route;
+pub use create::{create_workspace_route, create_workspace_route_authenticated};
+pub use list::list_workspaces_route_authenticated;
 pub use delete::delete_workspace_route;
 pub use diagnose::diagnose_workspace_route;
 pub use list::list_workspaces_route;

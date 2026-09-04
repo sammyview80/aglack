@@ -18,9 +18,9 @@ use crate::workspaces::{
     agent_history_proxy_route_root, agent_history_proxy_route_with_path,
     agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path, browser_proxy_route,
     chat_proxy_route_root, chat_proxy_route_with_path, commands_proxy_route_root,
-    commands_proxy_route_with_path, create_workspace_route, delete_workspace_route,
+    commands_proxy_route_with_path, create_workspace_route_authenticated, delete_workspace_route,
     desktop_proxy_route_root, desktop_proxy_route_with_path, diagnose_workspace_route,
-    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, list_workspaces_route,
+    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, list_workspaces_route_authenticated,
     onboarding_proxy_route_root, onboarding_proxy_route_with_path, WorkspacesState,
 };
 
@@ -149,7 +149,7 @@ pub fn build_router(
     let mut workspaces_router = Router::new()
         .route(
             "/workspaces",
-            post(create_workspace_route).get(list_workspaces_route),
+            post(create_workspace_route_authenticated).get(list_workspaces_route_authenticated),
         )
         .route("/workspaces/:id", delete(delete_workspace_route))
         .route("/workspaces/:id/diagnose", post(diagnose_workspace_route));

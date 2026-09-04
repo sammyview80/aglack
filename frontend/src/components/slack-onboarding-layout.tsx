@@ -1,8 +1,11 @@
-import type { ReactNode } from 'react'
-import { Home, KeyRound, MessageCircle } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { Home, KeyRound, LogOut, MessageCircle } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BrandMark } from '@/components/brand-mark'
+import { Button } from '@/components/ui/button'
+import { logout } from '@/features/auth/api'
 import { ThemeSwitch } from '@/features/theme/theme-switch'
+import { handleError } from '@/lib/handle-error'
 import { cn } from '@/lib/utils'
 
 type SlackOnboardingLayoutProps = {
@@ -18,10 +21,37 @@ type SlackOnboardingLayoutProps = {
 }
 
 function BrandHeader() {
+  const navigate = useNavigate()
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  async function handleLogout() {
+    setLoggingOut(true)
+    try {
+      await logout()
+      navigate('/login', { replace: true })
+    } catch (err) {
+      handleError(err, { fallback: 'Could not log out' })
+      setLoggingOut(false)
+    }
+  }
+
   return (
     <header className="flex items-center justify-between px-6 py-4 max-[760px]:px-5 max-[760px]:pb-3 max-[760px]:pt-[max(12px,env(safe-area-inset-top))]">
       <BrandMark />
-      <ThemeSwitch />
+      <div className="flex items-center gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Log out"
+          title="Log out"
+          disabled={loggingOut}
+          onClick={() => void handleLogout()}
+        >
+          <LogOut aria-hidden="true" />
+        </Button>
+        <ThemeSwitch />
+      </div>
     </header>
   )
 }
@@ -64,21 +94,40 @@ function Window({ children }: { children: ReactNode }) {
 
 function MobileNav({ workspaceId }: { workspaceId?: string }) {
   const navigate = useNavigate()
-  const button = 'grid size-11 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground'
+  const button =
+    'grid size-11 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground'
 
   return (
-    <nav className="fixed inset-x-0 bottom-[max(8px,env(safe-area-inset-bottom))] z-20 hidden justify-center gap-2 max-[760px]:flex" aria-label="Mobile navigation">
+    <nav
+      className="fixed inset-x-0 bottom-[max(8px,env(safe-area-inset-bottom))] z-20 hidden justify-center gap-2 max-[760px]:flex"
+      aria-label="Mobile navigation"
+    >
       <div className="flex items-center gap-1 rounded-full border border-border bg-card p-1.5 shadow-lg">
-        <button type="button" className={button} aria-label="Workspaces" onClick={() => navigate('/')}>
+        <button
+          type="button"
+          className={button}
+          aria-label="Workspaces"
+          onClick={() => navigate('/')}
+        >
           <Home size={19} />
         </button>
         {workspaceId ? (
-          <button type="button" className={button} aria-label="Model provider" onClick={() => navigate(`/onboarding/${workspaceId}`)}>
+          <button
+            type="button"
+            className={button}
+            aria-label="Model provider"
+            onClick={() => navigate(`/onboarding/${workspaceId}`)}
+          >
             <KeyRound size={19} />
           </button>
         ) : null}
         {workspaceId ? (
-          <button type="button" className={button} aria-label="Agents" onClick={() => navigate(`/workspaces/${workspaceId}/chat`)}>
+          <button
+            type="button"
+            className={button}
+            aria-label="Agents"
+            onClick={() => navigate(`/workspaces/${workspaceId}/chat`)}
+          >
             <MessageCircle size={19} />
           </button>
         ) : null}
