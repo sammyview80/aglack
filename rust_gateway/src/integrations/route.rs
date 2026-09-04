@@ -22,6 +22,7 @@ use super::token_delivery;
 use super::{IntegrationStore, OpenConnectorApi, Provider};
 use crate::response::{error, success};
 use crate::workspaces::resolve::{resolve_existing_workspace, resolve_ready_workspace};
+use crate::workspaces::route::workspace_target_addr;
 use crate::workspaces::WorkspaceStore;
 
 pub use super::mcp_proxy::integration_mcp_route;
@@ -1167,7 +1168,7 @@ pub async fn put_integration_agent_route(
         Err(response) => return response,
     };
 
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
+    let target_addr = workspace_target_addr(ports.wrapper_port);
     let rewritten_path = format!("/api/wrapper/v1/integrations/agents/{agent_slug}");
     crate::proxy::forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await
 }
@@ -1188,7 +1189,7 @@ pub async fn list_integration_agents_route(
         Err(response) => return response,
     };
 
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
+    let target_addr = workspace_target_addr(ports.wrapper_port);
     let rewritten_path = "/api/wrapper/v1/integrations/agents".to_string();
     crate::proxy::forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await
 }
