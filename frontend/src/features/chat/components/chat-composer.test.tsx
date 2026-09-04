@@ -89,6 +89,16 @@ const COMMANDS: CommandInfo[] = [
     cliOnly: false,
     gatewayOnly: false,
   },
+  {
+    name: 'stop',
+    description: 'Stop streaming response',
+    category: 'Session',
+    aliases: ['cancel', 'interrupt'],
+    argsHint: '',
+    subcommands: [],
+    cliOnly: false,
+    gatewayOnly: false,
+  },
 ]
 
 const BUNDLES: CommandBundle[] = [
@@ -394,6 +404,29 @@ describe('ChatComposer slash commands', () => {
 
     await screen.findByText(/can't start a new chat while a message is still streaming/i)
     expect(onNewChat).not.toHaveBeenCalled()
+  })
+
+  it('runs /stop: calls onStop when streaming', async () => {
+    const user = userEvent.setup()
+    const onStop = vi.fn()
+    renderComposer({ onStop, isStreaming: true })
+
+    await user.type(input(), '/stop')
+    await user.keyboard('{Enter}')
+
+    expect(onStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses /stop when not streaming', async () => {
+    const user = userEvent.setup()
+    const onStop = vi.fn()
+    renderComposer({ onStop, isStreaming: false })
+
+    await user.type(input(), '/stop')
+    await user.keyboard('{Enter}')
+
+    await screen.findByText(/no active stream to stop/i)
+    expect(onStop).not.toHaveBeenCalled()
   })
 
   it('runs /compress: starts the job, polls until done, then calls onCompressionApplied (not onSend)', async () => {

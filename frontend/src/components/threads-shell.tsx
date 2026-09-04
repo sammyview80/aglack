@@ -63,6 +63,8 @@ type ThreadsShellProps = {
    * always-visible input at the bottom; a second floating element there
    * competes with it instead of adding value. */
   hideDock?: boolean
+  /** Keep workspace navigation on mobile while desktop chat keeps its clear composer. */
+  mobileDock?: boolean
   onCompose?: () => void
   onPublish?: (text: string) => void
   search?: string
@@ -145,6 +147,7 @@ export function ThreadsShell({
   alignCenter = false,
   hideAudiencePanel = false,
   hideDock = false,
+  mobileDock = false,
   onCompose,
   onPublish,
   search,
@@ -344,7 +347,7 @@ export function ThreadsShell({
             >
               <History size={21} />
             </button>
-            <button type="button" className={threadsUi.iconButton} aria-label="Quick actions" onClick={openCompose}>
+            <button type="button" className={cn(threadsUi.iconButton, 'max-[760px]:hidden')} aria-label="Quick actions" onClick={openCompose}>
               <Zap size={21} />
             </button>
           </div>
@@ -616,7 +619,7 @@ export function ThreadsShell({
           </div>
         </div>
       ) : null}
-      {!hideDock ? (
+      {(!hideDock || mobileDock) ? (
         <WorkspaceDock
           workspaceId={workspaceId}
           workspaceName={workspaceName}
@@ -625,6 +628,7 @@ export function ThreadsShell({
           onToggleAudiencePanel={() => setAudiencePanelOpen((v) => !v)}
           desktopPanelOpen={desktopPanelOpen}
           onToggleDesktopPanel={openDesktopPanel}
+          mobileOnly={hideDock}
         />
       ) : null}
     </main>

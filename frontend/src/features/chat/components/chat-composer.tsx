@@ -257,6 +257,17 @@ export function ChatComposer({
       return
     }
 
+    if (match?.kind === 'local-stop') {
+      setIsResolvingCommand(false)
+      clearDraft()
+      if (isStreaming) {
+        onStop()
+      } else {
+        pushResult(text, 'No active stream to stop.', true)
+      }
+      return
+    }
+
     if (match?.kind === 'local-compress') {
       // `/compress` (alias `/compact`): real backend job, already reachable
       // through the existing chat proxy (see `chat/api.ts`'s own doc

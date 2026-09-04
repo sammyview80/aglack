@@ -227,7 +227,7 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
                     setPreviewId(row.workspaceId)
                   }}
                 >
-                  <div className={cn('flex items-center hover:bg-muted', busyRow && 'opacity-55')}>
+                  <div className={cn('flex items-center hover:bg-muted max-[520px]:flex-col max-[520px]:items-stretch', busyRow && 'opacity-55')}>
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-3 py-2.5 text-left text-foreground"
@@ -250,7 +250,7 @@ export function WorkspaceList({ onCreate, onSetup }: WorkspaceListProps) {
                         <span className="text-xs text-muted-foreground">{label}</span>
                       </span>
                     </button>
-                    <span className="flex shrink-0 gap-0.5 pr-2">
+                    <span className="flex shrink-0 gap-0.5 px-2 pb-2 max-[520px]:justify-end">
                       <a
                         className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
                         href={hermesWebuiUrl(row.workspaceId)}

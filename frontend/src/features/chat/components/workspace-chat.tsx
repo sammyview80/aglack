@@ -166,6 +166,7 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
       workspaceName={workspaceName}
       title="Thread"
       hideDock
+      mobileDock
       onSelectSession={selectSession}
       selectedAgent={agent}
       onSelectAgent={selectAgent}

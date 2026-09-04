@@ -30,6 +30,7 @@ export type SlashMatch =
   | { kind: 'exec'; name: string; command: CommandInfo }
   | { kind: 'unsupported'; name: string; command: CommandInfo }
   | { kind: 'local-new-chat'; name: string; command: CommandInfo }
+  | { kind: 'local-stop'; name: string; command: CommandInfo }
   | { kind: 'local-compress'; name: string; command: CommandInfo; focusTopic?: string }
 
 const EMPTY: SlashSuggestions = { commands: [], bundles: [] }
@@ -103,6 +104,15 @@ function isLocalNewChatCommand(command: CommandInfo): boolean {
   return (
     LOCAL_NEW_CHAT_COMMAND_NAMES.has(command.name.toLowerCase()) ||
     command.aliases.some((a) => LOCAL_NEW_CHAT_COMMAND_NAMES.has(a.toLowerCase()))
+  )
+}
+
+const LOCAL_STOP_COMMAND_NAMES = new Set(['stop', 'cancel', 'interrupt'])
+
+function isLocalStopCommand(command: CommandInfo): boolean {
+  return (
+    LOCAL_STOP_COMMAND_NAMES.has(command.name.toLowerCase()) ||
+    command.aliases.some((a) => LOCAL_STOP_COMMAND_NAMES.has(a.toLowerCase()))
   )
 }
 
@@ -233,6 +243,7 @@ export function useSlashCommands(workspaceId: string | undefined, agent: string 
     )
     if (!command) return null
     if (isLocalNewChatCommand(command)) return { kind: 'local-new-chat', name: command.name, command }
+    if (isLocalStopCommand(command)) return { kind: 'local-stop', name: command.name, command }
     if (isLocalCompressCommand(command)) {
       const focusTopic = parseSlashArgs(text.trim())
       return { kind: 'local-compress', name: command.name, command, focusTopic: focusTopic || undefined }

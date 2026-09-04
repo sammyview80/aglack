@@ -31,7 +31,7 @@ export const integrationsUi = {
   connect:
     'h-8 rounded-lg bg-[var(--th-compose)] px-3.5 text-[13px] font-semibold text-white shadow-[0_5px_10px_#6944ee47] transition-[background-color,box-shadow] duration-150 hover:bg-[var(--th-compose-hover)] disabled:bg-[var(--th-search)] disabled:text-[var(--th-muted)] disabled:shadow-none',
   disconnect:
-    'h-8 rounded-lg border border-[var(--th-line)] bg-transparent px-3 text-[13px] font-semibold text-[var(--th-text)] opacity-0 transition-opacity duration-150 group-hover:opacity-100 hover:bg-[var(--th-hover)] disabled:opacity-50',
+    'h-8 rounded-lg border border-[var(--th-line)] bg-transparent px-3 text-[13px] font-semibold text-[var(--th-text)] opacity-0 transition-opacity duration-150 group-hover:opacity-100 hover:bg-[var(--th-hover)] disabled:opacity-50 max-[760px]:opacity-100',
   cancel:
     'h-8 rounded-lg border border-[var(--th-line)] bg-transparent px-3 text-[13px] font-semibold text-[var(--th-text)] hover:bg-[var(--th-hover)]',
   catalogGrid: 'grid grid-cols-3 gap-3 max-[900px]:grid-cols-2 max-[600px]:grid-cols-1',

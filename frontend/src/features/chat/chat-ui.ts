@@ -1,9 +1,9 @@
 /** Shared Tailwind classes for chat UI (threads-app tokens). */
 export const chatUi = {
   threadScroll:
-    'thread-scroll flex min-h-0 flex-1 flex-col overflow-hidden px-10 pb-6 pt-5 max-[760px]:px-3 max-[760px]:pb-4 max-[760px]:pt-3',
+    'thread-scroll flex min-h-0 flex-1 flex-col overflow-hidden px-10 pb-6 pt-5 max-[760px]:px-0 max-[760px]:pb-0 max-[760px]:pt-0',
   threadCard:
-    'thread-card mx-auto flex min-h-0 w-full max-w-[min(100%,920px)] flex-1 flex-col overflow-hidden shadow-[0_2px_5px_#1f1f2814]',
+    'thread-card mx-auto flex min-h-0 w-full max-w-[min(100%,920px)] flex-1 flex-col overflow-hidden shadow-[0_2px_5px_#1f1f2814] max-[760px]:shadow-none',
   threadMain:
     'thread-main flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-2 pt-4 max-[760px]:px-4 max-[760px]:pt-3',
   divider: 'divider my-2 mb-2.5 h-px shrink-0 bg-[var(--th-line)]',
@@ -59,7 +59,7 @@ export const chatUi = {
   // transcript. Keeping the fade's height within .composer's own padding
   // (instead of a negative top offset escaping upward) avoids that clip
   // entirely. Same reasoning sizes composerAttachments' headroom below.
-  composer: 'chat-composer relative z-20 shrink-0 max-[760px]:px-3',
+  composer: 'chat-composer relative z-20 shrink-0 max-[760px]:px-3 max-[760px]:pb-[max(12px,env(safe-area-inset-bottom))]',
   // Gradient mask filling .composer's own reserved top padding (see pt-16
   // above) — fades the transcript's actual background into the pill as it
   // approaches the input. Verified via threads-ui.ts: neither threadCard

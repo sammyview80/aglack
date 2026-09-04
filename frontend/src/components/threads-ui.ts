@@ -27,24 +27,24 @@ export const threadsUi = {
   // higher-numbered z-index inside appWindow could paint over a sibling
   // outside it despite that sibling being visually "above" everything.
   appWindow:
-    'isolate grid h-full min-h-0 w-full grid-rows-[57px_1fr] grid-cols-[72px_317px_minmax(560px,1fr)_327px] overflow-hidden rounded-[21px] border border-[var(--th-window-border)] bg-[var(--th-window)] shadow-[0_28px_70px_#0a011859,0_3px_12px_#1106223d] max-[1120px]:grid-cols-[72px_250px_minmax(500px,1fr)] max-[760px]:h-dvh max-[760px]:min-h-0 max-[760px]:grid-cols-[72px_1fr] max-[760px]:gap-0 max-[760px]:rounded-none',
+    'isolate grid h-full min-h-0 w-full grid-rows-[57px_1fr] grid-cols-[72px_317px_minmax(560px,1fr)_327px] overflow-hidden rounded-[21px] border border-[var(--th-window-border)] bg-[var(--th-window)] shadow-[0_28px_70px_#0a011859,0_3px_12px_#1106223d] max-[1120px]:grid-cols-[72px_250px_minmax(500px,1fr)] max-[760px]:h-dvh max-[760px]:min-h-0 max-[760px]:grid-cols-1 max-[760px]:grid-rows-[56px_minmax(0,1fr)] max-[760px]:gap-0 max-[760px]:border-0 max-[760px]:rounded-none',
   navbar:
-    'col-start-2 col-end-[-1] flex h-[57px] min-h-0 items-center gap-3 border-b border-[var(--th-header-line)] bg-[var(--th-sidebar)] px-3.5',
-  navbarBrand: 'flex items-center gap-[9px] text-[var(--th-text)] [&_strong]:text-base [&_strong]:tracking-[-0.4px]',
+    'col-start-2 col-end-[-1] flex h-[57px] min-h-0 items-center gap-3 border-b border-[var(--th-header-line)] bg-[var(--th-sidebar)] px-3.5 max-[760px]:col-start-1 max-[760px]:h-14 max-[760px]:px-4',
+  navbarBrand: 'flex min-w-0 items-center gap-[9px] text-[var(--th-text)] [&_strong]:truncate [&_strong]:text-base [&_strong]:tracking-[-0.4px]',
   navbarHome: 'flex cursor-pointer items-center gap-[9px] bg-transparent p-0 text-inherit',
   navbarActions:
-    'relative ml-auto flex items-center gap-[18px] max-[760px]:gap-[7px] max-[760px]:[&>:nth-child(1)]:hidden max-[760px]:[&>:nth-child(2)]:hidden max-[760px]:[&>:nth-last-child(2)]:hidden',
+    'relative ml-auto flex shrink-0 items-center gap-[18px] max-[760px]:gap-1 max-[760px]:[&>:nth-child(-n+4)]:hidden',
 
   guildRail:
-    'col-start-1 row-start-1 row-end-[-1] flex h-full min-h-0 w-[72px] min-w-[72px] flex-col items-center overflow-auto bg-[#1e1f22] px-0 pb-3 pt-3 max-[760px]:flex',
+    'col-start-1 row-start-1 row-end-[-1] flex h-full min-h-0 w-[72px] min-w-[72px] flex-col items-center overflow-auto bg-[#1e1f22] px-0 pb-3 pt-3 max-[760px]:hidden',
   guildHome:
-    'relative grid size-12 place-items-center overflow-hidden rounded-2xl bg-white p-0 text-white transition-[border-radius,background,color] duration-150 ease-out [&_img]:size-[88%] [&_img]:object-contain',
+    'relative grid size-12 place-items-center overflow-hidden rounded-2xl bg-white p-0 text-white transition-[border-radius,background,color] duration-150 ease-out [&_img]:size-[88%] [&_img]:object-contain max-[760px]:hidden',
   guildBtn:
-    'group relative grid size-12 place-items-center rounded-2xl bg-[#313338] text-[15px] font-bold tracking-[-0.3px] text-[#dbdee1] transition-[border-radius,background,color] duration-150 ease-out hover:rounded-2xl hover:bg-[#5865f2] hover:text-white aria-[current=page]:rounded-2xl aria-[current=page]:bg-[#5865f2] aria-[current=page]:text-white',
-  guildAction: 'mt-2 hover:bg-[#23a559] hover:text-white',
-  guildSplit: 'my-2 h-0.5 w-8 rounded-sm bg-[#35363c]',
-  guildList: 'flex flex-col gap-2',
-  guildEnd: 'mt-auto pt-2',
+    'group relative grid size-12 place-items-center rounded-2xl bg-[#313338] text-[15px] font-bold tracking-[-0.3px] text-[#dbdee1] transition-[border-radius,background,color] duration-150 ease-out hover:rounded-2xl hover:bg-[#5865f2] hover:text-white aria-[current=page]:rounded-2xl aria-[current=page]:bg-[#5865f2] aria-[current=page]:text-white max-[760px]:bg-transparent max-[760px]:text-[var(--th-icon)]',
+  guildAction: 'mt-2 hover:bg-[#23a559] hover:text-white max-[760px]:mt-0 max-[760px]:size-10',
+  guildSplit: 'my-2 h-0.5 w-8 rounded-sm bg-[#35363c] max-[760px]:hidden',
+  guildList: 'flex flex-col gap-2 max-[760px]:hidden',
+  guildEnd: 'mt-auto pt-2 max-[760px]:m-0 max-[760px]:p-0',
   guildPill:
     'absolute left-[-12px] h-0 w-1 rounded-r-[4px] bg-[#f2f3f5] transition-[height] duration-150 ease-out group-hover:h-5 group-aria-[current=page]:h-10',
 
@@ -54,7 +54,7 @@ export const threadsUi = {
     'grid h-[39px] w-[39px] place-content-center gap-0 rounded-[7px] bg-[#1e2633] pr-[5px] text-base leading-[9px] tracking-[-4px] text-[#f7f7f8] [&_span]:block [&_span]:h-2',
   iconButton:
     'grid place-items-center rounded-md bg-transparent p-[5px] text-[var(--th-icon)] transition-[background,transform] duration-200 hover:-translate-y-px hover:bg-[var(--th-icon-hover)]',
-  topAction: 'ml-auto',
+  topAction: 'ml-auto max-[760px]:hidden',
   composeButton:
     'mb-3 mt-3 flex h-8 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md bg-[var(--th-compose)] text-[13px] font-[600] text-white transition-colors duration-200 hover:bg-[var(--th-compose-hover)]',
   primaryNav: 'grid gap-1 px-px',
@@ -104,7 +104,7 @@ export const threadsUi = {
   desktopExpandStage: 'relative min-h-0 flex-1',
   desktopExpandScreen: 'absolute overflow-hidden bg-black',
   desktopExpandFrame: 'absolute left-0 top-0 origin-top-left border-0',
-  contentArea: 'flex h-full min-h-0 min-w-0 flex-col bg-[var(--th-content)]',
+  contentArea: 'flex h-full min-h-0 min-w-0 flex-col bg-[var(--th-content)] max-[760px]:col-start-1 max-[760px]:row-start-2 max-[760px]:pb-20',
   threadsBack:
     'mr-3 flex items-center gap-1.5 rounded-lg bg-transparent px-2.5 py-1.5 text-[13px] font-[560] text-[var(--th-text)] hover:bg-[var(--th-icon-hover)]',
   searchBox:

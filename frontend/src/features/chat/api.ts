@@ -411,7 +411,8 @@ export function mediaFileUrl(
   )
 }
 
-/** Terminates the turn. Keyed by `streamId`, not `sessionId`. */
+/** Terminates the turn. Keyed by `streamId`, not `sessionId`.
+ * Note: Hermes handles cancel on GET /api/chat/cancel?stream_id=... */
 export async function cancelTurn(
   workspaceId: string,
   agent: string,
@@ -419,7 +420,6 @@ export async function cancelTurn(
 ): Promise<CancelTurnResult> {
   const data = await chatFetch<WireCancelTurnResult>(
     withAgent(`${chatBase(workspaceId)}/api/chat/cancel?stream_id=${encodeURIComponent(streamId)}`, agent),
-    { method: 'POST' },
   )
   return { ok: data.ok, cancelled: data.cancelled, streamId: data.stream_id }
 }

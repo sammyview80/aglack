@@ -36,10 +36,10 @@ export function SettingsShell({
 
   return (
     <div className="settings-shell threads-app flex h-dvh min-h-dvh items-stretch overflow-hidden bg-[var(--th-backdrop)] p-0">
-      <div className="settings-window flex h-full w-full min-h-0 overflow-hidden rounded-[21px] border border-[var(--th-window-border)] bg-[var(--th-content)] shadow-[0_28px_70px_#0a011859,0_3px_12px_#1106223d] max-[760px]:rounded-none">
+      <div className="settings-window flex h-full w-full min-h-0 overflow-hidden rounded-[21px] border border-[var(--th-window-border)] bg-[var(--th-content)] shadow-[0_28px_70px_#0a011859,0_3px_12px_#1106223d] max-[760px]:rounded-none max-[760px]:border-0">
 
         {/* Left sidebar */}
-        <aside className="settings-sidebar flex w-[220px] min-w-[220px] flex-col border-r border-[var(--th-sidebar-line)] bg-[var(--th-sidebar)] px-3 pb-6 pt-5 max-[700px]:hidden">
+        <aside className="settings-sidebar flex w-[220px] min-w-[220px] flex-col border-r border-[var(--th-sidebar-line)] bg-[var(--th-sidebar)] px-3 pb-6 pt-5 max-[760px]:hidden">
           {/* Back button */}
           <button
             type="button"
@@ -80,10 +80,10 @@ export function SettingsShell({
         {/* Content */}
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {/* Top bar */}
-          <header className="flex h-[57px] shrink-0 items-center gap-3 border-b border-[var(--th-header-line)] px-8 max-[700px]:px-4">
+          <header className="flex h-[57px] shrink-0 items-center gap-3 border-b border-[var(--th-header-line)] px-8 max-[760px]:px-4">
             <button
               type="button"
-              className="mr-1 hidden items-center gap-1.5 text-[13px] font-medium text-[var(--th-muted)] hover:text-[var(--th-text)] max-[700px]:flex"
+              className="mr-1 hidden items-center gap-1.5 text-[13px] font-medium text-[var(--th-muted)] hover:text-[var(--th-text)] max-[760px]:flex"
               onClick={() => navigate(`/workspaces/${workspaceId}/chat`, { state: { name: workspaceName } })}
             >
               <ChevronLeft size={15} strokeWidth={2.5} />
@@ -95,7 +95,7 @@ export function SettingsShell({
           </header>
 
           {/* Scrollable content */}
-          <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6 max-[700px]:px-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6 max-[760px]:px-4 max-[760px]:py-4">
             <div className="mx-auto w-full max-w-[1100px]">
               {children}
             </div>

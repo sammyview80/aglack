@@ -64,7 +64,7 @@ export function ModeSelect({
   }
 
   return (
-    <SlackOnboardingLayout title="Choose a starting point">
+    <SlackOnboardingLayout title="Choose a starting point" workspaceId={workspaceId}>
       <div className="flex w-full flex-col gap-5">
         <div className="space-y-1">
           <h2>Choose a starting point</h2>

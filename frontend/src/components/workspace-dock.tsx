@@ -15,6 +15,7 @@ type WorkspaceDockProps = {
   onToggleAudiencePanel?: () => void
   desktopPanelOpen?: boolean
   onToggleDesktopPanel?: () => void
+  mobileOnly?: boolean
 }
 
 /** Floating bottom dock: quick nav to what actually exists today (chat,
@@ -42,6 +43,7 @@ export function WorkspaceDock({
   onToggleAudiencePanel,
   desktopPanelOpen = false,
   onToggleDesktopPanel,
+  mobileOnly = false,
 }: WorkspaceDockProps) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
@@ -62,7 +64,10 @@ export function WorkspaceDock({
   const iconBtnActive = 'bg-[var(--th-compose)] text-white hover:bg-[var(--th-compose)]'
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-10 z-10 flex items-center justify-center gap-2.5">
+    <div className={cn(
+      'pointer-events-none fixed inset-x-0 bottom-10 z-10 flex items-center justify-center gap-2.5 max-[760px]:bottom-[max(8px,env(safe-area-inset-bottom))]',
+      mobileOnly && 'max-[760px]:flex min-[761px]:hidden',
+    )}>
       {/* Dark theme needs its own border + lighter shadow — a black
           shadow is invisible against the app's true-black canvas, and a
           1px ring alone doesn't read as a boundary either. */}
