@@ -125,7 +125,16 @@ pub(crate) async fn check_wrapper_health(
     wrapper_port: u16,
     timeout: Duration,
 ) -> bool {
-    let health_url = format!("http://127.0.0.1:{wrapper_port}/api/wrapper/v1/health");
+    check_wrapper_health_at(client, "127.0.0.1", wrapper_port, timeout).await
+}
+
+pub(crate) async fn check_wrapper_health_at(
+    client: &reqwest::Client,
+    host: &str,
+    wrapper_port: u16,
+    timeout: Duration,
+) -> bool {
+    let health_url = format!("http://{host}:{wrapper_port}/api/wrapper/v1/health");
     match tokio::time::timeout(timeout, client.get(&health_url).send()).await {
         Ok(Ok(response)) => response.status().is_success(),
         // Either the request itself errored (connection refused, DNS,
@@ -147,8 +156,18 @@ pub(crate) async fn check_desktop_health(
     desktop_port: u16,
     timeout: Duration,
 ) -> bool {
+    check_desktop_health_at(client, "127.0.0.1", workspace_id, desktop_port, timeout).await
+}
+
+pub(crate) async fn check_desktop_health_at(
+    client: &reqwest::Client,
+    host: &str,
+    workspace_id: &str,
+    desktop_port: u16,
+    timeout: Duration,
+) -> bool {
     let url = format!(
-        "http://127.0.0.1:{desktop_port}{}",
+        "http://{host}:{desktop_port}{}",
         desktop_subpath(workspace_id)
     );
     match tokio::time::timeout(timeout, client.get(&url).send()).await {

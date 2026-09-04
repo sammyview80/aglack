@@ -35,7 +35,7 @@ use std::sync::Arc;
 use super::agent_cookie::inject_agent_cookie;
 use crate::proxy::forward_to;
 use crate::workspaces::resolve::resolve_ready_workspace;
-use crate::workspaces::route::WorkspacesState;
+use crate::workspaces::route::{workspace_target_addr, WorkspacesState};
 
 /// Handles `/workspaces/:id/chat/*path`.
 pub async fn chat_proxy_route_with_path(
@@ -76,7 +76,7 @@ async fn chat_proxy(
         return response;
     }
 
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
+    let target_addr = workspace_target_addr(ports.wrapper_port);
     let query = req
         .uri()
         .query()

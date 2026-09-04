@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::proxy::forward_to;
 use crate::workspaces::resolve::resolve_ready_workspace;
-use crate::workspaces::route::WorkspacesState;
+use crate::workspaces::route::{workspace_target_addr, WorkspacesState};
 
 pub(super) async fn forward_to_wrapper_namespace(
     state: Arc<WorkspacesState>,
@@ -29,7 +29,7 @@ pub(super) async fn forward_to_wrapper_namespace(
         Err(response) => return response,
     };
 
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
+    let target_addr = workspace_target_addr(ports.wrapper_port);
     // Preserve the original request's query string (e.g. GET
     // /oauth/poll?flow_id=... — see backend/wrapper's onboarding routes) —
     // only the PATH is being rewritten to strip this route's own

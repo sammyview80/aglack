@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use crate::proxy::forward_to;
 use crate::workspaces::resolve::resolve_ready_workspace;
-use crate::workspaces::route::WorkspacesState;
+use crate::workspaces::route::{workspace_target_addr, WorkspacesState};
 
 /// Handles `/workspaces/:id/hermes-webui/*path`.
 pub async fn hermes_webui_proxy_route_with_path(
@@ -56,7 +56,7 @@ async fn hermes_webui_proxy(
         Err(response) => return response,
     };
 
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
+    let target_addr = workspace_target_addr(ports.wrapper_port);
     let query = req
         .uri()
         .query()

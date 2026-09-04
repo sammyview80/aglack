@@ -72,6 +72,7 @@ use crate::integrations::IntegrationsState;
 use crate::proxy::forward_to;
 use crate::response::error;
 use crate::workspaces::resolve::resolve_ready_workspace;
+use crate::workspaces::route::workspace_target_addr;
 
 /// The only three actions the daemon's own `_AGENT_PATH_RE` recognizes —
 /// see this module's own doc comment for why this allowlist is enforced
@@ -158,7 +159,7 @@ pub async fn browser_proxy_route(
         Err(response) => return response,
     };
 
-    let target_addr = format!("127.0.0.1:{}", ports.browser_port);
+    let target_addr = workspace_target_addr(ports.browser_port);
     let rewritten_path = format!("/agents/{agent_id}/{action}");
 
     forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await

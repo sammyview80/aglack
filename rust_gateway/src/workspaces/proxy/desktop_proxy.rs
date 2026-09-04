@@ -36,7 +36,7 @@ use tokio_tungstenite::tungstenite::{
 
 use crate::proxy::forward_to;
 use crate::workspaces::resolve::resolve_ready_workspace;
-use crate::workspaces::route::WorkspacesState;
+use crate::workspaces::route::{workspace_target_addr, WorkspacesState};
 
 /// Build the outbound WebSocket handshake request to `target_ws_url` with
 /// the two headers KasmVNC's own websockify implementation REQUIRES —
@@ -134,7 +134,7 @@ async fn desktop_proxy(
         // echo server, not real nginx, and an earlier live check (against
         // a container whose nginx behavior at that exact moment differed)
         // did not catch it.
-        let target_ws_url = format!("ws://127.0.0.1:{}{}", ports.desktop_port, req.uri().path());
+    let target_ws_url = format!("ws://{}{}", workspace_target_addr(ports.desktop_port), req.uri().path());
         // Real bug found live: negotiate the SAME `binary` subprotocol
         // the real KasmVNC backend always returns (confirmed live: its
         // nginx answers with `sec-websocket-protocol: binary` — see this
@@ -165,7 +165,7 @@ async fn desktop_proxy(
     // the full original `/workspaces/<id>/desktop/...` path returns 200.
     // `None` here means `forward_to` forwards `req`'s own path+query
     // completely unchanged — see its own doc comment.
-    let target_addr = format!("127.0.0.1:{}", ports.desktop_port);
+    let target_addr = workspace_target_addr(ports.desktop_port);
     forward_to(&state.http_client, &target_addr, req, None).await
 }
 

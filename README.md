@@ -136,7 +136,8 @@ aglack test                     # run every suite (gateway, wrapper, seeder, fro
 aglack test gateway              # just one suite
 aglack image build               # docker build the workspace-image
 aglack workspace list            # GET /workspaces on the real gateway
-aglack workspace create [name]   # POST /workspaces — create a real container
+  aglack workspace create [name]   # POST /workspaces — create a real container
+  aglack workspace retry <name>    # retry failed launch; clean stale container first
 aglack workspace rm <id>         # DELETE /workspaces/:id
 aglack status                    # is the gateway reachable?
 ```
@@ -146,6 +147,20 @@ gateway` runs `cargo test`, `aglack image build` runs the same `docker
 build` from the Install section above, `aglack workspace ...` calls the
 gateway's own HTTP API (see `rust_gateway/src/app.rs`'s routes). Nothing
 here reimplements those tools; it only gives one name to remember.
+
+### Workspace recovery and chat continuity
+
+Workspace creation is retry-safe. If a previous launch left a container named
+`hermes-ws-<workspace-id>`, the gateway removes that stale container before
+creating a fresh one, then waits for both wrapper and desktop health checks.
+Use `aglack workspace retry <name>` (or repeat `workspace create`) after a
+failed launch.
+
+Chat sessions are isolated per workspace and agent. Switching agent tabs keeps
+the server-side turn alive; returning reattaches with stream replay. The client
+reloads and concatenates the complete session history, and invalidates history
+after each successful send so recently submitted user messages survive tab
+switches and hard refreshes.
 
 ### Manual setup (equivalent, step by step)
 

@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use super::WorkspacesState;
 use crate::response::{error, success};
-use crate::workspaces::container::check_wrapper_health;
+use crate::workspaces::container::check_wrapper_health_at;
+use crate::workspaces::route::workspace_target_host;
 use crate::workspaces::store::WorkspaceListItem;
 use crate::workspaces::WorkspaceStatus;
 use crate::auth::AuthenticatedUser;
@@ -179,7 +180,7 @@ async fn run_health_checks(
             checks.spawn(async move {
                 (
                     index,
-                    check_wrapper_health(&client, wrapper_port, HEALTH_CHECK_TIMEOUT).await,
+                    check_wrapper_health_at(&client, &workspace_target_host(), wrapper_port, HEALTH_CHECK_TIMEOUT).await,
                 )
             });
         }
