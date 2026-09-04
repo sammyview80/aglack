@@ -106,6 +106,13 @@ pub struct DockerCliLauncher {
     /// `config::WorkspacesConfig::workspace_shm_size`'s own doc comment.
     /// Configured via `WORKSPACE_SHM_SIZE` in `.env`, defaults to `1g`.
     shm_size: String,
+    /// `BROWSER_IDLE_TIMEOUT_MINUTES` injected into the container's
+    /// `browser_manager.py` daemon via its own boot-script block — see
+    /// `config::WorkspacesConfig::workspace_browser_idle_timeout_minutes`'s
+    /// own doc comment. Configured via
+    /// `WORKSPACE_BROWSER_IDLE_TIMEOUT_MINUTES` in `.env`, defaults to
+    /// `4` (minutes); `0` means "never idle-kill".
+    browser_idle_timeout_minutes: String,
 }
 
 impl DockerCliLauncher {
@@ -117,6 +124,7 @@ impl DockerCliLauncher {
         gateway_internal_url: String,
         memory_limit: String,
         shm_size: String,
+        browser_idle_timeout_minutes: String,
     ) -> Self {
         Self {
             image_tag,
@@ -126,6 +134,7 @@ impl DockerCliLauncher {
             gateway_internal_url,
             memory_limit,
             shm_size,
+            browser_idle_timeout_minutes,
         }
     }
 }
@@ -246,6 +255,7 @@ impl ContainerLauncher for DockerCliLauncher {
             &self.frontend_origin,
             workspace_id,
             &self.gateway_internal_url,
+            &self.browser_idle_timeout_minutes,
         )
         .await?;
 

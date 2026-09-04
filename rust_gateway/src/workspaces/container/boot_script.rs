@@ -141,6 +141,7 @@ pub(crate) fn wrapper_boot_script(
     frontend_origin: &str,
     workspace_id: &str,
     gateway_internal_url: &str,
+    browser_idle_timeout_minutes: &str,
 ) -> String {
     let workspace_chown_target = workspace_chown_target(workspace_default_path);
     format!(
@@ -170,9 +171,40 @@ pub(crate) fn wrapper_boot_script(
      exec /opt/hermes/.venv/bin/hermes-webui-wrapper\n\
      ' >/config/hermes-webui-wrapper.log 2>&1 &\n\
      {browser_manager_launch_line}\
+     {desktop_terminal_launch_line}\
      exit 0\n",
-        browser_manager_launch_line = browser_manager_launch_line(),
+        browser_manager_launch_line = browser_manager_launch_line(browser_idle_timeout_minutes),
+        desktop_terminal_launch_line = desktop_terminal_launch_line(),
     )
+}
+
+/// The `setsid su -s /bin/sh abc -c '...'` block that starts ONE visible
+/// `xterm` on the workspace's KasmVNC desktop (`DISPLAY=:1`) at boot.
+///
+/// Real usability regression found live: `patch_kasmvnc_hide_control_bar.py`
+/// and `patch_kasmvnc_hide_lsbar.py` deliberately hide every KasmVNC/LSIO
+/// bar, and IceWM in this image auto-starts nothing — so a fresh workspace
+/// desktop showed ONLY the wallpaper (Xvnc + IceWM confirmed running via
+/// `docker exec`, no client windows at all) with no UI path left for a user
+/// to open a terminal. A manual `xterm` as `abc` on `:1` was confirmed to
+/// produce a visible terminal; this block does exactly that at boot.
+///
+/// `/custom-cont-init.d/` hooks run BEFORE s6's long-running services (the
+/// Xvnc server included), so the block polls for the `:1` X socket
+/// (`/tmp/.X11-unix/X1`) before `exec`ing — an immediate `xterm` would die
+/// with "can't open display" and never come back. The poll is bounded
+/// (`sleep 1`, up to 60 tries) so a broken Xvnc never leaves a process
+/// spinning forever. Same detached `setsid`/as-`abc`/own-logfile shape as
+/// the wrapper and browser-manager blocks above.
+fn desktop_terminal_launch_line() -> String {
+    "setsid su -s /bin/sh abc -c '\n\
+     export HOME=/config\n\
+     export DISPLAY=:1\n\
+     i=0\n\
+     while [ ! -S /tmp/.X11-unix/X1 ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done\n\
+     exec xterm\n\
+     ' >/config/hermes-desktop-terminal.log 2>&1 &\n"
+        .to_string()
 }
 
 /// The `setsid su -s /bin/sh abc -c '...'` block that starts
@@ -200,11 +232,26 @@ pub(crate) fn wrapper_boot_script(
 /// sets to prefer `/opt/hermes/.venv/bin` first) matches that file's own
 /// stated design rather than hardcoding one specific interpreter path
 /// this daemon's own docstring says not to depend on.
-fn browser_manager_launch_line() -> &'static str {
-    "setsid su -s /bin/sh abc -c '\n\
+/// `browser_idle_timeout_minutes` becomes `BROWSER_IDLE_TIMEOUT_MINUTES`
+/// in the daemon's own environment — see
+/// `config::WorkspacesConfig::workspace_browser_idle_timeout_minutes`'s
+/// own doc comment for the real request this exists to satisfy
+/// ("configure it for lifetime or after 4 min or anything") and
+/// `backend/workspace-image/browser_manager.py`'s own module-level
+/// `BROWSER_IDLE_TIMEOUT_MINUTES` doc comment for how the daemon
+/// consumes it (a plain `float(...)` parse, `<= 0` meaning "never idle-
+/// kill"). Passed through VERBATIM — this function does no numeric
+/// validation of its own, matching `WorkspacesConfig`'s own "parsed by
+/// the real consumer, not duplicated here" contract for
+/// `workspace_memory_limit`/`workspace_shm_size`.
+fn browser_manager_launch_line(browser_idle_timeout_minutes: &str) -> String {
+    format!(
+        "setsid su -s /bin/sh abc -c '\n\
      export DISPLAY=:1\n\
+     export BROWSER_IDLE_TIMEOUT_MINUTES={browser_idle_timeout_minutes}\n\
      exec python3 /opt/hermes-browser-manager/browser_manager.py\n\
      ' >/config/hermes-browser-manager.log 2>&1 &\n"
+    )
 }
 
 /// Writes `wrapper_boot_script(allowed_origins, workspace_default_path,
@@ -236,6 +283,7 @@ pub(crate) async fn deliver_boot_script(
     frontend_origin: &str,
     workspace_id: &str,
     gateway_internal_url: &str,
+    browser_idle_timeout_minutes: &str,
 ) -> Result<(), super::super::CreateWorkspaceError> {
     let script = wrapper_boot_script(
         allowed_origins,
@@ -243,6 +291,7 @@ pub(crate) async fn deliver_boot_script(
         frontend_origin,
         workspace_id,
         gateway_internal_url,
+        browser_idle_timeout_minutes,
     );
     let tmp_file = tempfile::Builder::new()
         .prefix("hermes-webui-wrapper-boot-")
@@ -289,6 +338,7 @@ mod tests {
             "http://localhost:5173",
             "ws-abc123",
             "http://host.docker.internal:8080",
+            "4",
         );
         assert!(
             script.contains("export INTEGRATIONS_WORKSPACE_ID=ws-abc123"),
@@ -313,6 +363,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(script.contains("mkdir -p /run/hermes"));
         assert!(script
@@ -328,6 +379,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(
             script.contains("git config --global --add safe.directory /opt/hermes-webui/upstream"),
@@ -344,6 +396,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(script.contains("su -s /bin/sh abc -c"));
     }
@@ -364,6 +417,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(
             script.contains("python3 /opt/hermes-browser-manager/browser_manager.py"),
@@ -395,6 +449,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         let browser_manager_block_start = script
             .find("python3 /opt/hermes-browser-manager/browser_manager.py")
@@ -411,6 +466,118 @@ mod tests {
         );
     }
 
+    /// Real, requested configurability: `WORKSPACE_BROWSER_IDLE_TIMEOUT_MINUTES`
+    /// must actually reach `browser_manager.py`'s own environment as
+    /// `BROWSER_IDLE_TIMEOUT_MINUTES` — see
+    /// `config::WorkspacesConfig::workspace_browser_idle_timeout_minutes`'s
+    /// own doc comment for the real user request this satisfies.
+    #[test]
+    fn boot_script_exports_the_caller_supplied_browser_idle_timeout() {
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+            "17",
+        );
+        let browser_manager_block_start = script
+            .find("python3 /opt/hermes-browser-manager/browser_manager.py")
+            .expect("browser-manager launch line must exist — see the sibling test");
+        let idle_timeout_export_idx = script
+            .find("export BROWSER_IDLE_TIMEOUT_MINUTES=17")
+            .expect(
+                "missing `export BROWSER_IDLE_TIMEOUT_MINUTES=<caller-supplied value>` — \
+                 without it, browser_manager.py falls back to its own hardcoded default \
+                 instead of the value this gateway was actually configured with",
+            );
+        assert!(
+            idle_timeout_export_idx < browser_manager_block_start,
+            "BROWSER_IDLE_TIMEOUT_MINUTES must be exported BEFORE the browser-manager \
+             daemon starts, in the SAME `su -c` block — same requirement as DISPLAY above"
+        );
+    }
+
+    /// `0` (the real "lifetime"/"never idle-kill" opt-out) must pass
+    /// through verbatim, not be treated as "unset" or rejected — this
+    /// function does no numeric validation of its own by design (see its
+    /// own doc comment).
+    #[test]
+    fn boot_script_passes_through_a_zero_idle_timeout_verbatim() {
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+            "0",
+        );
+        assert!(script.contains("export BROWSER_IDLE_TIMEOUT_MINUTES=0"));
+    }
+
+    /// Real usability regression found live: after the KasmVNC control bar
+    /// (`patch_kasmvnc_hide_control_bar.py`) and the LSIO app bar
+    /// (`patch_kasmvnc_hide_lsbar.py`) were deliberately hidden, a fresh
+    /// workspace desktop showed ONLY the wallpaper — Xvnc and IceWM were
+    /// running fine, but nothing ever started a terminal, and the hidden
+    /// bars removed every UI path a user had to launch one. Every new
+    /// workspace must boot with one visible `xterm` for the desktop user.
+    #[test]
+    fn boot_script_launches_one_visible_xterm_for_the_desktop_user() {
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+            "4",
+        );
+        let xterm_idx = script
+            .find("exec xterm")
+            .expect("missing the xterm launch line — a fresh desktop shows only wallpaper without it");
+        let block_start = script[..xterm_idx]
+            .rfind("su -s /bin/sh abc -c")
+            .expect("xterm must run inside its own `su -s /bin/sh abc -c` block, as abc not root");
+        let display_export_idx = script[block_start..xterm_idx]
+            .find("export DISPLAY=:1")
+            .expect("DISPLAY must be exported inside the xterm block, before xterm starts");
+        assert!(display_export_idx < xterm_idx - block_start);
+        assert!(
+            script.matches("exec xterm").count() == 1,
+            "exactly ONE terminal per workspace, not one per boot block"
+        );
+    }
+
+    /// `/custom-cont-init.d/` hooks run BEFORE s6's long-running services
+    /// (including Xvnc) start, so an `xterm` launched immediately would fail
+    /// with "can't open display" and never come back. The xterm block must
+    /// wait for the `:1` X socket to appear before exec'ing, and must be
+    /// bounded so a broken Xvnc never leaves a stuck process behind.
+    #[test]
+    fn boot_script_waits_for_the_x_display_socket_before_launching_xterm() {
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+            "4",
+        );
+        let xterm_idx = script.find("exec xterm").expect("see sibling test");
+        let block_start = script[..xterm_idx]
+            .rfind("su -s /bin/sh abc -c")
+            .expect("see sibling test");
+        let block = &script[block_start..xterm_idx];
+        assert!(
+            block.contains("/tmp/.X11-unix/X1"),
+            "xterm block must wait on the :1 X socket before exec — got {block}"
+        );
+        assert!(
+            block.contains("sleep"),
+            "the wait must poll (sleep) rather than spin — got {block}"
+        );
+    }
+
     #[test]
     fn boot_script_sets_required_wrapper_env_vars() {
         let script = wrapper_boot_script(
@@ -419,6 +586,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(script.contains("export HERMES_HOME=/config/.hermes"));
         assert!(script.contains("export HERMES_WRAPPER_HOST=0.0.0.0"));
@@ -488,6 +656,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(
             script.contains(
@@ -515,6 +684,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(
             script.contains("export HERMES_WEBUI_DEFAULT_WORKSPACE=/data/agent-workspaces/main"),
@@ -572,6 +742,7 @@ mod tests {
             "https://app.example.com",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(
             script.contains("export HERMES_FRONTEND_ORIGIN=https://app.example.com"),
@@ -588,6 +759,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         assert!(
             script.contains("exec /opt/hermes/.venv/bin/hermes-webui-wrapper"),
@@ -606,6 +778,7 @@ mod tests {
             "http://localhost:5173",
             "ws-test",
             "http://gateway-internal:8080",
+            "4",
         );
         // custom-cont-init.d hooks must exit 0 quickly (they run before
         // s6's long-running services start) — the wrapper is started

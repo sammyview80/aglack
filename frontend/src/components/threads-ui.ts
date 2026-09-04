@@ -1,3 +1,14 @@
+/** Native workspace desktop geometry — must match the Xvnc `-geometry`
+ * the workspace image runs (`backend/workspace-image/
+ * patch_kasmvnc_resource_efficiency.py`: `1024x576`, with noVNC
+ * `resize=scale` so the server never re-sizes to the client). The iframe
+ * in threads-shell.tsx uses these as its HTML width/height and
+ * `threadsUi.desktopPreviewThumb` carries the matching `aspect-[W/H]`
+ * literal (Tailwind needs a static class, so keep both in sync — see
+ * threads-ui.test.ts). */
+export const DESKTOP_NATIVE_WIDTH = 1024
+export const DESKTOP_NATIVE_HEIGHT = 576
+
 /** Tailwind class strings for the Threads shell (--th-* tokens on `.threads-app`). */
 export const threadsUi = {
   root:
@@ -66,12 +77,13 @@ export const threadsUi = {
 
   desktopPreviewPanel: 'flex flex-1 min-h-0 flex-col pt-4',
   // w-full so the thumb never overflows the audience column (327px /
-  // 300px drawer, both px-8). aspect-[1024/768] matches native Xvnc
-  // geometry — width > height. Iframe is the real 1024×768 buffer,
-  // CSS-scaled in threads-shell.tsx. Control bar is hidden in the
-  // workspace image, so the full desktop is shown.
+  // 300px drawer, both px-8). aspect-[1024/576] matches native Xvnc
+  // geometry (DESKTOP_NATIVE_WIDTH/HEIGHT above) — width > height.
+  // Iframe is the real 1024×576 buffer, CSS-scaled in threads-shell.tsx.
+  // Control bar is hidden in the workspace image, so the full desktop is
+  // shown.
   desktopPreviewThumb:
-    'group relative w-full aspect-[1024/768] shrink-0 overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)]',
+    'group relative w-full aspect-[1024/576] shrink-0 overflow-hidden rounded-xl border border-[var(--th-line)] bg-[var(--th-card)]',
   desktopPreviewFrame: 'pointer-events-none absolute left-0 top-0 origin-top-left border-0',
   desktopPreviewEmpty: 'grid size-full place-items-center text-[var(--th-muted)]',
   desktopPreviewHit:

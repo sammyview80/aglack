@@ -331,6 +331,7 @@ mod tests {
                 "http://gateway-internal:8080".to_string(),
                 "4g".to_string(),
                 "1g".to_string(),
+                "4".to_string(),
             )),
         )
     }

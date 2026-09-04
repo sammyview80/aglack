@@ -140,6 +140,45 @@ PROFILE_ROOT = Path("/workspace/.browser-profiles")
 STOP_GRACE_PERIOD_SECONDS = 5.0
 _STOP_POLL_INTERVAL_SECONDS = 0.1
 
+# `BROWSER_IDLE_TIMEOUT_MINUTES` — real, requested, EASILY configurable
+# per-deployment (env var, no code change needed): after this many
+# minutes with no `start()`/`status()` call for a given agent_id, its
+# Chromium process is killed automatically (profile directory untouched,
+# same as an explicit `stop()`) — a real user request, on top of the
+# explicit-stop-only design this daemon originally shipped with, to keep
+# resource use bounded on a constrained (4GB total RAM) deployment target
+# even when an agent opens a browser and never explicitly closes it.
+#
+# `0` (or any non-positive value) DISABLES idle-killing entirely — an
+# agent's browser then runs until explicitly `stop()`'d or the whole
+# container stops, exactly like this daemon's original behavior. This is
+# the real "lifetime"/"forever" option: set
+# `BROWSER_IDLE_TIMEOUT_MINUTES=0` to opt all the way back out.
+#
+# REAL, DOCUMENTED LIMITATION, not silently assumed away: this daemon has
+# NO visibility into actual CDP traffic (browser navigation/clicks) —
+# CDP connects directly from a tool module's own Python process to
+# Chromium's port, never through this daemon at all (see
+# `default_launch_chromium`'s own `--remote-debugging-address` doc
+# comment). The ONLY activity this daemon can observe is calls to its
+# OWN `start`/`status` HTTP endpoints. A long-running `browser_task` call
+# that does real work for many minutes WITHOUT its caller ever calling
+# `status()` again in the meantime would look idle to this daemon and
+# could be killed mid-task — a real, accepted risk of the simplest
+# correct implementation, not a bug to silently paper over. If this
+# becomes a real problem in practice, the fix is a heartbeat call from
+# inside `browser_task.py`'s own run loop, not a change here.
+DEFAULT_IDLE_TIMEOUT_MINUTES = 4
+BROWSER_IDLE_TIMEOUT_MINUTES = float(
+    os.environ.get("BROWSER_IDLE_TIMEOUT_MINUTES", DEFAULT_IDLE_TIMEOUT_MINUTES)
+)
+
+# How often the background idle-sweep loop checks for expired agents —
+# deliberately much finer-grained than the timeout itself so an agent
+# killed for being idle is never left running meaningfully longer than
+# its configured timeout.
+_IDLE_SWEEP_INTERVAL_SECONDS = 30.0
+
 # Agent ids are used verbatim as a path segment (`PROFILE_ROOT / agent_id`)
 # and as a URL path segment — restrict to a safe charset up front so
 # neither a path-traversal id (`../../etc`) nor a URL-shaped one can ever
@@ -295,11 +334,34 @@ def default_launch_chromium(profile_dir: Path, port: int) -> "subprocess.Popen[b
     (network isolation) substituting for another (OS sandboxing) in an
     environment where the second layer cannot be enabled.
 
-    `--window-position=0,0 --window-size=1024,768`: matches KasmVNC's own
-    fixed `-geometry 1024x768` (see `svc-kasmvnc`'s run script) — without
-    an explicit size Chromium may open partially or fully off the visible
-    canvas, or overlapping whatever the desktop's own IceWM window manager
-    would otherwise place it at, depending on window-manager defaults.
+    `--window-position=0,0 --window-size=1024,576`: matches KasmVNC's own
+    fixed `-geometry 1024x576` (see `patch_kasmvnc_resource_efficiency.py`,
+    which patches `svc-kasmvnc`'s run script to this exact size as part of
+    the same real, requested resource-efficiency profile this whole
+    function is tuned for) — without an explicit size Chromium may open
+    partially or fully off the visible canvas, or overlapping whatever
+    the desktop's own IceWM window manager would otherwise place it at,
+    depending on window-manager defaults. MUST stay in sync with that
+    patch script's own geometry value — a mismatch here would not error,
+    it would just silently let Chromium's window extend past (or leave
+    unused space within) the actual visible desktop canvas.
+
+    The remaining flags below are a deliberately CONSERVATIVE set, tuned
+    for the same real, constrained (4GB total RAM) deployment target —
+    every one of them removes a real, ongoing resource cost that a normal
+    interactive-use Chromium profile would otherwise pay on every launch
+    and periodically thereafter, none of which matter for an agent-driven
+    automation browser:
+      `--no-first-run` / `--disable-default-apps`: skip Chromium's own
+        first-run setup/welcome flow and default-app install work.
+      `--disable-sync`: no background Google-account sync polling.
+      `--disable-extensions`: no extension loading/update-check overhead
+        (this profile never has user-installed extensions to begin with).
+      `--disable-background-networking`: stops Chromium's own background
+        network requests unrelated to whatever the agent is actively
+        doing (update pings, safe-browsing list fetches, etc).
+      `--mute-audio`: a real, if minor, CPU/resource cost avoided for a
+        browser nobody is meant to be listening to.
     """
     return subprocess.Popen(
         [
@@ -309,7 +371,13 @@ def default_launch_chromium(profile_dir: Path, port: int) -> "subprocess.Popen[b
             f"--user-data-dir={profile_dir}",
             "--no-sandbox",
             "--window-position=0,0",
-            "--window-size=1024,768",
+            "--window-size=1024,576",
+            "--no-first-run",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--mute-audio",
         ],
         env=_chromium_env(),
     )
@@ -336,10 +404,15 @@ class BrowserManager:
     unit tested directly (see test_browser_manager.py)."""
 
     def __init__(self, launch_fn: LaunchFn = default_launch_chromium) -> None:
-        # {agent_id: {"pid": int, "port": int, "profile_dir": str}} — LIVE
-        # processes only, in-memory only. Not persisted to disk: if this
-        # daemon restarts, this dict is empty again (see module docstring
+        # {agent_id: {"pid": int, "port": int, "profile_dir": str,
+        # "last_activity": float (time.monotonic())}} — LIVE processes
+        # only, in-memory only. Not persisted to disk: if this daemon
+        # restarts, this dict is empty again (see module docstring
         # limitation 1 on why that's a documented gap, not a bug).
+        # `last_activity` is the idle-kill clock — see
+        # `BROWSER_IDLE_TIMEOUT_MINUTES`'s own module-level doc comment
+        # for its real, documented limitation (only start()/status()
+        # calls are observable, not real CDP traffic).
         self._registry: dict[str, dict[str, Any]] = {}
         self._launch_fn = launch_fn
         # The HTTP layer serves each request on its own thread
@@ -378,9 +451,11 @@ class BrowserManager:
         with self._lock:
             existing = self._live_entry(agent_id)
             if existing is not None:
-                # Already running — no new process, no new port. Return the
-                # SAME dict shape as a fresh start for a uniform caller
-                # contract.
+                # Already running — no new process, no new port. Still
+                # counts as real activity for the idle-kill clock (task
+                # point: "start() ... refresh" — a caller confirming an
+                # already-running browser is still using it).
+                existing["last_activity"] = time.monotonic()
                 return {
                     "port": existing["port"],
                     "profile_dir": existing["profile_dir"],
@@ -396,6 +471,7 @@ class BrowserManager:
                 "pid": process.pid,
                 "port": port,
                 "profile_dir": str(profile_dir),
+                "last_activity": time.monotonic(),
             }
             return {"port": port, "profile_dir": str(profile_dir)}
 
@@ -459,6 +535,39 @@ class BrowserManager:
             "port": entry["port"],
             "profile_dir": str(profile_dir),
         }
+
+    def sweep_idle(self, now: float | None = None) -> list[str]:
+        """Kill every agent whose `last_activity` is older than
+        `BROWSER_IDLE_TIMEOUT_MINUTES` (converted to seconds) — a no-op
+        entirely when that setting is `<= 0` (the real "lifetime"/
+        "forever" opt-out, see its own module-level doc comment). Returns
+        the list of agent_ids actually killed, for logging by the caller
+        (the background sweep loop) and for direct assertions in tests.
+
+        `now` is injectable (defaults to `time.monotonic()`) so tests can
+        simulate elapsed time without a real `time.sleep()` — the same
+        seam this module's own test file already uses for other timing-
+        sensitive logic."""
+        if BROWSER_IDLE_TIMEOUT_MINUTES <= 0:
+            return []
+
+        current_time = now if now is not None else time.monotonic()
+        timeout_seconds = BROWSER_IDLE_TIMEOUT_MINUTES * 60.0
+
+        with self._lock:
+            expired = [
+                agent_id
+                for agent_id, entry in self._registry.items()
+                if current_time - entry["last_activity"] >= timeout_seconds
+            ]
+            for agent_id in expired:
+                entry = self._registry.get(agent_id)
+                if entry is None:
+                    continue
+                self._terminate(entry["pid"])
+                del self._registry[agent_id]
+
+        return expired
 
 
 # ---------------------------------------------------------------------------
@@ -533,10 +642,40 @@ def make_handler(manager: BrowserManager) -> type[BaseHTTPRequestHandler]:
     return _Handler
 
 
+def _run_idle_sweep_loop(manager: BrowserManager) -> None:
+    """Background loop: call `sweep_idle()` every
+    `_IDLE_SWEEP_INTERVAL_SECONDS`, forever, for the life of this
+    process. A no-op busy-loop-of-sorts when `BROWSER_IDLE_TIMEOUT_MINUTES
+    <= 0` (still sleeps/wakes on the same interval, but `sweep_idle()`
+    itself returns immediately without touching the registry) — kept
+    running unconditionally rather than skipping the thread entirely so
+    changing the env var always takes effect on the NEXT container
+    restart with no other code path to also update."""
+    while True:
+        time.sleep(_IDLE_SWEEP_INTERVAL_SECONDS)
+        try:
+            manager.sweep_idle()
+        except Exception:
+            # A sweep failure must never kill this background thread —
+            # the daemon's main HTTP-serving thread must keep running
+            # regardless. No logging destination is wired for this
+            # daemon today (stdout/stderr go to the boot script's own
+            # redirected log file, see boot_script.rs) — silently
+            # continuing to the next sweep interval is the correct
+            # fail-safe here, not a a swallowed real error going nowhere.
+            pass
+
+
 def run_server(port: int = BROWSER_MANAGER_PORT, host: str = BROWSER_MANAGER_HOST) -> None:
     manager = BrowserManager()
     handler_cls = make_handler(manager)
     server = ThreadingHTTPServer((host, port), handler_cls)
+
+    sweep_thread = threading.Thread(
+        target=_run_idle_sweep_loop, args=(manager,), daemon=True
+    )
+    sweep_thread.start()
+
     server.serve_forever()
 
 

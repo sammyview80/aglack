@@ -31,7 +31,13 @@ import { AgentHistoryPanel } from '@/features/agent-history/components/agent-his
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { RandomAvatar } from '@/components/random-avatar'
 import { PulseDot, motionPresets } from '@/components/motion'
-import { avatarToneStyles, threadsUi, type AvatarTone } from '@/components/threads-ui'
+import {
+  DESKTOP_NATIVE_HEIGHT,
+  DESKTOP_NATIVE_WIDTH,
+  avatarToneStyles,
+  threadsUi,
+  type AvatarTone,
+} from '@/components/threads-ui'
 import { chatUi } from '@/features/chat/chat-ui'
 import { desktopUrl } from '@/features/workspace/api'
 import { WorkspaceDock } from '@/components/workspace-dock'
@@ -632,13 +638,12 @@ export function ThreadsShell({
  * surface. The AUDIENCE-panel thumb is a non-interactive preview; click
  * it for Fullscreen (in-app stretch, pointer events on) or Open in new
  * tab. */
-// Native desktop is 1024×768 (Xvnc -geometry). Iframe uses those as HTML
-// width/height so KasmVNC renders the full desktop, then CSS scale()
-// shrinks it to the box. Thumb is w-full + aspect-[1024/768]. Scale is
-// measured (ResizeObserver): Chrome rejects cqi inside transform:scale().
-// Control bar is hidden server-side by patch_kasmvnc_hide_control_bar.py.
-const DESKTOP_NATIVE_WIDTH = 1024
-const DESKTOP_NATIVE_HEIGHT = 768
+// Native desktop is 1024×576 (Xvnc -geometry; DESKTOP_NATIVE_WIDTH/HEIGHT
+// in threads-ui.ts). Iframe uses those as HTML width/height so KasmVNC
+// renders the full desktop, then CSS scale() shrinks it to the box. Thumb
+// is w-full + aspect-[1024/576]. Scale is measured (ResizeObserver):
+// Chrome rejects cqi inside transform:scale(). Control bar is hidden
+// server-side by patch_kasmvnc_hide_control_bar.py.
 
 function useDesktopScale(fit: 'width' | 'contain') {
   const [el, setEl] = useState<HTMLDivElement | null>(null)

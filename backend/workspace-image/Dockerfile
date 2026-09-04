@@ -306,6 +306,18 @@ RUN python3 /tmp/patch_kasmvnc_lastactiveat.py && rm /tmp/patch_kasmvnc_lastacti
 COPY backend/workspace-image/patch_kasmvnc_hide_control_bar.py /tmp/patch_kasmvnc_hide_control_bar.py
 RUN python3 /tmp/patch_kasmvnc_hide_control_bar.py && rm /tmp/patch_kasmvnc_hide_control_bar.py
 
+# Same `kclient` iframe line the control-bar patch above just touched —
+# switches `resize=remote` to `resize=scale` so the real Xvnc server's
+# rendered resolution stays FIXED (see patch_kasmvnc_resource_efficiency.py's
+# own `-geometry 1024x576 -FrameRate 15` profile below) regardless of the
+# connecting client's own viewport size, with the client scaling that
+# fixed image visually instead. MUST run after
+# patch_kasmvnc_hide_control_bar.py — see patch_kasmvnc_local_scaling.py's
+# own module doc for why (both scripts patch the same line; this one's
+# match target is deliberately the ALREADY-control-bar-patched state).
+COPY backend/workspace-image/patch_kasmvnc_local_scaling.py /tmp/patch_kasmvnc_local_scaling.py
+RUN python3 /tmp/patch_kasmvnc_local_scaling.py && rm /tmp/patch_kasmvnc_local_scaling.py
+
 # Patch the same `kclient` shell's own client script so its separate
 # File-Manager/Enable-Audio/Enable-Microphone bar (`#lsbar`) never
 # auto-opens either. See patch_kasmvnc_hide_lsbar.py's own module doc for
@@ -318,6 +330,19 @@ RUN python3 /tmp/patch_kasmvnc_hide_control_bar.py && rm /tmp/patch_kasmvnc_hide
 # making the RECEIVER's handler a no-op.
 COPY backend/workspace-image/patch_kasmvnc_hide_lsbar.py /tmp/patch_kasmvnc_hide_lsbar.py
 RUN python3 /tmp/patch_kasmvnc_hide_lsbar.py && rm /tmp/patch_kasmvnc_hide_lsbar.py
+
+# Patch the base image's own Xvnc launch script (`/etc/s6-overlay/
+# s6-rc.d/svc-kasmvnc/run`) for a real, requested resource-efficiency
+# profile — this container runs on a real, constrained (4GB total RAM)
+# deployment target, with the Hermes agent runtime, this KasmVNC desktop,
+# and (as of this session) a real per-agent Chromium instance ALL
+# competing for the same memory. See patch_kasmvnc_resource_efficiency.py's
+# own module doc for the exact values chosen and why (1024x576 — not
+# lower, many real sites switch to mobile/tablet layout below ~1024px
+# wide; 15fps cap). Deliberately NO `-depth 16`: verified to crash Xvnc
+# with SIGBUS on every websocket client connection — see the script's doc.
+COPY backend/workspace-image/patch_kasmvnc_resource_efficiency.py /tmp/patch_kasmvnc_resource_efficiency.py
+RUN python3 /tmp/patch_kasmvnc_resource_efficiency.py && rm /tmp/patch_kasmvnc_resource_efficiency.py
 
 # ── Per-agent browser-manager daemon (Chromium process lifecycle) ──────────
 # `browser_manager.py`: a standalone, stdlib-only HTTP daemon that owns

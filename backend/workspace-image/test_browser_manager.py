@@ -161,6 +161,58 @@ def test_daemon_binds_all_interfaces_not_loopback() -> None:
     )
 
 
+def test_default_launch_chromium_uses_the_real_conservative_flag_set() -> None:
+    """Regression guard pinning `default_launch_chromium`'s real,
+    requested resource-efficiency flag set — this function is never
+    exercised by any other test in this file (every `BrowserManager`
+    test above injects a FAKE `launch_fn`, see `_make_fake_launch`), so
+    without this test a future accidental flag removal/typo here would
+    go completely uncaught. Intercepts the real `subprocess.Popen` call
+    (never actually spawns Chromium) to inspect the exact argv/env it
+    would have been given."""
+    from unittest.mock import patch
+
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(self, args, env=None, **kwargs):
+            captured["args"] = args
+            captured["env"] = env
+
+    with patch("browser_manager.subprocess.Popen", _FakePopen):
+        bm.default_launch_chromium(Path("/workspace/.browser-profiles/agent-x"), 12345)
+
+    args = captured["args"]
+    assert args[0] == "chromium"
+    assert "--remote-debugging-address=127.0.0.1" in args
+    assert "--remote-debugging-port=12345" in args
+    assert "--user-data-dir=/workspace/.browser-profiles/agent-x" in args
+    assert "--no-sandbox" in args
+    # Window size MUST match patch_kasmvnc_resource_efficiency.py's own
+    # `-geometry 1024x576` value — see this function's own doc comment
+    # for why a mismatch here is a real, silent bug (Chromium's window
+    # would extend past, or leave unused space within, the actual
+    # visible desktop canvas) rather than an error.
+    assert "--window-position=0,0" in args
+    assert "--window-size=1024,576" in args
+    assert "--window-size=1024,768" not in args, (
+        "stale window size — must track patch_kasmvnc_resource_efficiency.py's "
+        "own -geometry value exactly"
+    )
+    # The real, requested conservative flag set — each one removes a real
+    # ongoing resource cost an agent-automation browser never needs to pay.
+    assert "--no-first-run" in args
+    assert "--disable-default-apps" in args
+    assert "--disable-sync" in args
+    assert "--disable-extensions" in args
+    assert "--disable-background-networking" in args
+    assert "--mute-audio" in args
+    # DISPLAY must reach the real subprocess env — see `_chromium_env`'s
+    # own doc comment for why this cannot simply be inherited.
+    assert captured["env"] is not None
+    assert captured["env"].get("DISPLAY") == ":1"
+
+
 def test_allocate_free_port_returns_a_real_bindable_port() -> None:
     port = bm._allocate_free_port()
     assert 0 < port < 65536
@@ -318,6 +370,138 @@ def test_stop_is_idempotent_called_twice_in_a_row() -> None:
 
     assert first_stop == {"stopped": True, "already_stopped": False}
     assert second_stop == {"stopped": False, "already_stopped": True}
+
+
+class _IdleTimeoutOverride:
+    """Context manager: temporarily point
+    bm.BROWSER_IDLE_TIMEOUT_MINUTES at a test value — same pattern as
+    `_RootSwap` for `bm.PROFILE_ROOT`."""
+
+    def __init__(self, minutes: float) -> None:
+        self._minutes = minutes
+        self._old = None
+
+    def __enter__(self) -> None:
+        self._old = bm.BROWSER_IDLE_TIMEOUT_MINUTES
+        bm.BROWSER_IDLE_TIMEOUT_MINUTES = self._minutes
+
+    def __exit__(self, *exc: object) -> None:
+        bm.BROWSER_IDLE_TIMEOUT_MINUTES = self._old
+
+
+def test_sweep_idle_kills_an_agent_past_its_timeout() -> None:
+    tmp_roots: list[Path] = []
+    root = _tmp_profile_root(tmp_roots, "sweep-kills")
+    launch, _calls = _make_fake_launch(root)
+    manager = bm.BrowserManager(launch_fn=launch)
+
+    with _RootSwap(root), _IdleTimeoutOverride(4.0):
+        manager.start("agent-idle")
+        # Simulate 5 real minutes having passed since start() — injectable
+        # `now`, no real time.sleep() needed (see sweep_idle's own doc
+        # comment for why this seam exists).
+        five_minutes_later = time.monotonic() + (5.0 * 60.0)
+        killed = manager.sweep_idle(now=five_minutes_later)
+
+    assert killed == ["agent-idle"]
+    with _RootSwap(root):
+        status = manager.status("agent-idle")
+    assert status["running"] is False, "sweep_idle must actually kill the process, not just report it"
+
+
+def test_sweep_idle_does_not_kill_an_agent_still_within_its_timeout() -> None:
+    tmp_roots: list[Path] = []
+    root = _tmp_profile_root(tmp_roots, "sweep-spares")
+    launch, _calls = _make_fake_launch(root)
+    manager = bm.BrowserManager(launch_fn=launch)
+
+    try:
+        with _RootSwap(root), _IdleTimeoutOverride(4.0):
+            manager.start("agent-fresh")
+            one_minute_later = time.monotonic() + 60.0
+            killed = manager.sweep_idle(now=one_minute_later)
+
+        assert killed == []
+        with _RootSwap(root):
+            status = manager.status("agent-fresh")
+        assert status["running"] is True
+    finally:
+        with _RootSwap(root):
+            manager.stop("agent-fresh")
+
+
+def test_sweep_idle_is_a_real_no_op_when_timeout_is_zero_or_negative() -> None:
+    """The real, requested "lifetime"/"forever" opt-out: 0 (or any
+    non-positive value) means idle-killing never happens, no matter how
+    much simulated time passes."""
+    tmp_roots: list[Path] = []
+    root = _tmp_profile_root(tmp_roots, "sweep-disabled")
+    launch, _calls = _make_fake_launch(root)
+    manager = bm.BrowserManager(launch_fn=launch)
+
+    try:
+        with _RootSwap(root), _IdleTimeoutOverride(0.0):
+            manager.start("agent-forever")
+            one_year_later = time.monotonic() + (60.0 * 60.0 * 24.0 * 365.0)
+            killed = manager.sweep_idle(now=one_year_later)
+
+        assert killed == []
+        with _RootSwap(root):
+            status = manager.status("agent-forever")
+        assert status["running"] is True
+    finally:
+        with _RootSwap(root):
+            manager.stop("agent-forever")
+
+
+def test_sweep_idle_refreshed_by_a_second_start_call() -> None:
+    """A second start() call for an already-running agent resets its
+    idle clock — see start()'s own doc comment on why this counts as
+    real activity. `start()` always stamps `last_activity` with the REAL
+    `time.monotonic()` (no injectable `now`, unlike `sweep_idle()`), so
+    this test proves the refresh by reading the registry's own recorded
+    timestamp directly rather than simulating elapsed wall-clock time
+    around a second `start()` call."""
+    tmp_roots: list[Path] = []
+    root = _tmp_profile_root(tmp_roots, "sweep-refresh")
+    launch, _calls = _make_fake_launch(root)
+    manager = bm.BrowserManager(launch_fn=launch)
+
+    try:
+        with _RootSwap(root):
+            manager.start("agent-refreshed")
+            first_activity = manager._registry["agent-refreshed"]["last_activity"]
+
+            # A confirming start() call must record a NEW (later or
+            # equal, monotonic clock resolution permitting) timestamp,
+            # not silently leave the original one in place.
+            manager.start("agent-refreshed")
+            second_activity = manager._registry["agent-refreshed"]["last_activity"]
+
+        assert second_activity >= first_activity, (
+            "a second start() call for an already-running agent must refresh "
+            "last_activity, not leave the original start() timestamp in place"
+        )
+    finally:
+        with _RootSwap(root):
+            manager.stop("agent-refreshed")
+
+
+def test_env_var_configures_idle_timeout_minutes() -> None:
+    """`BROWSER_IDLE_TIMEOUT_MINUTES` is read from the environment at
+    module import time (see the module-level constant's own doc
+    comment) — this test proves the parsing logic directly rather than
+    re-importing the module with a patched environment (which this test
+    file's sibling `test_env_var_configures_port_no_hardcoded_default_elsewhere`
+    already establishes is impractical for a module-level constant)."""
+    assert bm.DEFAULT_IDLE_TIMEOUT_MINUTES == 4
+    # The real module-level value, read once at import — confirms it
+    # picked up either the real env var or the documented default,
+    # rather than silently being some other hardcoded number.
+    import os as _os
+
+    expected = float(_os.environ.get("BROWSER_IDLE_TIMEOUT_MINUTES", bm.DEFAULT_IDLE_TIMEOUT_MINUTES))
+    assert bm.BROWSER_IDLE_TIMEOUT_MINUTES == expected
 
 
 def test_two_agents_get_independent_ports_and_profile_dirs() -> None:

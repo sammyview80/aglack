@@ -317,6 +317,19 @@ pub struct WorkspacesConfig {
     /// error code 5) — confirmed live via `docker exec <container> df -h
     /// /dev/shm` showing exactly 64M on the crashing container.
     pub workspace_shm_size: String,
+    /// `BROWSER_IDLE_TIMEOUT_MINUTES` injected into every new workspace
+    /// container's `browser_manager.py` daemon (see that file's own
+    /// module-level doc comment for the real, documented limitation:
+    /// this daemon can only observe `start()`/`status()` calls, not real
+    /// CDP browsing activity). Optional, defaults to `4` (minutes). Real
+    /// user request: "make sure I can configure it for lifetime or after
+    /// 4 min or anything" — `0` (or any non-positive value) is the real
+    /// "lifetime"/"never kill" option, matching that daemon's own
+    /// documented opt-out contract. Passed through VERBATIM as a plain
+    /// number string (parsed by `browser_manager.py` itself, not here) —
+    /// this gateway process has no reason to validate Python's own
+    /// `float(...)` parsing rules a second time.
+    pub workspace_browser_idle_timeout_minutes: String,
 }
 
 impl WorkspacesConfig {
@@ -332,12 +345,15 @@ impl WorkspacesConfig {
         let workspace_memory_limit =
             optional_env_or("WORKSPACE_MEMORY_LIMIT", "4g")?;
         let workspace_shm_size = optional_env_or("WORKSPACE_SHM_SIZE", "1g")?;
+        let workspace_browser_idle_timeout_minutes =
+            optional_env_or("WORKSPACE_BROWSER_IDLE_TIMEOUT_MINUTES", "4")?;
 
         Ok(Self {
             database_path,
             workspace_image_tag,
             workspace_memory_limit,
             workspace_shm_size,
+            workspace_browser_idle_timeout_minutes,
         })
     }
 }

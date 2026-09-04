@@ -192,6 +192,7 @@ async fn main() {
             config.workspace_gateway_url.clone(),
             workspaces_config.workspace_memory_limit,
             workspaces_config.workspace_shm_size,
+            workspaces_config.workspace_browser_idle_timeout_minutes,
         )),
         // `stream_client()`: this client also backs the chat/desktop/
         // hermes-webui/onboarding proxies' `forward_to` calls, which
