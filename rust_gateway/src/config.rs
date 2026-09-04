@@ -295,6 +295,28 @@ pub struct WorkspacesConfig {
     /// image name/tag is a deployment decision, not something safe to
     /// guess.
     pub workspace_image_tag: String,
+    /// `docker create --memory <value>` for every new workspace
+    /// container. Docker's own size-suffix syntax (e.g. `4g`, `512m`),
+    /// passed through VERBATIM to the `docker` CLI, never parsed or
+    /// reinterpreted here (`docker create` already validates it;
+    /// duplicating that validation would just be a second, potentially-
+    /// diverging copy of Docker's own parser). Optional, defaults to
+    /// `4g`. Real user request: a browser-driving workspace (real,
+    /// visible Chromium plus its own GPU process, see
+    /// `container::docker_launcher::DockerCliLauncher`'s own `shm_size`
+    /// field doc comment for the sibling `/dev/shm` fix this pairs with)
+    /// needs real headroom; unset means "use the default", not
+    /// "no limit". See `WORKSPACE_MEMORY_LIMIT` in `.env.example` for how
+    /// to change it.
+    pub workspace_memory_limit: String,
+    /// `docker create --shm-size <value>` for every new workspace
+    /// container. Same verbatim-passthrough contract as
+    /// `workspace_memory_limit` above. Optional, defaults to `1g`. Real
+    /// bug this exists to keep configurable: Docker's own default (64MB)
+    /// crashed a real, visible (non-headless) Chromium ("Aw, Snap!",
+    /// error code 5) — confirmed live via `docker exec <container> df -h
+    /// /dev/shm` showing exactly 64M on the crashing container.
+    pub workspace_shm_size: String,
 }
 
 impl WorkspacesConfig {
@@ -307,10 +329,15 @@ impl WorkspacesConfig {
             })?
             .into();
         let workspace_image_tag = required_env("WORKSPACE_IMAGE_TAG")?;
+        let workspace_memory_limit =
+            optional_env_or("WORKSPACE_MEMORY_LIMIT", "4g")?;
+        let workspace_shm_size = optional_env_or("WORKSPACE_SHM_SIZE", "1g")?;
 
         Ok(Self {
             database_path,
             workspace_image_tag,
+            workspace_memory_limit,
+            workspace_shm_size,
         })
     }
 }
@@ -393,6 +420,49 @@ impl GatewayAuthConfig {
 /// contract as `parse_cors_enabled` above, generalized past that one
 /// call site now that a second boolean env var (`GATEWAY_COOKIE_SECURE`)
 /// needs the identical parsing rule.
+/// Split the same way `cors_enabled_env_value`/`parse_cors_enabled` are
+/// (a thin `Result<String, VarError> -> Result<Option<String>, _>` step,
+/// separate from the actual default-applying logic) so the default-
+/// applying half is testable with a plain `Option<String>` value, never
+/// real process-global `env::set_var` in a test.
+fn optional_env_value(key: &str, raw: Result<String, env::VarError>) -> Result<Option<String>, ConfigError> {
+    match raw {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError {
+            message: format!("{key} is set but not valid UTF-8"),
+        }),
+    }
+}
+
+/// An optional env var with a real default — same "absent means default,
+/// present-but-invalid means fail loud" contract as `parse_cors_enabled`,
+/// generalized for a value this module does not itself parse (e.g.
+/// `WORKSPACE_MEMORY_LIMIT`'s `4g`/`512m` — Docker's own `docker create`
+/// call is the real validator for that syntax, not this function).
+/// "Invalid" here means only "set but empty/whitespace" — a deployer who
+/// explicitly sets `WORKSPACE_MEMORY_LIMIT=` almost certainly meant to
+/// unset it, not to pass an empty string to `docker create --memory`,
+/// which would itself fail confusingly at container-launch time instead
+/// of at startup where the real mistake is easy to see and fix.
+fn apply_optional_default(key: &str, raw: Option<String>, default: &str) -> Result<String, ConfigError> {
+    match raw {
+        None => Ok(default.to_string()),
+        Some(value) if value.trim().is_empty() => Err(ConfigError {
+            message: format!(
+                "{key} is set but empty — unset it entirely to use the default \
+                 ({default:?}), or set a real value"
+            ),
+        }),
+        Some(value) => Ok(value),
+    }
+}
+
+fn optional_env_or(key: &str, default: &str) -> Result<String, ConfigError> {
+    let raw = optional_env_value(key, env::var(key))?;
+    apply_optional_default(key, raw, default)
+}
+
 fn parse_bool_env(key: &str, default: bool) -> Result<bool, ConfigError> {
     match env::var(key) {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
@@ -614,5 +684,60 @@ mod tests {
     fn parse_cors_enabled_rejects_invalid_value() {
         let err = parse_cors_enabled(Some("bogus".to_string())).unwrap_err();
         assert!(err.to_string().contains("CORS_ENABLED"));
+    }
+
+    #[test]
+    fn apply_optional_default_uses_default_when_absent() {
+        let value = apply_optional_default("WORKSPACE_MEMORY_LIMIT", None, "4g").unwrap();
+        assert_eq!(value, "4g");
+    }
+
+    #[test]
+    fn apply_optional_default_uses_the_real_value_when_present() {
+        let value = apply_optional_default(
+            "WORKSPACE_MEMORY_LIMIT",
+            Some("8g".to_string()),
+            "4g",
+        )
+        .unwrap();
+        assert_eq!(value, "8g");
+    }
+
+    #[test]
+    fn apply_optional_default_rejects_an_explicitly_empty_value() {
+        // A deployer who writes `WORKSPACE_MEMORY_LIMIT=` almost certainly
+        // meant to unset it, not to pass an empty string straight through
+        // to `docker create --memory` (which would fail confusingly at
+        // container-launch time instead of at startup).
+        let err = apply_optional_default(
+            "WORKSPACE_MEMORY_LIMIT",
+            Some("   ".to_string()),
+            "4g",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("WORKSPACE_MEMORY_LIMIT"));
+        assert!(err.to_string().contains("4g"));
+    }
+
+    #[test]
+    fn optional_env_value_maps_not_present_to_none() {
+        let value =
+            optional_env_value("WORKSPACE_MEMORY_LIMIT", Err(env::VarError::NotPresent)).unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn optional_env_value_maps_ok_to_some() {
+        let value = optional_env_value("WORKSPACE_MEMORY_LIMIT", Ok("8g".to_string())).unwrap();
+        assert_eq!(value, Some("8g".to_string()));
+    }
+
+    #[test]
+    fn optional_env_value_fails_closed_on_non_unicode() {
+        let bad = std::ffi::OsString::from_vec(vec![0x66, 0xff, 0x6f]);
+        let err =
+            optional_env_value("WORKSPACE_MEMORY_LIMIT", Err(env::VarError::NotUnicode(bad)))
+                .unwrap_err();
+        assert!(err.to_string().contains("WORKSPACE_MEMORY_LIMIT"));
     }
 }

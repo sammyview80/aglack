@@ -83,3 +83,42 @@ def test_build_mcp_server_entry_without_agent_id_is_byte_identical_to_pre_change
         ],
     }
     assert "--agent-id" not in entry["args"]
+    assert "env" not in entry
+
+
+def test_build_mcp_server_entry_without_env_has_no_env_key_with_agent_id(monkeypatch) -> None:
+    """Regression guard for the `env` parameter: omitting it must produce
+    EXACTLY the pre-`env` shape — two keys, no `env` key at all (not even
+    an empty mapping), with `agent_id` still handled as before."""
+    monkeypatch.delenv("SEEDER_KIT_RUNNER_PYTHON", raising=False)
+
+    entry = build_mcp_server_entry([Path("/tools")], server_name="s", agent_id="pm")
+
+    assert set(entry) == {"command", "args"}
+    assert entry == {
+        "command": "python3",
+        "args": [str(runner_entry_point()), "--server-name", "s", "--tools-dir", "/tools", "--agent-id", "pm"],
+    }
+
+
+def test_build_mcp_server_entry_with_env_emits_mapping_verbatim(monkeypatch) -> None:
+    monkeypatch.delenv("SEEDER_KIT_RUNNER_PYTHON", raising=False)
+    env = {"FOO": "bar", "BAZ": "qux"}
+
+    entry = build_mcp_server_entry([Path("/tools")], server_name="s", agent_id="pm", env=env)
+
+    assert entry["env"] == {"FOO": "bar", "BAZ": "qux"}
+    # command/args unaffected by env.
+    assert entry["command"] == "python3"
+    assert entry["args"] == [
+        str(runner_entry_point()), "--server-name", "s", "--tools-dir", "/tools", "--agent-id", "pm"
+    ]
+    assert set(entry) == {"command", "args", "env"}
+
+
+def test_build_mcp_server_entry_with_empty_env_has_no_env_key() -> None:
+    """`env={}` must behave exactly like `env=None`: no `env` key emitted."""
+    entry = build_mcp_server_entry([Path("/tools")], server_name="s", env={})
+
+    assert "env" not in entry
+    assert entry == build_mcp_server_entry([Path("/tools")], server_name="s")

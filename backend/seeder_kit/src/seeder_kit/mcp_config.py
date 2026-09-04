@@ -27,9 +27,11 @@ def build_mcp_server_entry(
     server_name: str,
     python_executable: str | None = None,
     agent_id: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build one `mcp_servers.<name>` entry value:
-    `{"command": ..., "args": [...]}`.
+    `{"command": ..., "args": [...]}` (plus `"env": {...}` when `env` is
+    given and non-empty).
 
     `python_executable` defaults to the `SEEDER_KIT_RUNNER_PYTHON`
     environment variable, falling back to plain `"python3"` resolved via
@@ -44,6 +46,19 @@ def build_mcp_server_entry(
     identity at hand; passing it here is what turns the stdio runner into
     a real per-agent identity boundary. When omitted, `args` is exactly
     what it was before this parameter existed.
+
+    `env`, when given and non-empty, is emitted verbatim under the entry's
+    `env` key — i.e. the host's `mcp_servers.<name>.env` config key. This
+    exists because a host's real stdio MCP subprocess launcher does NOT
+    inherit arbitrary parent-process environment variables (for security
+    it only passes a small allowlist plus whatever that config key names
+    explicitly), so any value the launched runner genuinely needs at
+    runtime (e.g. how to reach a gateway, which workspace it belongs to,
+    where its profile home lives) must be spelled out here by the host.
+    Only pass values the host explicitly chooses to expose — never
+    secrets. When `env` is `None` or empty, no `env` key is emitted at
+    all, so existing callers' output is byte-identical to before this
+    parameter existed.
     """
     resolved_python = python_executable or os.environ.get(DEFAULT_PYTHON_ENV_VAR, "python3")
 
@@ -53,4 +68,7 @@ def build_mcp_server_entry(
     if agent_id is not None:
         args.extend(["--agent-id", agent_id])
 
-    return {"command": resolved_python, "args": args}
+    entry: dict[str, Any] = {"command": resolved_python, "args": args}
+    if env:
+        entry["env"] = dict(env)
+    return entry

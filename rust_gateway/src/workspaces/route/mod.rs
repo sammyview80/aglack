@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use super::{ContainerLauncher, WorkspaceStore};
+use crate::integrations::IntegrationsState;
 
 mod create;
 mod delete;
@@ -34,4 +35,25 @@ pub struct WorkspacesState {
     /// besides an HTTP client is this same `store`, for the workspace_id
     /// lookup.
     pub http_client: reqwest::Client,
+    /// Needed ONLY by `create.rs`'s `create_workspace_route`, to mint and
+    /// deliver a workspace's `/run/hermes/integrations.token` at creation
+    /// time (sentinel-scoped, no real connection access — see that
+    /// file's own doc comment) so the `open_browser`/`close_browser`/
+    /// `browser_task` MCP tools (`backend/seeder/tools/`) have a token
+    /// file to read even before this workspace's first real OpenConnector
+    /// connect. The WHOLE `Arc<IntegrationsState>` (not just the
+    /// `openconnector`/`token_cipher`/`IntegrationStore` pieces
+    /// `issue_and_deliver_runtime_token` actually touches), because that
+    /// struct already has real internal cohesion (see its own doc
+    /// comment) and axum's `Router<S>` fixes ONE state type per route —
+    /// `create_workspace_route` sits on the same `Arc<WorkspacesState>`
+    /// router every other `/workspaces` route does (see `app::build_router`),
+    /// so this is the only way to reach `IntegrationsState` from it
+    /// without a second, parallel router for one route (the
+    /// `browser_proxy_route` precedent `app::build_router` already uses
+    /// doesn't fit here — see that function's own doc comment on why:
+    /// this route's OTHER logic, name-collision + idempotency, is
+    /// legitimately `WorkspacesState`-scoped and must not move to a
+    /// second router).
+    pub integrations: Arc<IntegrationsState>,
 }

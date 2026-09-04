@@ -21,6 +21,8 @@ use axum::{
 
 use super::container::FakeLauncher;
 use super::{ContainerLauncher, WorkspaceStatus, WorkspaceStore, WorkspacesState};
+use crate::integrations::openconnector::fake::FakeOpenConnector;
+use crate::integrations::{IntegrationStore, IntegrationsState};
 
 /// A fresh, isolated SQLite-backed `WorkspaceStore` in a throwaway temp
 /// dir. The tempdir is deliberately leaked (`std::mem::forget`) rather
@@ -37,12 +39,44 @@ pub(crate) async fn temp_store() -> WorkspaceStore {
     WorkspaceStore::new(pool)
 }
 
+/// A minimal, Docker-free `Arc<IntegrationsState>` good enough for every
+/// `WorkspacesState` test that never itself exercises integrations
+/// behavior (i.e. everything except `create.rs`'s own creation-time
+/// token-issuance tests, which build their own `IntegrationsState` with a
+/// specific `FakeOpenConnector` to assert against). A FRESH, isolated
+/// in-memory SQLite pool — deliberately NOT the same pool `state_with_store`'s
+/// `WorkspaceStore` uses: nothing here needs the two to share rows, and a
+/// real `db::connect` migration run per call would be needless overhead
+/// for tests that never touch this state's tables at all. `FakeOpenConnector`
+/// (not a real `OpenConnectorClient`) matches every other test double in
+/// this crate (see `integrations::route`'s own test module) — no test
+/// built on `state_with_store` may ever reach a real network call.
+pub(crate) fn temp_integrations_state() -> Arc<IntegrationsState> {
+    let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:")
+        .expect("open in-memory sqlite pool");
+    Arc::new(IntegrationsState {
+        store: IntegrationStore::new(pool.clone()),
+        openconnector: Arc::new(FakeOpenConnector::default()),
+        providers: Vec::new(),
+        workspace_store: WorkspaceStore::new(pool),
+        http_client: reqwest::Client::new(),
+        token_cipher: crate::crypto::TokenCipher::new(&[9u8; 32]),
+        mcp_bearer_lockout: Default::default(),
+        catalog_cache: Default::default(),
+    })
+}
+
 /// Wrap a store + launcher into the `Arc<WorkspacesState>` every route
 /// handler needs, with a fresh `reqwest::Client`. `launcher` is a
 /// parameter (not hardcoded to `FakeLauncher::default()`) because
 /// different tests need different launcher behavior — a failing launcher
 /// to test the retry path, a `DockerCliLauncher` stub when a test only
 /// cares about routing/CORS and never actually calls `launch`, etc.
+/// `integrations` defaults to `temp_integrations_state()` via
+/// `state_with_store` below for every existing call site (none of them
+/// care about creation-time token issuance); a test that DOES care
+/// constructs `WorkspacesState` directly with its own `IntegrationsState`
+/// instead of calling this helper — see `create.rs`'s new tests.
 pub(crate) fn state_with_store(
     store: WorkspaceStore,
     launcher: Arc<dyn ContainerLauncher>,
@@ -51,6 +85,7 @@ pub(crate) fn state_with_store(
         store,
         launcher,
         http_client: reqwest::Client::new(),
+        integrations: temp_integrations_state(),
     })
 }
 

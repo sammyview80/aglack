@@ -190,6 +190,8 @@ async fn main() {
             config.workspace_default_path.clone(),
             config.frontend_origin.clone(),
             config.workspace_gateway_url.clone(),
+            workspaces_config.workspace_memory_limit,
+            workspaces_config.workspace_shm_size,
         )),
         // `stream_client()`: this client also backs the chat/desktop/
         // hermes-webui/onboarding proxies' `forward_to` calls, which
@@ -197,6 +199,10 @@ async fn main() {
         // body straight through — see `integrations_state`'s own comment
         // above for why a bounded `.timeout()` client is wrong here.
         http_client: rust_gateway::shared::http::stream_client(),
+        // Cloning the `Arc<IntegrationsState>` already constructed above
+        // — cheap refcount bump, the exact same shared state every
+        // integrations route uses, not a second instance.
+        integrations: integrations_state.clone(),
     });
 
     // Background watcher: if the Docker daemon itself goes down (e.g.

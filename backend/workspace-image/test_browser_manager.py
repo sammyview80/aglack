@@ -135,6 +135,32 @@ def test_default_profile_root_is_under_workspace_not_data() -> None:
     )
 
 
+def test_daemon_binds_all_interfaces_not_loopback() -> None:
+    """Regression guard for a REAL bug found live: `BROWSER_MANAGER_HOST`
+    was originally `127.0.0.1` (loopback-only) — a service bound to
+    loopback INSIDE a container is reachable ONLY from within that
+    container's own network namespace. Docker's `-p <host>:9400` port
+    publish can never reach a loopback-bound listener from OUTSIDE the
+    container, no matter how correct the publish mapping is — confirmed
+    live: `docker port` showed the right mapping, `docker exec` calls
+    into the container worked fine, but a real gateway call (a bare host
+    process) hitting the published port got a real, reproducible
+    connection failure. The intended "never reachable from outside this
+    machine" security property is now enforced on the HOST side of the
+    publish instead (see `rust_gateway/src/workspaces/container/
+    docker_launcher.rs`'s `browser_publish_arg`, which binds the HOST
+    side to `127.0.0.1` explicitly), not by binding loopback-only inside
+    the container, which does not achieve that goal at all."""
+    assert bm.BROWSER_MANAGER_HOST == "0.0.0.0", (
+        "BROWSER_MANAGER_HOST must be 0.0.0.0 (bind all interfaces INSIDE "
+        "the container) — a loopback bind here is unreachable through "
+        "Docker's published port from outside the container, breaking "
+        "every real gateway call regardless of the publish mapping being "
+        "otherwise correct. Host-side exposure is restricted at the "
+        "Docker publish layer instead (docker_launcher.rs), not here."
+    )
+
+
 def test_allocate_free_port_returns_a_real_bindable_port() -> None:
     port = bm._allocate_free_port()
     assert 0 < port < 65536

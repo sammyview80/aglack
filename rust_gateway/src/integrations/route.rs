@@ -681,22 +681,146 @@ pub(super) async fn finish_connection(
     result
 }
 
+/// HTTP-agnostic failure from `issue_and_deliver_runtime_token` — mirrors
+/// `token_delivery::TokenDeliveryError`'s shape (plain `message: String`)
+/// rather than reusing `openconnector::OpenConnectorError` directly: that
+/// type's `safe_message`/`safe_code` are specifically about an
+/// OpenConnector HTTP response's status code, which doesn't fit a DB or
+/// encryption failure at all — a caller that needs OpenConnector's own
+/// safe/code pair still has it via the `OpenConnector` variant. Kept in
+/// this module (not `openconnector.rs`) because it exists purely to give
+/// `issue_and_deliver_runtime_token` — a `route.rs`-local helper — a
+/// return type that doesn't drag in axum's `Response`, so it stays usable
+/// from a non-HTTP caller like workspace creation.
+#[derive(Debug)]
+pub(crate) enum IntegrationsTokenError {
+    OpenConnector(openconnector::OpenConnectorError),
+    TokenEncryptionFailed(crate::crypto::CryptoError),
+    RuntimeTokenStoreFailed(sqlx::Error),
+    TokenDeliveryFailed(token_delivery::TokenDeliveryError),
+}
+
+impl std::fmt::Display for IntegrationsTokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OpenConnector(err) => write!(f, "{err}"),
+            Self::TokenEncryptionFailed(err) => write!(f, "token encryption failed: {err}"),
+            Self::RuntimeTokenStoreFailed(err) => write!(f, "runtime token store failed: {err}"),
+            Self::TokenDeliveryFailed(err) => write!(f, "token delivery failed: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for IntegrationsTokenError {}
+
+impl IntegrationsTokenError {
+    /// Turn this HTTP-agnostic error into the exact `Response` shape
+    /// `rotate_workspace_token`'s callers have always returned — kept
+    /// here (not scattered across call sites) so this mapping exists in
+    /// exactly one place. Every `code`/status pairing below is copied
+    /// verbatim from what this same branch produced before the
+    /// extraction (see the removed code this replaces), so a caller
+    /// re-checking `rotate_workspace_token`'s existing tests sees
+    /// identical responses.
+    fn into_response(self) -> Response {
+        match self {
+            Self::OpenConnector(err) => {
+                error(StatusCode::BAD_GATEWAY, err.safe_code(), err.safe_message())
+            }
+            Self::TokenEncryptionFailed(err) => error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "token_encryption_failed",
+                err.to_string(),
+            ),
+            Self::RuntimeTokenStoreFailed(err) => error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "runtime_token_store_failed",
+                err.to_string(),
+            ),
+            Self::TokenDeliveryFailed(err) => error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "integrations_token_delivery_failed",
+                err.to_string(),
+            ),
+        }
+    }
+}
+
 /// Create a fresh OpenConnector runtime token scoped to exactly
-/// `allowed_connection_ids`, store it (encrypted) for `workspace_id`,
-/// deliver it into `container_name`, THEN revoke whatever token the
-/// workspace held before — shared by `finish_connection_inner` (a
-/// provider just connected) and `disconnect_integration_route`'s
-/// narrowing path (a provider was disconnected but others remain), so
-/// the create→hash→encrypt→store→deliver→revoke-old sequence exists in
-/// exactly one place (Bug 1's fix).
+/// `allowed_connection_ids`, store it (encrypted) for `workspace_id`, and
+/// deliver it into `container_name` — the reusable create→hash→encrypt→
+/// store→deliver core `rotate_workspace_token` wraps with its own
+/// previous-token lookup/revoke (connect-flow-specific — a fresh
+/// workspace creation has no previous token to revoke, see
+/// `workspaces::route::create::create_workspace_route`'s own call).
+///
+/// Returns the new token's `openconnector_token_id` — `rotate_workspace_token`
+/// needs it to decide whether the previous token is actually different
+/// (and therefore safe to revoke); the creation-time caller has no
+/// previous token at all and simply ignores it.
+///
+/// HTTP-agnostic on purpose (`IntegrationsTokenError`, not
+/// `Result<(), Response>`): this is called both from an axum handler's
+/// call graph (via `rotate_workspace_token`) and from workspace creation,
+/// which has no `Response` to return at all.
+pub(crate) async fn issue_and_deliver_runtime_token(
+    state: &IntegrationsState,
+    workspace_id: &str,
+    container_name: &str,
+    allowed_connection_ids: &[String],
+) -> Result<String, IntegrationsTokenError> {
+    let token_name = format!("workspace:{workspace_id}");
+    let runtime_token = state
+        .openconnector
+        .create_runtime_token(&token_name, allowed_connection_ids)
+        .await
+        .map_err(|err| {
+            tracing::warn!(workspace_id = %workspace_id, error = %err, "openconnector create_runtime_token failed");
+            IntegrationsTokenError::OpenConnector(err)
+        })?;
+
+    let token_hash = sha256_hex(&runtime_token.bearer);
+    let encrypted_bearer = state
+        .token_cipher
+        .encrypt(&runtime_token.bearer)
+        .map_err(IntegrationsTokenError::TokenEncryptionFailed)?;
+    state
+        .store
+        .upsert_runtime_token(
+            workspace_id,
+            &runtime_token.openconnector_token_id,
+            &token_hash,
+            &encrypted_bearer,
+        )
+        .await
+        .map_err(IntegrationsTokenError::RuntimeTokenStoreFailed)?;
+
+    // `runtime_token.bearer` itself must never be logged or returned to a
+    // caller — it is now ONLY on disk inside the container (as a 0400
+    // file) and, encrypted, in `workspace_runtime_tokens.openconnector_bearer`;
+    // this local variable goes out of scope at the end of this function.
+    token_delivery::deliver_token_file(container_name, &runtime_token.bearer)
+        .await
+        .map_err(IntegrationsTokenError::TokenDeliveryFailed)?;
+
+    Ok(runtime_token.openconnector_token_id)
+}
+
+/// Thin wrapper around `issue_and_deliver_runtime_token` for the
+/// connect/disconnect flows: adds the previous-token lookup and, on
+/// success, revokes it — see this function's own doc comment history
+/// (Bug 1's fix) for why that lookup→create→...→revoke-old sequence must
+/// exist in exactly one place. Behavior is UNCHANGED from before this was
+/// split out of a single function — see this file's `#[cfg(test)]`
+/// module for the pinned tests proving that.
 ///
 /// Rotation atomicity: the OLD token is only ever revoked AFTER the new
 /// one is confirmed stored AND delivered — never the reverse — so a
-/// mid-rotation failure (any `?` below) leaves the workspace with its
-/// OLD, still-valid token rather than none at all. Skipped when there is
-/// no previous token, or when "previous" IS the token just created (a
-/// call re-entered on the same token — should not happen, but revoking a
-/// token this call itself just issued would be a real bug if it ever did).
+/// mid-rotation failure leaves the workspace with its OLD, still-valid
+/// token rather than none at all. Skipped when there is no previous
+/// token, or when "previous" IS the token just created (a call re-entered
+/// on the same token — should not happen, but revoking a token this call
+/// itself just issued would be a real bug if it ever did).
 async fn rotate_workspace_token(
     state: &IntegrationsState,
     workspace_id: &str,
@@ -719,60 +843,17 @@ async fn rotate_workspace_token(
             )
         })?;
 
-    let token_name = format!("workspace:{workspace_id}");
-    let runtime_token = state
-        .openconnector
-        .create_runtime_token(&token_name, allowed_connection_ids)
-        .await
-        .map_err(|err| {
-            tracing::warn!(workspace_id = %workspace_id, error = %err, "openconnector create_runtime_token failed");
-            error(StatusCode::BAD_GATEWAY, err.safe_code(), err.safe_message())
-        })?;
-
-    let token_hash = sha256_hex(&runtime_token.bearer);
-    let encrypted_bearer = state
-        .token_cipher
-        .encrypt(&runtime_token.bearer)
-        .map_err(|err| {
-            error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "token_encryption_failed",
-                err.to_string(),
-            )
-        })?;
-    state
-        .store
-        .upsert_runtime_token(
-            workspace_id,
-            &runtime_token.openconnector_token_id,
-            &token_hash,
-            &encrypted_bearer,
-        )
-        .await
-        .map_err(|err| {
-            error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "runtime_token_store_failed",
-                err.to_string(),
-            )
-        })?;
-
-    // `runtime_token.bearer` itself must never be logged or returned to a
-    // caller — it is now ONLY on disk inside the container (as a 0400
-    // file) and, encrypted, in `workspace_runtime_tokens.openconnector_bearer`;
-    // this local variable goes out of scope at the end of this function.
-    token_delivery::deliver_token_file(container_name, &runtime_token.bearer)
-        .await
-        .map_err(|err| {
-            error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "integrations_token_delivery_failed",
-                err.to_string(),
-            )
-        })?;
+    let new_token_id = issue_and_deliver_runtime_token(
+        state,
+        workspace_id,
+        container_name,
+        allowed_connection_ids,
+    )
+    .await
+    .map_err(IntegrationsTokenError::into_response)?;
 
     if let Some(previous) = previous_token {
-        if previous.openconnector_token_id != runtime_token.openconnector_token_id {
+        if previous.openconnector_token_id != new_token_id {
             let _ = state
                 .openconnector
                 .revoke_runtime_token(&previous.openconnector_token_id)

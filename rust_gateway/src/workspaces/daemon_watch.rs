@@ -140,7 +140,7 @@ mod tests {
     use super::*;
     use crate::workspaces::container::{ContainerState, FakeLauncher};
     use crate::workspaces::create_workspace;
-    use crate::workspaces::test_support::temp_store;
+    use crate::workspaces::test_support::{temp_integrations_state, temp_store};
 
     /// End-to-end proof of the actual feature the user asked for: a
     /// workspace whose container is NOT running (simulating "Docker
@@ -176,6 +176,7 @@ mod tests {
             store,
             launcher,
             http_client: reqwest::Client::new(),
+            integrations: temp_integrations_state(),
         });
 
         // Daemon starts unreachable, then becomes reachable — the exact
@@ -255,6 +256,7 @@ mod tests {
             store,
             launcher,
             http_client: reqwest::Client::new(),
+            integrations: temp_integrations_state(),
         });
 
         let watch_handle = {

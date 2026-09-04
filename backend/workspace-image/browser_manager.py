@@ -91,11 +91,28 @@ from typing import Any, Callable
 DEFAULT_PORT = 9400
 BROWSER_MANAGER_PORT = int(os.environ.get("BROWSER_MANAGER_PORT", DEFAULT_PORT))
 
-# Deliberate: the daemon's own HTTP API binds to loopback only. This is a
-# single-container-local control plane; it is never meant to be reachable
-# from outside the container for this feature (see module docstring's CDP
-# note below for why the same rule applies there too).
-BROWSER_MANAGER_HOST = "127.0.0.1"
+# `0.0.0.0`, NOT `127.0.0.1` — REAL BUG found live (confirmed via a real
+# running container + a real gateway call): a service bound to `127.0.0.1`
+# INSIDE a container is reachable ONLY from within that container's own
+# network namespace — Docker's `-p <host>:9400` port publish can never
+# reach a loopback-bound listener from OUTSIDE the container, regardless
+# of the publish mapping being otherwise correct (confirmed: `docker port`
+# showed the right mapping, `docker exec` calls into the container worked
+# fine, but the gateway — a bare host process, `rust_gateway/src/
+# workspaces/container/docker_launcher.rs` — got a real, reproducible
+# connection failure hitting the published port from the host). This is
+# standard, well-known Docker networking behavior, not a bug in the
+# publish mapping itself.
+#
+# "Never reachable from outside the container" is still the real,
+# intended security property — it is now enforced on the HOST side of the
+# publish instead: `docker_launcher.rs`'s `browser_publish_arg` binds the
+# HOST side to `127.0.0.1` explicitly (`-p 127.0.0.1:<port>:9400`, not
+# Docker's default bare `<port>:9400` which publishes to `0.0.0.0` on the
+# host), so this daemon's port is reachable from THIS MACHINE (where the
+# gateway itself runs) but never from another machine on the network —
+# the same effective guarantee, enforced at the correct layer.
+BROWSER_MANAGER_HOST = "0.0.0.0"
 
 # Root directory for all persistent per-agent Chromium profiles. Each
 # agent's profile lives at PROFILE_ROOT / agent_id, created (including all
@@ -221,7 +238,27 @@ LaunchFn = Callable[[Path, int], "subprocess.Popen[bytes]"]
 
 
 def default_launch_chromium(profile_dir: Path, port: int) -> "subprocess.Popen[bytes]":
-    """Launch headless Chromium for one agent's profile.
+    """Launch a REAL, VISIBLE Chromium window for one agent's profile —
+    deliberately NOT `--headless=new` (this file's original design). Real
+    decision, not a default: this workspace container already runs a full
+    virtual desktop (KasmVNC, `DISPLAY=:1`, streamed to the browser via
+    the existing `/workspaces/:id/desktop/...` proxy — see
+    `rust_gateway/src/workspaces/proxy/desktop_proxy.rs`) specifically so
+    a human can WATCH an agent's browser session live, not just get a raw
+    CDP endpoint with nothing to look at. `--headless=new` would make this
+    daemon's whole reason for sharing the container's own display pointless.
+
+    `env=` passes `DISPLAY` (see `_chromium_env`) explicitly — Chromium
+    has no default target to render onto without it; this container's
+    `DISPLAY=:1` is a real, s6-overlay-exposed container env var (`/var/
+    run/s6/container_environment/DISPLAY`), not automatically inherited by
+    THIS daemon's own process (it is launched via a `su -s /bin/sh abc -c
+    '...'` block in the boot script, isolated from whatever env s6's own
+    `with-contenv` machinery would otherwise supply — see
+    `rust_gateway/src/workspaces/container/boot_script.rs`'s
+    `browser_manager_launch_line`, which now explicitly exports it into
+    that same block, matching the pattern every OTHER value this daemon's
+    subprocess needs already uses).
 
     `--remote-debugging-address=127.0.0.1`: CDP (Chrome DevTools Protocol)
     binds to loopback ONLY, NEVER `0.0.0.0` — deliberate security decision.
@@ -248,25 +285,47 @@ def default_launch_chromium(profile_dir: Path, port: int) -> "subprocess.Popen[b
     requires root ownership + the setuid bit, and unprivileged user
     namespaces are frequently disabled or unavailable in default container
     runtimes). This repo's own existing `e2e_test_kasmvnc_lastactiveat.py`
-    already launches headless Chrome the same way, with the same flag, for
-    the same reason. `--no-sandbox` measurably widens the blast radius of a
+    already launches Chrome the same way (headless there, for a different,
+    scripted use case — but the SAME `--no-sandbox` rationale), for the
+    same reason. `--no-sandbox` measurably widens the blast radius of a
     renderer-process compromise (no more process-level isolation from a
     hostile page) — acceptable here because CDP and the browser process are
     never exposed outside the container in the first place (loopback-only,
     see above); it is not a defense-in-depth-free design, it is one layer
     (network isolation) substituting for another (OS sandboxing) in an
     environment where the second layer cannot be enabled.
+
+    `--window-position=0,0 --window-size=1024,768`: matches KasmVNC's own
+    fixed `-geometry 1024x768` (see `svc-kasmvnc`'s run script) — without
+    an explicit size Chromium may open partially or fully off the visible
+    canvas, or overlapping whatever the desktop's own IceWM window manager
+    would otherwise place it at, depending on window-manager defaults.
     """
     return subprocess.Popen(
         [
             "chromium",
-            "--headless=new",
             "--remote-debugging-address=127.0.0.1",
             f"--remote-debugging-port={port}",
             f"--user-data-dir={profile_dir}",
             "--no-sandbox",
+            "--window-position=0,0",
+            "--window-size=1024,768",
         ],
+        env=_chromium_env(),
     )
+
+
+def _chromium_env() -> dict[str, str]:
+    """This daemon's own environment, plus a real `DISPLAY` fallback if
+    somehow absent — see `default_launch_chromium`'s own doc comment for
+    why this daemon's process may not already have it. Never silently
+    drops the rest of the process's real environment (PATH, HOME, etc,
+    all of which Chromium also needs) — only ADDS `DISPLAY` if missing,
+    matching `os.environ.setdefault`'s own semantics rather than replacing
+    the whole env wholesale."""
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":1")
+    return env
 
 
 class BrowserManager:

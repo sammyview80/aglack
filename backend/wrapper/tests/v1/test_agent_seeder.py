@@ -25,6 +25,116 @@ from hermes_webui_wrapper.app import create_app
 from hermes_webui_wrapper.features.agent_seeder import service as agent_seeder_service
 
 
+FAKE_GATEWAY_INTERNAL_URL = "http://gateway.internal:9000"
+FAKE_INTEGRATIONS_WORKSPACE_ID = "test-workspace-id"
+
+
+@pytest.fixture(autouse=True)
+def _gateway_env_for_mcp_runner_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_apply_mcp_tools` builds the `mcp_servers.hermes-seeder.env` mapping
+    from `config.resolve_gateway_internal_url()` /
+    `resolve_integrations_workspace_id()`, both of which fail closed
+    (RuntimeError) when unset — so every apply that reaches an agent with
+    any tool dirs (the default `synthetic_seeder_tree` fixture has two)
+    needs them. Kept as a file-local autouse fixture rather than added to
+    ../conftest.py's module-level env block: these two values are specific
+    to this feature's behavior, not general test-isolation state every
+    test file needs, and monkeypatch scoping keeps them from leaking."""
+    monkeypatch.setenv("GATEWAY_INTERNAL_URL", FAKE_GATEWAY_INTERNAL_URL)
+    monkeypatch.setenv("INTEGRATIONS_WORKSPACE_ID", FAKE_INTEGRATIONS_WORKSPACE_ID)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_root_profile_across_tests(monkeypatch: pytest.MonkeyPatch):
+    """`apply_all` now ALSO applies the root/default profile (see
+    `service._apply_root_profile`'s own doc comment for the real gap this
+    closes) — every test in this file that calls `.../apply` therefore
+    now ALSO mutates the ONE real root profile's `config.yaml`/`skills/`,
+    which is genuinely SHARED across every test in this session
+    (`HERMES_HOME` is a module-level constant set once in `../conftest.py`,
+    not a per-test fixture — see that file's own doc comment). Before this
+    feature, no test wrote to the root profile's `config.yaml` at all (the
+    one PRE-EXISTING test that touches the root, `test_apply_seeds_root_
+    profile_bundled_skills_once`, already had its own local backup/restore
+    for exactly this reason — this fixture generalizes that same idea to
+    every test, file-wide, rather than duplicating it per test.
+
+    Two real, separate problems this fixture avoids:
+    1. `config.yaml` cross-contamination: one test's root-profile
+       `mcp_servers`/`browser` block would otherwise persist into the
+       next test's assertions about a DIFFERENT (per-test-unique) agent's
+       own config — never actually asserted on directly today, but a
+       real, silent state leak worth closing now rather than waiting for
+       a future test to be confused by it.
+    2. `agent.skill_utils` ModuleNotFoundError: `_apply_root_profile`'s
+       call into `_apply_skills` re-triggers `list_profiles_api()`,
+       which computes per-skill stats via `agent.skill_utils` the moment
+       the root's `skills/` dir exists at all — a module that ships
+       inside the real built image but is not vendored into this source
+       checkout (see the pre-existing test's own doc comment for the
+       full story). Stubbed here, file-wide, rather than per-test, since
+       EVERY test now exercises this path via `_apply_root_profile`, not
+       just the one test that used to.
+
+    Backs up and restores the root's `config.yaml` (if any) and `skills/`
+    dir (if any) around EACH test — never deletes real content from a
+    developer's own machine if this suite is ever pointed at a real
+    HERMES_HOME (it never should be, per ../conftest.py, but restoring
+    rather than assuming-empty is the safe default regardless)."""
+    import shutil
+    import sys
+    import types
+
+    if "agent" not in sys.modules or not hasattr(sys.modules["agent"], "skill_utils"):
+        fake_agent = types.ModuleType("agent")
+        fake_agent_skill_utils = types.ModuleType("agent.skill_utils")
+        fake_agent_skill_utils.iter_skill_index_files = lambda *a, **k: iter(())
+        fake_agent_skill_utils.parse_frontmatter = lambda content: ({}, content)
+        fake_agent_skill_utils.skill_matches_platform = lambda frontmatter: True
+        fake_agent.skill_utils = fake_agent_skill_utils
+        monkeypatch.setitem(sys.modules, "agent", fake_agent)
+        monkeypatch.setitem(sys.modules, "agent.skill_utils", fake_agent_skill_utils)
+
+    if "hermes_cli" not in sys.modules or not hasattr(
+        sys.modules.get("hermes_cli.profiles"), "seed_profile_skills"
+    ):
+        fake_hermes_cli = types.ModuleType("hermes_cli")
+        fake_hermes_cli_profiles = types.ModuleType("hermes_cli.profiles")
+        fake_hermes_cli_profiles.seed_profile_skills = lambda *a, **k: None
+        fake_hermes_cli.profiles = fake_hermes_cli_profiles
+        monkeypatch.setitem(sys.modules, "hermes_cli", fake_hermes_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_hermes_cli_profiles)
+
+    from api.profiles import get_hermes_home_for_profile, list_profiles_api
+
+    root_name = next(
+        (p["name"] for p in list_profiles_api() if p.get("is_default")), None
+    )
+    if root_name is None:
+        yield
+        return
+
+    root_home = get_hermes_home_for_profile(root_name)
+    root_config_path = root_home / "config.yaml"
+    root_skills_dir = root_home / "skills"
+    config_backup = root_config_path.read_bytes() if root_config_path.is_file() else None
+    skills_backup = root_home / "skills.bak-autouse-test-isolation"
+    had_skills = root_skills_dir.exists()
+    if had_skills:
+        shutil.move(str(root_skills_dir), str(skills_backup))
+
+    try:
+        yield
+    finally:
+        if config_backup is not None:
+            root_config_path.write_bytes(config_backup)
+        elif root_config_path.exists():
+            root_config_path.unlink()
+        shutil.rmtree(root_skills_dir, ignore_errors=True)
+        if had_skills:
+            shutil.move(str(skills_backup), str(root_skills_dir))
+
+
 @pytest.fixture()
 def client() -> TestClient:
     app = create_app(runtime_enabled=False)
@@ -119,7 +229,10 @@ def test_apply_creates_profile_from_agent_folder(
     body = response.json()
     assert body["ok"] is True
     applied = body["data"]["applied"]
-    assert len(applied) == 1
+    # `applied` now also includes the root/default profile's own entry,
+    # appended LAST (see `apply_all`'s doc comment) — this test only cares
+    # about the one real tree agent, still always `applied[0]`.
+    assert len(applied) == 2
     entry = applied[0]
     assert entry["agent"] == agent_name
     assert entry["display_name"] == agent_name
@@ -205,8 +318,16 @@ def test_apply_seeds_root_profile_bundled_skills_once(
     that gap directly on the root — this pins down that it fires when the
     root looks unseeded, and does NOT fire again once seeded, since
     `seed_profile_skills` shells out a subprocess with up to a 60s
-    timeout and must not pay that cost on every agent-creation call."""
-    import shutil
+    timeout and must not pay that cost on every agent-creation call.
+
+    Root-profile backup/restore and the `agent.skill_utils` stub are now
+    handled file-wide by the `_isolate_root_profile_across_tests` autouse
+    fixture (this test used to do both locally — see that fixture's own
+    doc comment for why it was generalized) — this test only overrides
+    `hermes_cli.profiles.seed_profile_skills` with its OWN spy (tracking
+    calls, unlike the autouse fixture's generic no-op), which the
+    monkeypatch stack applies AFTER (and so on top of) the autouse
+    fixture's stub, same test, same effect."""
     import sys
     import types
 
@@ -214,79 +335,43 @@ def test_apply_seeds_root_profile_bundled_skills_once(
 
     root_name = next(p["name"] for p in list_profiles_api() if p.get("is_default"))
     root_home = get_hermes_home_for_profile(root_name)
-
-    # `HERMES_HOME` is session-scoped (see ../conftest.py) — the real ROOT
-    # profile is shared across every test in this session. This test must
-    # leave the root's `skills/` dir exactly as it found it, so seeding it
-    # here can't leak into any other test's `list_profiles_api()` calls
-    # (upstream computes per-skill stats the moment `skills/` exists at
-    # all — see `_compute_profile_skills_stats` — which needs the `agent`
-    # package: present in the real built image, not necessarily in every
-    # local/dev checkout of this repo).
     root_skills_dir = root_home / "skills"
-    backup_dir = root_home / "skills.bak-test-restore"
-    had_existing_skills = root_skills_dir.exists()
-    if had_existing_skills:
-        shutil.move(str(root_skills_dir), str(backup_dir))
 
-    try:
-        calls: list[Path] = []
+    calls: list[Path] = []
 
-        def _fake_seed_profile_skills(profile_path: Path, *, quiet: bool = False) -> None:
-            calls.append(Path(profile_path))
-            # Mimic the real helper actually populating skills/, so the
-            # "already seeded" check on a later apply sees a non-empty dir.
-            skill_dir = Path(profile_path) / "skills" / "bundled_skill"
-            skill_dir.mkdir(parents=True, exist_ok=True)
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: bundled_skill\ndescription: test\n---\n", encoding="utf-8"
-            )
+    def _fake_seed_profile_skills(profile_path: Path, *, quiet: bool = False) -> None:
+        calls.append(Path(profile_path))
+        # Mimic the real helper actually populating skills/, so the
+        # "already seeded" check on a later apply sees a non-empty dir.
+        skill_dir = Path(profile_path) / "skills" / "bundled_skill"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: bundled_skill\ndescription: test\n---\n", encoding="utf-8"
+        )
 
-        fake_hermes_cli = types.ModuleType("hermes_cli")
-        fake_hermes_cli_profiles = types.ModuleType("hermes_cli.profiles")
-        fake_hermes_cli_profiles.seed_profile_skills = _fake_seed_profile_skills
-        fake_hermes_cli.profiles = fake_hermes_cli_profiles
-        monkeypatch.setitem(sys.modules, "hermes_cli", fake_hermes_cli)
-        monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_hermes_cli_profiles)
+    fake_hermes_cli = types.ModuleType("hermes_cli")
+    fake_hermes_cli_profiles = types.ModuleType("hermes_cli.profiles")
+    fake_hermes_cli_profiles.seed_profile_skills = _fake_seed_profile_skills
+    fake_hermes_cli.profiles = fake_hermes_cli_profiles
+    monkeypatch.setitem(sys.modules, "hermes_cli", fake_hermes_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_hermes_cli_profiles)
 
-        # `list_profiles_api()` (called on every apply, to resolve the root
-        # profile name) computes each profile's skill stats the moment its
-        # `skills/` dir exists at all — see `_compute_profile_skills_stats`
-        # — via `agent.skill_utils`, a module that ships inside the real
-        # built image (part of `hermes_cli`/`agent`) but isn't vendored
-        # into this source checkout. Stub it minimally so seeding the root
-        # here doesn't fail an UNRELATED upstream code path that has
-        # nothing to do with what this test is pinning down.
-        if "agent" not in sys.modules or not hasattr(sys.modules["agent"], "skill_utils"):
-            fake_agent = types.ModuleType("agent")
-            fake_agent_skill_utils = types.ModuleType("agent.skill_utils")
-            fake_agent_skill_utils.iter_skill_index_files = lambda *a, **k: iter(())
-            fake_agent_skill_utils.parse_frontmatter = lambda content: ({}, content)
-            fake_agent_skill_utils.skill_matches_platform = lambda frontmatter: True
-            fake_agent.skill_utils = fake_agent_skill_utils
-            monkeypatch.setitem(sys.modules, "agent", fake_agent)
-            monkeypatch.setitem(sys.modules, "agent.skill_utils", fake_agent_skill_utils)
+    # Root starts unseeded (no skills dir at all) — first apply must
+    # seed it exactly once.
+    client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+    assert calls == [root_home]
+    assert (root_skills_dir / "bundled_skill" / "SKILL.md").is_file()
 
-        # Root starts unseeded (no skills dir at all) — first apply must
-        # seed it exactly once.
-        client.post("/api/wrapper/v1/agent-seeder/simple/apply")
-        assert calls == [root_home]
-        assert (root_skills_dir / "bundled_skill" / "SKILL.md").is_file()
+    # A second, distinct agent created against the now-seeded root
+    # must NOT trigger another seed_profile_skills call.
+    second_agent = f"{agent_name}-second"
+    second_agent_dir = _agent_dir(synthetic_seeder_tree, "simple", second_agent)
+    second_agent_dir.mkdir(parents=True, exist_ok=True)
+    (second_agent_dir / "soul.md").write_text(f"# {second_agent}\n", encoding="utf-8")
 
-        # A second, distinct agent created against the now-seeded root
-        # must NOT trigger another seed_profile_skills call.
-        second_agent = f"{agent_name}-second"
-        second_agent_dir = _agent_dir(synthetic_seeder_tree, "simple", second_agent)
-        second_agent_dir.mkdir(parents=True, exist_ok=True)
-        (second_agent_dir / "soul.md").write_text(f"# {second_agent}\n", encoding="utf-8")
-
-        response = client.post(f"/api/wrapper/v1/agent-seeder/simple/apply/{second_agent}")
-        assert response.status_code == 200, response.text
-        assert calls == [root_home]
-    finally:
-        shutil.rmtree(root_skills_dir, ignore_errors=True)
-        if had_existing_skills:
-            shutil.move(str(backup_dir), str(root_skills_dir))
+    response = client.post(f"/api/wrapper/v1/agent-seeder/simple/apply/{second_agent}")
+    assert response.status_code == 200, response.text
+    assert calls == [root_home]
 
 
 def test_apply_discovers_global_and_agent_tools(
@@ -313,6 +398,38 @@ def test_apply_writes_mcp_servers_config_entry(
     assert entry["args"].count("--tools-dir") == 2
     assert str(synthetic_seeder_tree / "tools") in entry["args"]
     assert str(_agent_dir(synthetic_seeder_tree, "simple", agent_name) / "tools") in entry["args"]
+
+
+def test_apply_mcp_servers_entry_carries_non_secret_runner_env(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """The host's real stdio MCP launcher only passes a safe env allowlist
+    (plus `mcp_servers.<name>.env`) to the spawned `hermes-seeder-<agent>`
+    subprocess, so the values `open_browser`/`browser_task` need to reach
+    the gateway must be named explicitly in that `env` mapping. Exactly
+    three non-secret keys; HERMES_HOME is THIS agent's own resolved
+    profile home, never a shared/parent value. Never the integrations
+    bearer token."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+
+    home = get_hermes_home_for_profile(agent_name)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    entry = config["mcp_servers"]["hermes-seeder"]
+    assert entry["env"] == {
+        "GATEWAY_INTERNAL_URL": FAKE_GATEWAY_INTERNAL_URL,
+        "INTEGRATIONS_WORKSPACE_ID": FAKE_INTEGRATIONS_WORKSPACE_ID,
+        "HERMES_HOME": str(get_hermes_home_for_profile(agent_name)),
+    }
+    # Adversarial guard: nothing secret-shaped may ever land in this
+    # plain-text config block.
+    serialized = str(entry)
+    assert "Bearer" not in serialized
+    assert "token" not in serialized.lower()
+    for value in entry["env"].values():
+        assert "token" not in value.lower()
 
 
 def test_apply_mcp_servers_entry_carries_this_agents_own_agent_id(
@@ -343,8 +460,9 @@ def test_apply_mcp_servers_entry_carries_agent_id_even_without_browser_marker(
     client: TestClient, synthetic_seeder_tree: Path, agent_name: str
 ) -> None:
     """`agent_id` is passed unconditionally (see `_apply_mcp_tools`'s own
-    comment) — an agent WITHOUT `browser.enabled` still gets its own slug,
-    which is harmless for tool modules that never read `_agent_id`."""
+    comment) — an agent with no browser marker file of any kind still gets
+    its own slug, which is harmless for tool modules that never read
+    `_agent_id`."""
     import yaml
     from api.profiles import get_hermes_home_for_profile
 
@@ -356,17 +474,46 @@ def test_apply_mcp_servers_entry_carries_agent_id_even_without_browser_marker(
     assert args[args.index("--agent-id") + 1] == agent_name
 
 
-# --- browser: config.yaml block (opt-in per-agent capability) ---
+# --- browser: config.yaml block (opt-OUT per-agent capability) ---
 
 
-def test_apply_does_not_write_browser_block_without_the_marker_file(
+def test_apply_writes_browser_block_by_default_with_no_marker(
     client: TestClient, synthetic_seeder_tree: Path, agent_name: str
 ) -> None:
-    """The default fixture's agent has no `browser.enabled` marker — the
-    `browser:` block must not appear at all, and the result must report
-    `browser_enabled: False`."""
+    """Opt-out model: the default fixture's agent has NEITHER
+    `browser.enabled` nor `browser.disabled` — every agent gets browser
+    automation available by default, so the `browser:` block IS written
+    and the result reports `browser_enabled: True`."""
     import yaml
     from api.profiles import get_hermes_home_for_profile
+
+    response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+    entry = response.json()["data"]["applied"][0]
+    assert entry["browser_enabled"] is True
+
+    home = get_hermes_home_for_profile(agent_name)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert config["browser"] == {
+        "enabled": True,
+        "profile_id": agent_name,
+        "persistent": True,
+    }
+
+
+def test_apply_browser_disabled_marker_opts_agent_out(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """The one genuinely NEW capability of the opt-out model, end to end
+    through the real route: `browser.disabled` in this agent's own
+    seeder-tree folder -> `browser_enabled: False` and NO `browser:` block
+    written to its config.yaml (the `mcp_servers` entry is still written —
+    opting out of the browser never touches generic tool wiring)."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    (_agent_dir(synthetic_seeder_tree, "simple", agent_name) / "browser.disabled").write_text(
+        "", encoding="utf-8"
+    )
 
     response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
     entry = response.json()["data"]["applied"][0]
@@ -375,15 +522,18 @@ def test_apply_does_not_write_browser_block_without_the_marker_file(
     home = get_hermes_home_for_profile(agent_name)
     config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
     assert "browser" not in config
+    assert "hermes-seeder" in config["mcp_servers"]
 
 
 def test_apply_writes_browser_block_when_agent_opts_in(
     client: TestClient, synthetic_seeder_tree: Path, agent_name: str
 ) -> None:
-    """`browser.enabled` present in this agent's own seeder-tree folder ->
-    a `browser:` config.yaml block is written, keyed to THIS agent's own
-    slug — never a permanent cdp_url/port, only identity (see
-    `_apply_browser_capability`'s own doc comment)."""
+    """An explicit `browser.enabled` marker (leftover from the earlier
+    opt-in model) is a harmless no-op under the opt-out default — it does
+    NOT cause the True outcome, the default does; the result is identical
+    to having no marker at all. Still, the `browser:` block is keyed to
+    THIS agent's own slug — never a permanent cdp_url/port, only identity
+    (see `_apply_browser_capability`'s own doc comment)."""
     import yaml
     from api.profiles import get_hermes_home_for_profile
 
@@ -410,9 +560,11 @@ def test_apply_writes_browser_block_when_agent_opts_in(
 def test_apply_browser_block_is_separate_from_mcp_servers_entry(
     client: TestClient, synthetic_seeder_tree: Path, agent_name: str
 ) -> None:
-    """An agent that opts into BOTH tools (mcp_servers.hermes-seeder,
-    written unconditionally by this fixture's tool dirs) AND the browser
-    capability must end up with both top-level keys, independently."""
+    """An agent with BOTH tools (mcp_servers.hermes-seeder, written
+    unconditionally by this fixture's tool dirs) AND the browser
+    capability (on by default; the `browser.enabled` marker written here
+    is a harmless no-op under the opt-out model) must end up with both
+    top-level keys, independently."""
     import yaml
     from api.profiles import get_hermes_home_for_profile
 
@@ -614,7 +766,13 @@ def test_apply_with_no_agents_directory_returns_empty_list(
     response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
 
     assert response.status_code == 200
-    assert response.json()["data"]["applied"] == []
+    # `applied` is no longer literally `[]` for a mode with zero tree
+    # agents — the root/default profile still gets applied (see
+    # `apply_all`'s own doc comment: the root profile is not itself part
+    # of any mode's tree, so an empty mode is not a reason to skip it).
+    applied = response.json()["data"]["applied"]
+    assert [a["agent"] for a in applied if not a.get("is_root_profile")] == []
+    assert any(a.get("is_root_profile") for a in applied)
 
 
 def test_seeder_root_env_var_overrides_default(
@@ -685,25 +843,35 @@ def test_apply_scopes_to_the_requested_mode_only(
     monkeypatch.setattr(agent_seeder_service, "_default_seeder_root", lambda: root)
 
     simple_response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
-    simple_agents = {a["agent"] for a in simple_response.json()["data"]["applied"]}
+    simple_applied = simple_response.json()["data"]["applied"]
+    simple_agents = {a["agent"] for a in simple_applied if not a.get("is_root_profile")}
 
     creator_response = client.post("/api/wrapper/v1/agent-seeder/creator/apply")
-    creator_agents = {a["agent"] for a in creator_response.json()["data"]["applied"]}
+    creator_applied = creator_response.json()["data"]["applied"]
+    creator_agents = {a["agent"] for a in creator_applied if not a.get("is_root_profile")}
 
     assert simple_agents == {"pm"}
     assert creator_agents == {"writer"}
+    # The root/default profile's own application is NOT mode-scoped (it
+    # is not part of either mode's tree) — both applies still include it.
+    assert any(a.get("is_root_profile") for a in simple_applied)
+    assert any(a.get("is_root_profile") for a in creator_applied)
 
 
 def test_apply_unknown_mode_returns_empty_list_not_an_error(
     client: TestClient, synthetic_seeder_tree: Path
 ) -> None:
     """A mode with no seeder/modes/<mode>/ directory at all is not a
-    malformed-request error — it's simply a mode with zero agents (see
-    seeder_kit.tree.parse_tree's own contract)."""
+    malformed-request error — it's simply a mode with zero TREE agents
+    (see seeder_kit.tree.parse_tree's own contract); the root/default
+    profile still gets applied regardless (see `apply_all`'s own doc
+    comment — it is never itself part of any mode's tree)."""
     response = client.post("/api/wrapper/v1/agent-seeder/does-not-exist-yet/apply")
 
     assert response.status_code == 200
-    assert response.json()["data"]["applied"] == []
+    applied = response.json()["data"]["applied"]
+    assert [a["agent"] for a in applied if not a.get("is_root_profile")] == []
+    assert any(a.get("is_root_profile") for a in applied)
 
 
 def test_apply_one_unknown_mode_returns_404_same_as_unknown_agent(

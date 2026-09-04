@@ -77,10 +77,65 @@ def test_parse_tree_missing_optional_files_are_none(tmp_path: Path) -> None:
     assert agent.skills_dir is None
     assert agent.read_soul() is None
     assert agent.read_agent_instructions() is None
+    # Opt-out model: no marker at all means browser automation is available.
+    assert agent.wants_browser is True
+
+
+def test_parse_tree_wants_browser_defaults_to_true_with_no_marker(tmp_path: Path) -> None:
+    """Every agent gets browser automation available by default — an agent
+    folder with neither `browser.enabled` nor `browser.disabled` wants a
+    browser."""
+    _agent_dir(tmp_path, "simple", "PM").mkdir(parents=True)
+
+    tree = parse_tree(tmp_path, mode="simple")
+    agent = tree.agents[0]
+
+    assert agent.wants_browser is True
+
+
+def test_parse_tree_browser_disabled_marker_opts_out(tmp_path: Path) -> None:
+    agent_dir = _agent_dir(tmp_path, "simple", "PM")
+    _write(agent_dir / "browser.disabled", "")
+
+    tree = parse_tree(tmp_path, mode="simple")
+    agent = tree.agents[0]
+
     assert agent.wants_browser is False
 
 
-def test_parse_tree_detects_browser_enabled_marker(tmp_path: Path) -> None:
+def test_parse_tree_browser_disabled_marker_content_is_ignored(tmp_path: Path) -> None:
+    """Presence-only marker, matching every other per-agent marker in this
+    tree — its content (if any) must never be parsed or required to be
+    anything in particular."""
+    agent_dir = _agent_dir(tmp_path, "simple", "PM")
+    _write(agent_dir / "browser.disabled", "this text is never read")
+
+    tree = parse_tree(tmp_path, mode="simple")
+    agent = tree.agents[0]
+
+    assert agent.wants_browser is False
+
+
+def test_parse_tree_browser_disabled_as_a_directory_does_not_count(tmp_path: Path) -> None:
+    """Must be a FILE, matching `tools_dir`/`skills_dir`'s own
+    file-vs-directory distinction elsewhere in this module — a stray
+    directory of the same name is not the marker, so the agent keeps the
+    default (browser available)."""
+    agent_dir = _agent_dir(tmp_path, "simple", "PM")
+    (agent_dir / "browser.disabled").mkdir(parents=True)
+
+    tree = parse_tree(tmp_path, mode="simple")
+    agent = tree.agents[0]
+
+    assert agent.wants_browser is True
+
+
+def test_parse_tree_stray_browser_enabled_marker_is_a_harmless_no_op(tmp_path: Path) -> None:
+    """Backward compat with the earlier opt-in model: a leftover
+    `browser.enabled` file (with no `browser.disabled`) changes nothing —
+    the outcome is identical to having no marker at all, because the
+    default is already True. No special-case code detects this file; its
+    presence simply doesn't matter under the opt-out model."""
     agent_dir = _agent_dir(tmp_path, "simple", "PM")
     _write(agent_dir / "browser.enabled", "")
 
@@ -90,25 +145,13 @@ def test_parse_tree_detects_browser_enabled_marker(tmp_path: Path) -> None:
     assert agent.wants_browser is True
 
 
-def test_parse_tree_browser_enabled_marker_content_is_ignored(tmp_path: Path) -> None:
-    """Presence-only marker, matching every other per-agent marker in this
-    tree — its content (if any) must never be parsed or required to be
-    anything in particular."""
+def test_parse_tree_browser_disabled_wins_over_browser_enabled(tmp_path: Path) -> None:
+    """Contradictory tree (both markers present): exclusion is the more
+    conservative outcome and opting out is a hard override, so
+    `browser.disabled` wins."""
     agent_dir = _agent_dir(tmp_path, "simple", "PM")
-    _write(agent_dir / "browser.enabled", "this text is never read")
-
-    tree = parse_tree(tmp_path, mode="simple")
-    agent = tree.agents[0]
-
-    assert agent.wants_browser is True
-
-
-def test_parse_tree_browser_enabled_as_a_directory_does_not_count(tmp_path: Path) -> None:
-    """Must be a FILE, matching `tools_dir`/`skills_dir`'s own
-    file-vs-directory distinction elsewhere in this module — a stray
-    directory of the same name is not the marker."""
-    agent_dir = _agent_dir(tmp_path, "simple", "PM")
-    (agent_dir / "browser.enabled").mkdir(parents=True)
+    _write(agent_dir / "browser.enabled", "")
+    _write(agent_dir / "browser.disabled", "")
 
     tree = parse_tree(tmp_path, mode="simple")
     agent = tree.agents[0]

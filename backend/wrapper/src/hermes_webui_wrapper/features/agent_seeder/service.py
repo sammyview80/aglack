@@ -76,9 +76,11 @@ For each agent in a mode's tree:
    stripping any caller-supplied value), which the global
    `open_browser`/`close_browser` tool modules in `../../seeder/tools/`
    rely on to act only on the calling agent's own browser.
-7. If this agent's tree entry requests it (`AgentSpec.wants_browser`, a
-   `browser.enabled` marker file — see `seeder_kit.tree`'s own doc
-   comment), write a SEPARATE top-level `browser:` block into
+7. Unless this agent's tree entry opts out (`AgentSpec.wants_browser` is
+   True by default; a `browser.disabled` marker file makes it False — see
+   `seeder_kit.tree`'s own doc comment: every agent gets browser
+   automation available by default, an agent that genuinely should never
+   touch a browser marks itself), write a SEPARATE top-level `browser:` block into
    `config.yaml` (`_apply_browser_capability`) — `{"enabled": true,
    "profile_id": <this agent's own slug>, "persistent": true}`. Never
    merged into the `mcp_servers` entry above; only IDENTITY is persisted
@@ -509,10 +511,10 @@ def _apply_skills(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> lis
 
 
 def _apply_browser_capability(agent: AgentSpec, profile_home: Path) -> bool:
-    """Write a `browser:` block into this agent's `config.yaml` if (and
-    only if) its seeder tree entry actually requests it
-    (`AgentSpec.wants_browser`, backed by `<agent_dir>/browser.enabled` —
-    see `seeder_kit.tree`'s own doc comment). A SEPARATE top-level key
+    """Write a `browser:` block into this agent's `config.yaml` unless its
+    seeder tree entry opts out (`AgentSpec.wants_browser` — True by
+    default, False only when `<agent_dir>/browser.disabled` exists; see
+    `seeder_kit.tree`'s own doc comment). A SEPARATE top-level key
     from `mcp_servers` (never merged into it) — this is not an MCP server
     entry, just a per-profile capability flag the wrapper's own
     `features/browser/service.py` and the container's browser-manager
@@ -528,7 +530,7 @@ def _apply_browser_capability(agent: AgentSpec, profile_home: Path) -> bool:
     Uses the SAME `mutate_profile_config`/`load_profile_config` helpers
     every other per-agent `config.yaml` write in this module already uses
     (`_ensure_agent_workspace`, `_apply_mcp_tools`) — no second read/write
-    path. An agent whose tree entry does NOT request this capability is
+    path. An agent whose tree entry opts OUT of this capability is
     left untouched (no `browser:` key written at all, and an existing one
     from a previous apply is never removed here — this function only ever
     adds/refreshes the block for an agent that currently wants it,
@@ -560,6 +562,11 @@ def _apply_browser_capability(agent: AgentSpec, profile_home: Path) -> bool:
 
 
 def _apply_mcp_tools(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> dict[str, Any]:
+    from hermes_webui_wrapper.config import (
+        resolve_gateway_internal_url,
+        resolve_integrations_workspace_id,
+    )
+
     tool_dirs = tree.tool_dirs_for(agent)
     try:
         discovered = discover_tools_in_dirs(tool_dirs)
@@ -570,6 +577,23 @@ def _apply_mcp_tools(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> 
         return {"tools_seeded": [], "mcp_server_configured": False}
 
     config_path = profile_home / "config.yaml"
+
+    # The host's real stdio MCP launcher only passes a safe env allowlist
+    # (plus this explicit `mcp_servers.<name>.env` mapping) to the spawned
+    # `hermes-seeder-<agent>` subprocess — so the values the browser tool
+    # modules need to reach the gateway must be named here explicitly or
+    # they never arrive. Resolved via this wrapper's own config.py helpers
+    # (fail closed: an unset value at seed time is a real misconfiguration
+    # and must surface, not silently produce a broken agent). HERMES_HOME
+    # is per-agent: `profile_home` is already the exact resolved home for
+    # THIS profile (root or named — see `_apply_agent`). Non-secret values
+    # only: never the integrations bearer token or any other secret —
+    # this mapping is written to a plain config.yaml.
+    runner_env = {
+        "GATEWAY_INTERNAL_URL": resolve_gateway_internal_url(),
+        "INTEGRATIONS_WORKSPACE_ID": resolve_integrations_workspace_id(),
+        "HERMES_HOME": str(profile_home),
+    }
 
     def _set_mcp_server(cfg: dict) -> None:
         mcp_servers = cfg.setdefault("mcp_servers", {})
@@ -585,6 +609,7 @@ def _apply_mcp_tools(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> 
             tool_dirs,
             server_name=f"{_MCP_SERVER_NAME}-{agent.slug}",
             agent_id=agent.slug,
+            env=runner_env,
         )
 
     try:
@@ -598,6 +623,68 @@ def _apply_mcp_tools(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> 
         "tools_seeded": sorted(t.name for t in discovered),
         "mcp_server_configured": True,
     }
+
+
+def _apply_root_profile(tree: SeederTree) -> dict[str, Any] | None:
+    """Give the root/default Hermes profile the SAME global tools/skills
+    (including browser automation) every named seeder-tree agent already
+    gets — a REAL gap found live: `apply_all`/`apply_one` only ever
+    iterate `tree.agents` (the `seeder/modes/<mode>/agents/*` folders,
+    e.g. `PM`/`CEO`), so the root profile (the one a brand-new workspace's
+    default chat targets before any mode is ever selected) never went
+    through `_apply_mcp_tools`/`_apply_browser_capability` at all —
+    confirmed live: a real root profile's `config.yaml` had zero
+    `mcp_servers` entries, not even the base `hermes-seeder` one, let
+    alone `browser:`.
+
+    Root profile has no `AgentSpec` of its own (it is not a
+    `seeder/modes/<mode>/agents/<name>/` folder) — a MINIMAL synthetic one
+    is built here (`tools_dir=None`, `skills_dir=None`) so it flows
+    through `tree.tool_dirs_for`/`tree.skill_dirs_for` exactly like every
+    other agent: those already return ONLY the global dirs when an
+    agent's own per-agent dirs are `None` (see `seeder_kit/tree.py`), so
+    the root profile correctly gets every GLOBAL tool/skill (including
+    `open_browser`/`close_browser`/`browser_task`,
+    `skills/org-browser-use/`) and nothing agent-specific — there is no
+    per-agent content for a profile that isn't a named seeder-tree agent.
+
+    Deliberately reuses `_apply_mcp_tools`/`_apply_browser_capability`/
+    `_apply_skills` UNCHANGED rather than a parallel reimplementation —
+    those functions only ever need `agent.slug`/`agent.tools_dir`/
+    `agent.skills_dir`/`agent.wants_browser`, all of which a synthetic
+    `AgentSpec` supplies correctly.
+
+    Returns `None` (not an error) if the root profile cannot be resolved
+    yet (`_resolve_root_profile_name` returns `None` — e.g. onboarding
+    has not run) or does not exist on disk yet — matches this module's
+    existing "soft no-op, not a failure" convention for a not-yet-ready
+    root (see `_create_profile_if_missing`'s own docstring)."""
+    from api.profiles import get_hermes_home_for_profile
+
+    root_name = _resolve_root_profile_name()
+    if root_name is None:
+        return None
+
+    profile_home = get_hermes_home_for_profile(root_name)
+    if not profile_home.is_dir():
+        return None
+
+    root_agent = AgentSpec(
+        folder_name=root_name,
+        slug=root_name,
+        path=profile_home,
+        soul_path=None,
+        agent_instructions_path=None,
+        tools_dir=None,
+        skills_dir=None,
+        wants_browser=True,
+    )
+
+    result: dict[str, Any] = {"agent": root_name, "display_name": root_name, "is_root_profile": True}
+    result["skills_seeded"] = _apply_skills(tree, root_agent, profile_home)
+    result.update(_apply_mcp_tools(tree, root_agent, profile_home))
+    result["browser_enabled"] = _apply_browser_capability(root_agent, profile_home)
+    return result
 
 
 def _apply_agent(tree: SeederTree, agent: AgentSpec) -> dict[str, Any]:
@@ -624,14 +711,25 @@ def _apply_agent(tree: SeederTree, agent: AgentSpec) -> dict[str, Any]:
 
 
 def apply_all(mode: str) -> dict[str, Any]:
-    """Apply every agent found in `mode`'s tree. Returns one result entry
-    per agent, in tree order. A single agent's failure raises immediately
+    """Apply every agent found in `mode`'s tree, PLUS the root/default
+    profile (see `_apply_root_profile`'s own doc comment for the real gap
+    this closes — the root profile is not itself a seeder-tree agent, so
+    it needs its own explicit application, not just tree iteration).
+    Returns one result entry per agent, in tree order, with the root
+    profile's entry LAST (`is_root_profile: true`) when it applies —
+    appended, never prepended, so existing callers that only look at
+    `applied[0]` for "the first real agent" (if any do) are unaffected.
+    A single agent's (or the root profile's) failure raises immediately
     (fail closed on the whole apply) rather than silently skipping it and
     reporting partial success. A mode with no declared agents (including
-    one that doesn't exist on disk at all) returns `{"applied": []}` — see
-    module docstring for why that's not an error."""
+    one that doesn't exist on disk at all) still applies the root profile
+    — the root profile's own tools/skills are independent of which mode
+    was selected, since it is never itself part of any mode's tree."""
     tree = _load_tree(mode)
     applied = [_apply_agent(tree, agent) for agent in tree.agents]
+    root_result = _apply_root_profile(tree)
+    if root_result is not None:
+        applied.append(root_result)
     return {"applied": applied}
 
 

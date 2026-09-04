@@ -96,6 +96,16 @@ pub struct DockerCliLauncher {
     /// `http://host.docker.internal:<port>` on macOS/Windows or the
     /// host's real LAN/bridge address on Linux.
     gateway_internal_url: String,
+    /// `docker create --memory <value>` — see
+    /// `config::WorkspacesConfig::workspace_memory_limit`'s own doc
+    /// comment for the real bug/request this exists for. Configured, not
+    /// hardcoded (AGENTS.md rule #2) — set via `WORKSPACE_MEMORY_LIMIT`
+    /// in `.env`, defaults to `4g` if unset.
+    memory_limit: String,
+    /// `docker create --shm-size <value>` — see
+    /// `config::WorkspacesConfig::workspace_shm_size`'s own doc comment.
+    /// Configured via `WORKSPACE_SHM_SIZE` in `.env`, defaults to `1g`.
+    shm_size: String,
 }
 
 impl DockerCliLauncher {
@@ -105,6 +115,8 @@ impl DockerCliLauncher {
         workspace_default_path: String,
         frontend_origin: String,
         gateway_internal_url: String,
+        memory_limit: String,
+        shm_size: String,
     ) -> Self {
         Self {
             image_tag,
@@ -112,6 +124,8 @@ impl DockerCliLauncher {
             workspace_default_path,
             frontend_origin,
             gateway_internal_url,
+            memory_limit,
+            shm_size,
         }
     }
 }
@@ -141,15 +155,77 @@ impl ContainerLauncher for DockerCliLauncher {
         // mapping whose host-side port is always the freshly-picked
         // `browser_port` above — the container-internal port is fixed by
         // the image itself, exactly like `:8787`/`:3000` already are.
-        let browser_publish_arg = format!("{browser_port}:9400");
+        //
+        // `127.0.0.1:{browser_port}:9400` — EXPLICIT host-side bind
+        // address, unlike `wrapper_publish_arg`/`desktop_publish_arg`
+        // above (which publish to Docker's default `0.0.0.0`, reachable
+        // from any network interface on this machine). This is
+        // deliberate, not an inconsistency to "fix" to match the other
+        // two: `browser_manager.py`'s daemon has no auth of its own
+        // (unlike the wrapper, which sits behind this gateway's own
+        // session/bearer checks) — it is a raw control plane that can
+        // start/stop a real Chromium process and read any agent's
+        // persistent profile directory by id. The daemon itself binds
+        // `0.0.0.0` INSIDE the container (real bug found live: a
+        // loopback-only bind there is unreachable through ANY Docker
+        // publish mapping from outside the container, including from
+        // this gateway itself, which runs as a bare host process, not
+        // inside a container — see `browser_manager.py`'s own
+        // `BROWSER_MANAGER_HOST` doc comment for the full story). The
+        // "never reachable from outside this machine" property that
+        // loopback bind was originally meant to provide is enforced HERE
+        // instead, on the host side of the publish, where it actually
+        // works: `127.0.0.1:<port>` is reachable from this machine (where
+        // the gateway runs) but never from another machine on the
+        // network.
+        let browser_publish_arg = format!("127.0.0.1:{browser_port}:9400");
         let subfolder_env_arg = desktop_subfolder_env_arg(workspace_id);
 
+        // `--shm-size`/`--memory` — REAL BUG found live (a real Chromium
+        // crash reproduced inside a real running container, `chrome://
+        // crashes`-style "Aw, Snap!" / Error code 5): Docker's default
+        // `/dev/shm` is a fixed 64MB tmpfs, far too small for a real,
+        // VISIBLE (not `--headless`) Chromium with a GPU process —
+        // confirmed live via `docker exec <container> df -h /dev/shm`
+        // showing exactly 64M total on a crashing container. Chromium
+        // (and most Chromium-family browsers generally) use `/dev/shm`
+        // heavily for inter-process shared memory between the browser/
+        // GPU/renderer processes; once it fills, renderer/GPU processes
+        // crash outright rather than degrading gracefully. The default
+        // (`1g`, configurable via `WORKSPACE_SHM_SIZE` — see
+        // `self.shm_size`'s own doc comment on the struct above) RAISES
+        // the maximum tmpfs CAPACITY, it does not eagerly allocate/
+        // consume that much real memory up front (tmpfs is demand-paged)
+        // — confirmed real, not a guessed tradeoff. Ruled out other real
+        // candidate causes first, on the same live container, before
+        // concluding `/dev/shm` was the actual fix: not OOM-killed
+        // (`docker inspect --format '{{.State.OOMKilled}}'` was `false`),
+        // not a same-profile double-launch race (every Chromium
+        // subprocess's own `--user-data-dir` pointed at the SAME single
+        // profile — the daemon's process-wide lock, see
+        // `browser_manager.py`'s own `BrowserManager` doc comment,
+        // correctly prevented two live processes for one agent).
+        //
+        // `--memory` (default `4g`, configurable via
+        // `WORKSPACE_MEMORY_LIMIT`): a real, explicit per-container cap —
+        // previously ABSENT entirely (every workspace container could use
+        // up to the WHOLE Docker Desktop VM's memory, unbounded), added
+        // alongside `--shm-size` for the same real reason (a visible
+        // Chromium + GPU process is genuinely heavier than this image's
+        // other workloads) and because an unbounded container is its own
+        // real operational risk once several workspaces run browsers at
+        // once (one runaway container could starve every other
+        // workspace on the same host).
         run_docker(
             &container_name,
             &[
                 "create",
                 "--name",
                 &container_name,
+                "--memory",
+                &self.memory_limit,
+                "--shm-size",
+                &self.shm_size,
                 "-p",
                 &wrapper_publish_arg,
                 "-p",

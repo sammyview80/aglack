@@ -202,6 +202,7 @@ pub(crate) fn wrapper_boot_script(
 /// this daemon's own docstring says not to depend on.
 fn browser_manager_launch_line() -> &'static str {
     "setsid su -s /bin/sh abc -c '\n\
+     export DISPLAY=:1\n\
      exec python3 /opt/hermes-browser-manager/browser_manager.py\n\
      ' >/config/hermes-browser-manager.log 2>&1 &\n"
 }
@@ -373,6 +374,40 @@ mod tests {
             script.matches("su -s /bin/sh abc -c").count() >= 2,
             "the browser-manager daemon must be started the SAME way the wrapper is — as \
              `abc`, not root — not merely present somewhere in the script"
+        );
+    }
+
+    /// Real bug found live: without this, `browser_manager.py`'s spawned
+    /// Chromium child processes had no `DISPLAY` to render onto at all —
+    /// `default_launch_chromium` deliberately runs a VISIBLE (not
+    /// `--headless`) Chromium onto this container's own KasmVNC virtual
+    /// desktop (`DISPLAY=:1`), but that value is a real, s6-overlay-
+    /// exposed container env var, never automatically inherited by a
+    /// `su -s /bin/sh abc -c '...'`-spawned shell (the exact same
+    /// isolation gap `GATEWAY_INTERNAL_URL`/`INTEGRATIONS_WORKSPACE_ID`/
+    /// `HERMES_HOME` already needed explicit `export` lines for, in the
+    /// WRAPPER's own boot block, for the identical reason).
+    #[test]
+    fn boot_script_exports_display_before_launching_browser_manager() {
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+        );
+        let browser_manager_block_start = script
+            .find("python3 /opt/hermes-browser-manager/browser_manager.py")
+            .expect("browser-manager launch line must exist — see the sibling test");
+        let display_export_idx = script
+            .find("export DISPLAY=:1")
+            .expect("missing `export DISPLAY=:1` — Chromium has no target to render onto \
+                     without it, and this daemon's own `su -c` shell does not inherit it");
+        assert!(
+            display_export_idx < browser_manager_block_start,
+            "DISPLAY must be exported BEFORE the browser-manager daemon starts, in the SAME \
+             `su -c` block — a value set after the daemon's own `exec` line, or in a \
+             different block entirely, never reaches Chromium's own eventual subprocess env"
         );
     }
 
