@@ -168,4 +168,31 @@ describe('ModelCatalogDialog ticking', () => {
     // No extra/undo toggle call fired on close.
     expect(onToggle).toHaveBeenCalledTimes(1)
   })
+
+  it('allows adding a custom model for an existing or custom provider', async () => {
+    const user = userEvent.setup()
+    mockedModelsApi.fetchModelCatalog.mockResolvedValue(CATALOG)
+    const onToggle = vi.fn()
+    renderWithClient(
+      <ModelCatalogDialog
+        workspaceId="ws-1"
+        open
+        onOpenChange={vi.fn()}
+        isSelected={() => false}
+        onToggle={onToggle}
+      />,
+    )
+
+    await screen.findByText('GPT-4o')
+    await user.type(screen.getByLabelText(/custom model id/i), 'mistral-large')
+    await user.type(screen.getByLabelText(/custom model display name/i), 'Mistral Large')
+    await user.selectOptions(screen.getByLabelText(/custom model provider/i), 'openai')
+    await user.click(screen.getByRole('button', { name: /add custom model/i }))
+
+    expect(onToggle).toHaveBeenCalledWith({
+      id: 'mistral-large',
+      label: 'Mistral Large',
+      provider: 'openai',
+    })
+  })
 })

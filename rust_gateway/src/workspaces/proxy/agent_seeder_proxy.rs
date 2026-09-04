@@ -15,8 +15,8 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::workspaces::route::WorkspacesState;
 use super::wrapper_prefix_proxy::forward_to_wrapper_namespace;
+use crate::workspaces::route::WorkspacesState;
 
 /// Handles `/workspaces/:id/agent-seeder/*path` — axum captures both
 /// segments, so `path` is always present here (possibly empty only if a
@@ -43,12 +43,12 @@ pub async fn agent_seeder_proxy_route_root(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::workspaces::container::FakeLauncher;
     use crate::workspaces::test_support::{
         assert_failed_workspace_returns_409_not_ready, assert_not_ready_workspace_returns_409,
         assert_unknown_workspace_id_returns_404, spawn_echo_wrapper, temp_store,
     };
-    use super::*;
-    use crate::workspaces::container::FakeLauncher;
     use axum::{
         body::{to_bytes, Body},
         http::{Request as HttpRequest, StatusCode},
@@ -66,8 +66,7 @@ mod tests {
 
     #[tokio::test]
     async fn not_ready_workspace_returns_409() {
-        assert_not_ready_workspace_returns_409("agent-seeder", agent_seeder_proxy_route_root)
-            .await;
+        assert_not_ready_workspace_returns_409("agent-seeder", agent_seeder_proxy_route_root).await;
     }
 
     #[tokio::test]
@@ -94,7 +93,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);
@@ -128,7 +127,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);
@@ -166,7 +165,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);

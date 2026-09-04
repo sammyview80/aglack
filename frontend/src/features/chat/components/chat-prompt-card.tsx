@@ -12,7 +12,32 @@ type ChatPromptCardProps = {
   tabIndex?: number
   as?: 'div' | 'form'
   onSubmit?: FormEventHandler<HTMLFormElement>
-  children: ReactNode
+  /** Blocking actions stay pinned under the scrollable body. */
+  footer?: ReactNode
+  children?: ReactNode
+}
+
+function PromptChrome({
+  title,
+  description,
+  footer,
+  children,
+}: {
+  title: string
+  description?: string
+  footer?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <>
+      <div className={chatUi.promptHeader}>
+        <p className={chatUi.promptTitle}>{title}</p>
+        {description ? <p className={chatUi.promptDescription}>{description}</p> : null}
+      </div>
+      {children ? <div className={chatUi.promptBody}>{children}</div> : null}
+      {footer ? <div className={chatUi.promptFooter}>{footer}</div> : null}
+    </>
+  )
 }
 
 /** Shared chrome for blocking chat prompts (approval, clarify, …). */
@@ -28,6 +53,7 @@ export const ChatPromptCard = forwardRef<HTMLDivElement, ChatPromptCardProps>(
       tabIndex,
       as = 'div',
       onSubmit,
+      footer,
       children,
     },
     ref,
@@ -43,18 +69,18 @@ export const ChatPromptCard = forwardRef<HTMLDivElement, ChatPromptCardProps>(
     if (as === 'form') {
       return (
         <form {...shared} onSubmit={onSubmit}>
-          <p className={chatUi.promptTitle}>{title}</p>
-          {description ? <p className={chatUi.promptDescription}>{description}</p> : null}
-          {children}
+          <PromptChrome title={title} description={description} footer={footer}>
+            {children}
+          </PromptChrome>
         </form>
       )
     }
 
     return (
       <div {...shared} ref={ref}>
-        <p className={chatUi.promptTitle}>{title}</p>
-        {description ? <p className={chatUi.promptDescription}>{description}</p> : null}
-        {children}
+        <PromptChrome title={title} description={description} footer={footer}>
+          {children}
+        </PromptChrome>
       </div>
     )
   },

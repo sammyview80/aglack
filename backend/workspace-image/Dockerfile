@@ -172,7 +172,54 @@ COPY backend/wrapper /opt/hermes-webui/wrapper
 # matters here: this must run AFTER seeder_kit is a real installed
 # package in this venv, or the wrapper's dependency resolution fails
 # needing something named `seeder-kit` that doesn't exist yet.
-RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/seeder_kit
+# `[mcp]` extra pulls in the real `mcp` Python SDK (`mcp>=1.28,<2` —
+# see seeder_kit/pyproject.toml's optional-dependencies). Confirmed LIVE
+# this was missing entirely from the built image (checked every package
+# in the agent venv's site-packages — zero `mcp*` entries): without it,
+# NEITHER `hermes-seeder-runner` (seeder_kit's own stdio MCP server) NOR
+# the agent's own MCP CLIENT (`/opt/hermes/tools/mcp_tool.py`, which
+# lazily `from mcp.client.streamable_http import streamablehttp_client`)
+# can import the package at all — every `mcp_servers` entry in every
+# profile's config.yaml, stdio or HTTP alike, silently fails to connect
+# and `/reload-mcp` reports "No MCP servers connected" no matter how
+# correct the server config is. This is a real bug that predates the
+# integrations feature (docs/integrations-plan.md); fixed here because
+# it was found while verifying that feature end to end.
+RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e "/opt/hermes-webui/seeder_kit[mcp]"
+
+# `browser-use` (for agent-driven browser automation against the per-agent
+# Chromium `browser_manager.py` daemon manages — see that file +
+# `rust_gateway/src/workspaces/proxy/browser_proxy.rs`) is installed as
+# its OWN `uv pip install` call, with an EXPLICIT `--exclude-newer`
+# override, deliberately NOT folded into the `uv pip install -e
+# seeder_kit[...]` line above.
+# REAL, CONFIRMED reason (`docker build` failure, reproduced and root-
+# caused, not guessed): `hermes-agent`'s OWN `pyproject.toml` (this
+# image's `hermes-source` stage) sets `exclude-newer = "14 days"` — a
+# supply-chain freshness window `uv`'s resolver applies to every package
+# UNLESS explicitly listed in that same file's `exclude-newer-package`
+# exemption map, which does not include `browser-use`. Once
+# `hermes-agent`'s own exact `mcp==2.0.0` pin (its `[mcp]` extra) is
+# already resolved into this venv, `uv` can only see `browser-use`
+# releases published within that same aged window when resolving
+# `seeder_kit[browser]` — which pulls in an OLD `browser-use` release
+# whose OWN `mcp` pin (`==1.26.0`) directly conflicts with the already-
+# installed `mcp==2.0.0`, producing "No solution found... unsatisfiable"
+# — confirmed via a real, isolated Alpine/musl `uv pip install` repro
+# matching this stage exactly. A PLAIN `pip install` (no `exclude-newer`
+# concept at all) was tried first and confirmed to resolve this cleanly
+# — but a bare `uv venv` does NOT bundle a `pip` binary (confirmed live:
+# "/opt/hermes/.venv/bin/pip: not found") and installing `pip` itself
+# just to run it once is an unnecessary extra step when `uv` already has
+# a first-class flag for exactly this: `--exclude-newer` on ONE
+# invocation overrides the pyproject-level setting for that call only,
+# without installing a second package manager or touching
+# `hermes-agent`'s own policy file. Scoped to ONLY this one line — do
+# not add `--exclude-newer` to any other `uv pip install` call here;
+# that freshness policy is a deliberate `hermes-agent` supply-chain
+# control everything else should keep respecting.
+RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python --exclude-newer "$(date -u +%Y-%m-%d)" "browser-use>=0.13,<0.14"
+
 RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/wrapper
 
 # ---- Stage 3: the final image — webtop desktop + built hermes venv + our own WebUI ----
@@ -259,6 +306,18 @@ RUN python3 /tmp/patch_kasmvnc_lastactiveat.py && rm /tmp/patch_kasmvnc_lastacti
 COPY backend/workspace-image/patch_kasmvnc_hide_control_bar.py /tmp/patch_kasmvnc_hide_control_bar.py
 RUN python3 /tmp/patch_kasmvnc_hide_control_bar.py && rm /tmp/patch_kasmvnc_hide_control_bar.py
 
+# Same `kclient` iframe line the control-bar patch above just touched —
+# switches `resize=remote` to `resize=scale` so the real Xvnc server's
+# rendered resolution stays FIXED (see patch_kasmvnc_resource_efficiency.py's
+# own `-geometry 1024x576 -FrameRate 15` profile below) regardless of the
+# connecting client's own viewport size, with the client scaling that
+# fixed image visually instead. MUST run after
+# patch_kasmvnc_hide_control_bar.py — see patch_kasmvnc_local_scaling.py's
+# own module doc for why (both scripts patch the same line; this one's
+# match target is deliberately the ALREADY-control-bar-patched state).
+COPY backend/workspace-image/patch_kasmvnc_local_scaling.py /tmp/patch_kasmvnc_local_scaling.py
+RUN python3 /tmp/patch_kasmvnc_local_scaling.py && rm /tmp/patch_kasmvnc_local_scaling.py
+
 # Patch the same `kclient` shell's own client script so its separate
 # File-Manager/Enable-Audio/Enable-Microphone bar (`#lsbar`) never
 # auto-opens either. See patch_kasmvnc_hide_lsbar.py's own module doc for
@@ -271,6 +330,35 @@ RUN python3 /tmp/patch_kasmvnc_hide_control_bar.py && rm /tmp/patch_kasmvnc_hide
 # making the RECEIVER's handler a no-op.
 COPY backend/workspace-image/patch_kasmvnc_hide_lsbar.py /tmp/patch_kasmvnc_hide_lsbar.py
 RUN python3 /tmp/patch_kasmvnc_hide_lsbar.py && rm /tmp/patch_kasmvnc_hide_lsbar.py
+
+# Patch the base image's own Xvnc launch script (`/etc/s6-overlay/
+# s6-rc.d/svc-kasmvnc/run`) for a real, requested resource-efficiency
+# profile — this container runs on a real, constrained (4GB total RAM)
+# deployment target, with the Hermes agent runtime, this KasmVNC desktop,
+# and (as of this session) a real per-agent Chromium instance ALL
+# competing for the same memory. See patch_kasmvnc_resource_efficiency.py's
+# own module doc for the exact values chosen and why (1024x576 — not
+# lower, many real sites switch to mobile/tablet layout below ~1024px
+# wide; 15fps cap). Deliberately NO `-depth 16`: verified to crash Xvnc
+# with SIGBUS on every websocket client connection — see the script's doc.
+COPY backend/workspace-image/patch_kasmvnc_resource_efficiency.py /tmp/patch_kasmvnc_resource_efficiency.py
+RUN python3 /tmp/patch_kasmvnc_resource_efficiency.py && rm /tmp/patch_kasmvnc_resource_efficiency.py
+
+# ── Per-agent browser-manager daemon (Chromium process lifecycle) ──────────
+# `browser_manager.py`: a standalone, stdlib-only HTTP daemon that owns
+# ONE PERSISTENT Chromium profile directory per Hermes agent_id, with the
+# Chromium PROCESS itself EPHEMERAL (started on demand, killed when no
+# longer needed — see the file's own module docstring for the full design).
+# Only the FILE is placed in the image here — this Dockerfile does NOT wire
+# it into `/custom-cont-init.d/` itself. That boot hook is generated
+# EXTERNALLY, per-container, by `rust_gateway/src/workspaces/container/boot_script.rs`
+# (a separate repo/process, out of scope for this change) at container-CREATE
+# time, the same way the wrapper's own startup is documented to work
+# (Dockerfile's "No CMD override here" comment near EXPOSE 8787, below) —
+# not baked into the image because per-container values that boot script
+# needs (HERMES_HOME, PUID/PGID, ...) are only known at container-creation
+# time. A later change adds the actual boot invocation there.
+COPY backend/workspace-image/browser_manager.py /opt/hermes-browser-manager/browser_manager.py
 
 # ── Default desktop wallpaper (IceWM) ───────────────────────────────────────
 # Baked in via `/etc/icewm/prefoverride`, NOT the base image's own

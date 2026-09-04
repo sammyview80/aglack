@@ -51,6 +51,12 @@ export async function apiFetch<T>(
   try {
     res = await fetch(`${baseUrl}${path}`, {
       ...init,
+      // The gateway's own session cookie (see rust_gateway/src/auth/) is
+      // `HttpOnly` + `SameSite=Strict` — the browser only attaches it at
+      // all when the request explicitly opts in with `credentials:
+      // 'include'`. Every envelope call needs this now that the gateway
+      // requires a session for nearly every route.
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json', ...init?.headers },
     })
   } catch {
@@ -75,6 +81,13 @@ export async function apiFetch<T>(
   }
 
   if (!body.ok) {
+    // A session that never existed or has expired — send the whole app
+    // back to `/login` rather than letting every single feature grow its
+    // own "not authenticated" fallback UI. The login page itself does
+    // not call this API, so this cannot loop.
+    if (body.error.code === 'not_authenticated' && window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
     throw new ApiError(body.error)
   }
 

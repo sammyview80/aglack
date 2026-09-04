@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Loader2, Plus } from 'lucide-react'
 import { modelsUi } from '@/features/models/models-ui'
@@ -89,6 +89,7 @@ function groupByProvider(models: SelectedModel[]): { provider: string; models: S
 export function ModelPicker({ workspaceId, agent, sessionId }: ModelPickerProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const pickerRef = useRef<HTMLDivElement>(null)
   const { selected, toggle, isSelected } = useSelectedModels(workspaceId, agent ?? '')
   const sessionModelQuery = useSessionModel(workspaceId, sessionId)
   const { pendingModel, setPending } = usePendingModel(workspaceId, agent)
@@ -143,10 +144,19 @@ export function ModelPicker({ workspaceId, agent, sessionId }: ModelPickerProps)
     setDialogOpen(true)
   }
 
+  useEffect(() => {
+    if (!menuOpen) return
+    const closeOutside = (event: PointerEvent) => {
+      if (!pickerRef.current?.contains(event.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    return () => document.removeEventListener('pointerdown', closeOutside)
+  }, [menuOpen])
+
   if (!agent) return null
 
   return (
-    <div className={modelsUi.pickerWrap}>
+    <div ref={pickerRef} className={modelsUi.pickerWrap}>
       <button
         type="button"
         className={modelsUi.pickerTrigger}

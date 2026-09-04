@@ -5,7 +5,7 @@ use tokio::process::Command;
 use super::boot_script::deliver_boot_script;
 use super::desktop::desktop_subfolder_env_arg;
 use super::docker_cli::{docker_daemon_reachable, pick_free_port, run_docker};
-use super::health::{wait_for_desktop_ready, wait_for_wrapper_ready};
+use super::health::{wait_for_desktop_ready_at, wait_for_wrapper_ready_at};
 use super::inspect::inspect_container_state;
 use super::{ContainerLauncher, ContainerState, LaunchedContainer};
 
@@ -85,6 +85,34 @@ pub struct DockerCliLauncher {
     /// fixed for (AGENTS.md rule #2: no hardcoded path/URL anywhere
     /// outside `config.rs`).
     frontend_origin: String,
+    /// This gateway's own address, as reachable FROM INSIDE a workspace
+    /// container — passed straight into the container's
+    /// `GATEWAY_INTERNAL_URL` (see `boot_script.rs`'s doc comment and
+    /// `docs/integrations-plan.md`'s infra section). NOT the same value
+    /// as `GatewayConfig::listen_addr()` in general — a container-side
+    /// `127.0.0.1`/`localhost` would resolve to the CONTAINER itself, not
+    /// the host, so this is a required, separately-configured value
+    /// (AGENTS.md rule #2: no hardcoded/guessed host here), typically
+    /// `http://host.docker.internal:<port>` on macOS/Windows or the
+    /// host's real LAN/bridge address on Linux.
+    gateway_internal_url: String,
+    /// `docker create --memory <value>` — see
+    /// `config::WorkspacesConfig::workspace_memory_limit`'s own doc
+    /// comment for the real bug/request this exists for. Configured, not
+    /// hardcoded (AGENTS.md rule #2) — set via `WORKSPACE_MEMORY_LIMIT`
+    /// in `.env`, defaults to `4g` if unset.
+    memory_limit: String,
+    /// `docker create --shm-size <value>` — see
+    /// `config::WorkspacesConfig::workspace_shm_size`'s own doc comment.
+    /// Configured via `WORKSPACE_SHM_SIZE` in `.env`, defaults to `1g`.
+    shm_size: String,
+    /// `BROWSER_IDLE_TIMEOUT_MINUTES` injected into the container's
+    /// `browser_manager.py` daemon via its own boot-script block — see
+    /// `config::WorkspacesConfig::workspace_browser_idle_timeout_minutes`'s
+    /// own doc comment. Configured via
+    /// `WORKSPACE_BROWSER_IDLE_TIMEOUT_MINUTES` in `.env`, defaults to
+    /// `4` (minutes); `0` means "never idle-kill".
+    browser_idle_timeout_minutes: String,
 }
 
 impl DockerCliLauncher {
@@ -93,12 +121,20 @@ impl DockerCliLauncher {
         allowed_origins: String,
         workspace_default_path: String,
         frontend_origin: String,
+        gateway_internal_url: String,
+        memory_limit: String,
+        shm_size: String,
+        browser_idle_timeout_minutes: String,
     ) -> Self {
         Self {
             image_tag,
             allowed_origins,
             workspace_default_path,
             frontend_origin,
+            gateway_internal_url,
+            memory_limit,
+            shm_size,
+            browser_idle_timeout_minutes,
         }
     }
 }
@@ -112,20 +148,99 @@ impl ContainerLauncher for DockerCliLauncher {
         let container_name = format!("hermes-ws-{workspace_id}");
         let wrapper_port = pick_free_port().await?;
         let desktop_port = pick_free_port().await?;
+        let browser_port = pick_free_port().await?;
         let wrapper_publish_arg = format!("{wrapper_port}:8787");
         let desktop_publish_arg = format!("{desktop_port}:3000");
+        // `9400` is the browser-manager daemon's OWN container-internal
+        // default port (see `backend/workspace-image/browser_manager.py`'s
+        // `DEFAULT_PORT`/`BROWSER_MANAGER_PORT`) — inline literal here,
+        // matching this file's existing convention for the other two
+        // fixed container-side ports (`:8787`, `:3000` above), neither of
+        // which is a named const either. Not read from `config.rs`: this
+        // is not a network address this gateway process itself connects
+        // to directly by that literal (AGENTS.md rule #2 targets
+        // host/port/URL VALUES a caller could need to change per
+        // deployment); it is the OTHER side of a `docker create -p`
+        // mapping whose host-side port is always the freshly-picked
+        // `browser_port` above — the container-internal port is fixed by
+        // the image itself, exactly like `:8787`/`:3000` already are.
+        //
+        // `127.0.0.1:{browser_port}:9400` — EXPLICIT host-side bind
+        // address, unlike `wrapper_publish_arg`/`desktop_publish_arg`
+        // above (which publish to Docker's default `0.0.0.0`, reachable
+        // from any network interface on this machine). This is
+        // deliberate, not an inconsistency to "fix" to match the other
+        // two: `browser_manager.py`'s daemon has no auth of its own
+        // (unlike the wrapper, which sits behind this gateway's own
+        // session/bearer checks) — it is a raw control plane that can
+        // start/stop a real Chromium process and read any agent's
+        // persistent profile directory by id. The daemon itself binds
+        // `0.0.0.0` INSIDE the container (real bug found live: a
+        // loopback-only bind there is unreachable through ANY Docker
+        // publish mapping from outside the container, including from
+        // this gateway itself, which runs as a bare host process, not
+        // inside a container — see `browser_manager.py`'s own
+        // `BROWSER_MANAGER_HOST` doc comment for the full story). The
+        // "never reachable from outside this machine" property that
+        // loopback bind was originally meant to provide is enforced HERE
+        // instead, on the host side of the publish, where it actually
+        // works: `127.0.0.1:<port>` is reachable from this machine (where
+        // the gateway runs) but never from another machine on the
+        // network.
+        let browser_publish_arg = format!("127.0.0.1:{browser_port}:9400");
         let subfolder_env_arg = desktop_subfolder_env_arg(workspace_id);
 
+        // `--shm-size`/`--memory` — REAL BUG found live (a real Chromium
+        // crash reproduced inside a real running container, `chrome://
+        // crashes`-style "Aw, Snap!" / Error code 5): Docker's default
+        // `/dev/shm` is a fixed 64MB tmpfs, far too small for a real,
+        // VISIBLE (not `--headless`) Chromium with a GPU process —
+        // confirmed live via `docker exec <container> df -h /dev/shm`
+        // showing exactly 64M total on a crashing container. Chromium
+        // (and most Chromium-family browsers generally) use `/dev/shm`
+        // heavily for inter-process shared memory between the browser/
+        // GPU/renderer processes; once it fills, renderer/GPU processes
+        // crash outright rather than degrading gracefully. The default
+        // (`1g`, configurable via `WORKSPACE_SHM_SIZE` — see
+        // `self.shm_size`'s own doc comment on the struct above) RAISES
+        // the maximum tmpfs CAPACITY, it does not eagerly allocate/
+        // consume that much real memory up front (tmpfs is demand-paged)
+        // — confirmed real, not a guessed tradeoff. Ruled out other real
+        // candidate causes first, on the same live container, before
+        // concluding `/dev/shm` was the actual fix: not OOM-killed
+        // (`docker inspect --format '{{.State.OOMKilled}}'` was `false`),
+        // not a same-profile double-launch race (every Chromium
+        // subprocess's own `--user-data-dir` pointed at the SAME single
+        // profile — the daemon's process-wide lock, see
+        // `browser_manager.py`'s own `BrowserManager` doc comment,
+        // correctly prevented two live processes for one agent).
+        //
+        // `--memory` (default `4g`, configurable via
+        // `WORKSPACE_MEMORY_LIMIT`): a real, explicit per-container cap —
+        // previously ABSENT entirely (every workspace container could use
+        // up to the WHOLE Docker Desktop VM's memory, unbounded), added
+        // alongside `--shm-size` for the same real reason (a visible
+        // Chromium + GPU process is genuinely heavier than this image's
+        // other workloads) and because an unbounded container is its own
+        // real operational risk once several workspaces run browsers at
+        // once (one runaway container could starve every other
+        // workspace on the same host).
         run_docker(
             &container_name,
             &[
                 "create",
                 "--name",
                 &container_name,
+                "--memory",
+                &self.memory_limit,
+                "--shm-size",
+                &self.shm_size,
                 "-p",
                 &wrapper_publish_arg,
                 "-p",
                 &desktop_publish_arg,
+                "-p",
+                &browser_publish_arg,
                 "-e",
                 &subfolder_env_arg,
                 &self.image_tag,
@@ -133,23 +248,65 @@ impl ContainerLauncher for DockerCliLauncher {
         )
         .await?;
 
-        deliver_boot_script(
-            &container_name,
-            &self.allowed_origins,
-            &self.workspace_default_path,
-            &self.frontend_origin,
-        )
-        .await?;
+        let launch_result = async {
+            deliver_boot_script(
+                &container_name,
+                &self.allowed_origins,
+                &self.workspace_default_path,
+                &self.frontend_origin,
+                workspace_id,
+                &self.gateway_internal_url,
+                &self.browser_idle_timeout_minutes,
+            )
+            .await?;
 
-        run_docker(&container_name, &["start", &container_name]).await?;
+            run_docker(&container_name, &["start", &container_name]).await?;
 
-        wait_for_wrapper_ready(wrapper_port, Duration::from_secs(30)).await?;
-        wait_for_desktop_ready(workspace_id, desktop_port, Duration::from_secs(15)).await?;
+            let health_host = reqwest::Url::parse(&self.gateway_internal_url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "127.0.0.1".to_string());
+            wait_for_wrapper_ready_at(&health_host, wrapper_port, Duration::from_secs(30)).await?;
+            wait_for_desktop_ready_at(&health_host, workspace_id, desktop_port, Duration::from_secs(15)).await?;
+            Ok::<_, super::super::CreateWorkspaceError>(())
+        }
+        .await;
 
+        if let Err(err) = launch_result {
+            // A health/readiness failure happens after `docker create`; remove
+            // the failed attempt before the retry reuses this deterministic
+            // workspace name.
+            let _ = self.remove(&container_name).await;
+            return Err(err);
+        }
+
+        // Deliberately NO readiness wait for `browser_port`, unlike the
+        // wrapper/desktop waits directly above — two reasons, together:
+        //   1. Unlike the wrapper/desktop, a slow-to-start browser-manager
+        //      daemon does not need to gate the whole workspace's `Ready`
+        //      status: nothing else inside the container depends on it
+        //      being up (the wrapper and desktop are core to "is this
+        //      workspace usable at all"; the browser-manager daemon is
+        //      only needed by the narrow, separately-opt-in browser
+        //      feature — see `workspaces/proxy/browser_proxy.rs`).
+        //   2. It has no dedicated health endpoint to poll (its own
+        //      `_AGENT_PATH_RE` only ever matches `/agents/<id>/<action>`
+        //      — there is no bare `/health`), so a real check here could
+        //      only be a plain TCP connect, which proves the daemon's
+        //      `ThreadingHTTPServer` has bound the port, not that it can
+        //      actually service a request — a materially weaker guarantee
+        //      than `wait_for_wrapper_ready`'s real HTTP health check.
+        //      Given (1), that weaker guarantee is not worth the extra
+        //      launch latency and complexity; `browser_proxy.rs`'s own
+        //      `forward_to` already surfaces a clear 502 "backend
+        //      unreachable" if a caller reaches it before the daemon has
+        //      bound its port, which is an acceptable, self-explanatory
+        //      failure mode for a feature this narrow.
         Ok(LaunchedContainer {
             container_name,
             wrapper_port,
             desktop_port,
+            browser_port,
         })
     }
 

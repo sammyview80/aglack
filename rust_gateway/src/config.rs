@@ -48,6 +48,42 @@ fn required_env(key: &str) -> Result<String, ConfigError> {
     })
 }
 
+/// Parses `EXTRA_WRAPPER_ALLOWED_ORIGINS`'s raw value into the extra
+/// origins `GatewayConfig::wrapper_allowed_origins` appends. Optional:
+/// `None` (unset) and `Some("")` both yield an empty `Vec` — zero
+/// behavior change for any deployment not using it. Splits on comma,
+/// trims each entry, and drops empty entries so a trailing comma never
+/// leaks an empty-string origin into `HERMES_WEBUI_ALLOWED_ORIGINS`.
+///
+/// An entry without an `http://`/`https://` scheme can never match a
+/// browser's `Origin` header, so it is useless in an allowlist — but it
+/// is SKIPPED with a warning rather than being a fail-closed
+/// `ConfigError` like `parse_port`: this value mirrors upstream's own
+/// `HERMES_WEBUI_ALLOWED_ORIGINS` parsing (backend/upstream/api/routes.py),
+/// which already skips a scheme-less entry with a stderr warning, and one
+/// malformed entry in a multi-entry list should not take down the whole
+/// gateway's startup while the rest of the list is still usable.
+fn parse_extra_wrapper_allowed_origins(raw: Option<String>) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| {
+            let has_scheme = entry.starts_with("http://") || entry.starts_with("https://");
+            if !has_scheme {
+                tracing::warn!(
+                    origin = %entry,
+                    "EXTRA_WRAPPER_ALLOWED_ORIGINS entry has no http:// or https:// scheme; skipping it"
+                );
+            }
+            has_scheme
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 pub struct GatewayConfig {
     pub host: String,
     pub port: u16,
@@ -67,6 +103,17 @@ pub struct GatewayConfig {
     /// directly in the boot script, which is exactly the thing this rule
     /// exists to prevent.
     pub workspace_default_path: String,
+    /// This gateway's own address, as reachable FROM INSIDE a workspace
+    /// container — passed to the container as `GATEWAY_INTERNAL_URL` (see
+    /// `workspaces::container::boot_script` and
+    /// `docs/integrations-plan.md`'s infra section). NOT derivable from
+    /// `host`/`port` above: those are what this process binds to, which
+    /// is typically `127.0.0.1`/`0.0.0.0` — meaningless from inside a
+    /// container, where that would resolve to the container itself, not
+    /// the host running the gateway. Required (AGENTS.md rule #2), e.g.
+    /// `http://host.docker.internal:8080` on macOS/Windows Docker Desktop,
+    /// or the host's real bridge/LAN address on Linux.
+    pub workspace_gateway_url: String,
     /// Whether this gateway applies its own browser-facing `CorsLayer`
     /// (see `app::build_router`). Optional — unset means `true`, which
     /// preserves the exact current behavior for every existing
@@ -85,6 +132,26 @@ pub struct GatewayConfig {
     /// proxied backend sends its own CORS headers, they still reach the
     /// browser regardless of this setting.
     pub cors_enabled: bool,
+    /// Additional browser origins appended to `wrapper_allowed_origins`
+    /// (and so to a workspace container's `HERMES_WEBUI_ALLOWED_ORIGINS`)
+    /// beyond `frontend_origin` and this gateway's own listen address.
+    /// Optional — unset or empty means no extra entries, i.e. the exact
+    /// current behavior for every existing deployment.
+    ///
+    /// Exists because of a real bug: with `GATEWAY_HOST=127.0.0.1`, a
+    /// user opening the app at `http://localhost:8080` was rejected with
+    /// the wrapper's "Cross-origin mismatch" 403 — `localhost` and
+    /// `127.0.0.1` are DIFFERENT browser origins even on the same
+    /// machine, and only the `127.0.0.1` form was ever in the allowlist.
+    /// Changing `GATEWAY_HOST` itself to `localhost` is not a safe
+    /// workaround: on macOS that resolves to and binds the IPv6 `[::1]`
+    /// address, not IPv4, silently breaking every `127.0.0.1` caller
+    /// instead. Any deployment reachable via an origin neither built-in
+    /// entry covers (a staging/alt domain, a reverse proxy's hostname)
+    /// has the same need, hence a generic list rather than a one-off
+    /// `localhost` special case. Each entry must carry its scheme — see
+    /// `parse_extra_wrapper_allowed_origins`.
+    pub extra_wrapper_allowed_origins: Vec<String>,
 }
 
 impl GatewayConfig {
@@ -102,9 +169,10 @@ impl GatewayConfig {
         )?;
         let frontend_origin = required_env("FRONTEND_ORIGIN")?;
         let workspace_default_path = required_env("WORKSPACE_DEFAULT_PATH")?;
-        let cors_enabled = parse_cors_enabled(cors_enabled_env_value(env::var(
-            "CORS_ENABLED",
-        ))?)?;
+        let workspace_gateway_url = required_env("WORKSPACE_GATEWAY_URL")?;
+        let cors_enabled = parse_cors_enabled(cors_enabled_env_value(env::var("CORS_ENABLED"))?)?;
+        let extra_wrapper_allowed_origins =
+            parse_extra_wrapper_allowed_origins(env::var("EXTRA_WRAPPER_ALLOWED_ORIGINS").ok());
 
         Ok(Self {
             host,
@@ -113,7 +181,9 @@ impl GatewayConfig {
             backend_port,
             frontend_origin,
             workspace_default_path,
+            workspace_gateway_url,
             cors_enabled,
+            extra_wrapper_allowed_origins,
         })
     }
 
@@ -148,11 +218,21 @@ impl GatewayConfig {
     /// Always includes both, deduplicated — a deployment where
     /// `frontend_origin` and this gateway's own address happen to be the
     /// same value must not produce a duplicate entry.
+    ///
+    /// Then appends every `extra_wrapper_allowed_origins` entry (see that
+    /// field's doc comment for the `localhost` vs `127.0.0.1` bug behind
+    /// it), under the same dedup rule: an extra entry equal to either
+    /// built-in origin, or to another extra entry, appears once.
     pub fn wrapper_allowed_origins(&self) -> String {
         let gateway_origin = format!("http://{}", self.listen_addr());
         let mut origins = vec![self.frontend_origin.clone()];
         if gateway_origin != self.frontend_origin {
             origins.push(gateway_origin);
+        }
+        for extra in &self.extra_wrapper_allowed_origins {
+            if !origins.contains(extra) {
+                origins.push(extra.clone());
+            }
         }
         origins.join(",")
     }
@@ -170,7 +250,9 @@ fn parse_port(raw: &str, key: &str) -> Result<u16, ConfigError> {
 /// isn't valid UTF-8) is a real config error, not a silent default —
 /// `.ok()` alone would collapse both cases into `None` and silently pick
 /// `true` for a value someone actually set.
-fn cors_enabled_env_value(raw: Result<String, env::VarError>) -> Result<Option<String>, ConfigError> {
+fn cors_enabled_env_value(
+    raw: Result<String, env::VarError>,
+) -> Result<Option<String>, ConfigError> {
     match raw {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
@@ -213,6 +295,41 @@ pub struct WorkspacesConfig {
     /// image name/tag is a deployment decision, not something safe to
     /// guess.
     pub workspace_image_tag: String,
+    /// `docker create --memory <value>` for every new workspace
+    /// container. Docker's own size-suffix syntax (e.g. `4g`, `512m`),
+    /// passed through VERBATIM to the `docker` CLI, never parsed or
+    /// reinterpreted here (`docker create` already validates it;
+    /// duplicating that validation would just be a second, potentially-
+    /// diverging copy of Docker's own parser). Optional, defaults to
+    /// `4g`. Real user request: a browser-driving workspace (real,
+    /// visible Chromium plus its own GPU process, see
+    /// `container::docker_launcher::DockerCliLauncher`'s own `shm_size`
+    /// field doc comment for the sibling `/dev/shm` fix this pairs with)
+    /// needs real headroom; unset means "use the default", not
+    /// "no limit". See `WORKSPACE_MEMORY_LIMIT` in `.env.example` for how
+    /// to change it.
+    pub workspace_memory_limit: String,
+    /// `docker create --shm-size <value>` for every new workspace
+    /// container. Same verbatim-passthrough contract as
+    /// `workspace_memory_limit` above. Optional, defaults to `1g`. Real
+    /// bug this exists to keep configurable: Docker's own default (64MB)
+    /// crashed a real, visible (non-headless) Chromium ("Aw, Snap!",
+    /// error code 5) — confirmed live via `docker exec <container> df -h
+    /// /dev/shm` showing exactly 64M on the crashing container.
+    pub workspace_shm_size: String,
+    /// `BROWSER_IDLE_TIMEOUT_MINUTES` injected into every new workspace
+    /// container's `browser_manager.py` daemon (see that file's own
+    /// module-level doc comment for the real, documented limitation:
+    /// this daemon can only observe `start()`/`status()` calls, not real
+    /// CDP browsing activity). Optional, defaults to `4` (minutes). Real
+    /// user request: "make sure I can configure it for lifetime or after
+    /// 4 min or anything" — `0` (or any non-positive value) is the real
+    /// "lifetime"/"never kill" option, matching that daemon's own
+    /// documented opt-out contract. Passed through VERBATIM as a plain
+    /// number string (parsed by `browser_manager.py` itself, not here) —
+    /// this gateway process has no reason to validate Python's own
+    /// `float(...)` parsing rules a second time.
+    pub workspace_browser_idle_timeout_minutes: String,
 }
 
 impl WorkspacesConfig {
@@ -225,11 +342,161 @@ impl WorkspacesConfig {
             })?
             .into();
         let workspace_image_tag = required_env("WORKSPACE_IMAGE_TAG")?;
+        let workspace_memory_limit =
+            optional_env_or("WORKSPACE_MEMORY_LIMIT", "4g")?;
+        let workspace_shm_size = optional_env_or("WORKSPACE_SHM_SIZE", "1g")?;
+        let workspace_browser_idle_timeout_minutes =
+            optional_env_or("WORKSPACE_BROWSER_IDLE_TIMEOUT_MINUTES", "4")?;
 
         Ok(Self {
             database_path,
             workspace_image_tag,
+            workspace_memory_limit,
+            workspace_shm_size,
+            workspace_browser_idle_timeout_minutes,
         })
+    }
+}
+
+/// Config for the integrations feature (`crate::integrations`). See
+/// `../../docs/integrations-plan.md` and
+/// `../../docs/integrations-poc-findings.md`.
+pub struct IntegrationsConfig {
+    /// OpenConnector's base URL, no trailing slash, e.g.
+    /// `http://openconnector:3000`. Reachable ONLY from this gateway on
+    /// an internal network in a real deployment — this struct does not
+    /// enforce that, deployment (no published port) does.
+    pub openconnector_url: String,
+    /// OpenConnector's admin API bearer. Never forwarded to a browser or
+    /// a workspace container — see `integrations::openconnector`'s doc
+    /// comment.
+    pub openconnector_admin_token: String,
+    /// Path to `backend/integrations/providers.yaml`. Required, like
+    /// every other path in this file (AGENTS.md rule #2) — no baked-in
+    /// default location.
+    pub providers_path: std::path::PathBuf,
+    /// Base64-encoded 32-byte AES-256-GCM key encrypting
+    /// `workspace_runtime_tokens.openconnector_bearer` at rest — see
+    /// `crypto::TokenCipher`. Generate with `openssl rand -base64 32`.
+    /// Required, not optional: this column held that bearer in plaintext
+    /// from the moment it was introduced, and there is no safe default to
+    /// silently fall back to for a value protecting real provider tokens.
+    pub token_encryption_key: [u8; 32],
+}
+
+impl IntegrationsConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let openconnector_url = required_env("OPENCONNECTOR_URL")?;
+        let openconnector_admin_token = required_env("OPENCONNECTOR_ADMIN_TOKEN")?;
+        let providers_path = required_env("INTEGRATIONS_PROVIDERS_PATH")?.into();
+        let token_encryption_key =
+            crate::crypto::parse_encryption_key(&required_env("GATEWAY_TOKEN_ENCRYPTION_KEY")?)
+                .map_err(|err| ConfigError {
+                    message: err.to_string(),
+                })?;
+
+        Ok(Self {
+            openconnector_url,
+            openconnector_admin_token,
+            providers_path,
+            token_encryption_key,
+        })
+    }
+}
+
+/// Config for the gateway's Google login (`crate::auth`).
+pub struct GatewayAuthConfig {
+    /// Whether the session cookie's `Secure` attribute is set. Optional —
+    /// unset means `false` (plain local http dev works out of the box; a
+    /// browser silently drops a `Secure` cookie over http, so defaulting
+    /// to `true` would make login appear to succeed while never actually
+    /// persisting a session — confirmed against real browser behavior,
+    /// not assumed). Set to `true` for any real deployment behind TLS.
+    pub cookie_secure: bool,
+    pub google_client_id: String,
+    pub google_client_secret: String,
+    pub google_redirect_uri: String,
+    pub google_authorize_url: String,
+    pub google_token_url: String,
+    pub google_userinfo_url: String,
+}
+
+impl GatewayAuthConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let cookie_secure = parse_bool_env("GATEWAY_COOKIE_SECURE", false)?;
+
+        Ok(Self {
+            cookie_secure,
+            google_client_id: required_env("GOOGLE_CLIENT_ID")?,
+            google_client_secret: required_env("GOOGLE_CLIENT_SECRET")?,
+            google_redirect_uri: required_env("GOOGLE_REDIRECT_URI")?,
+            google_authorize_url: required_env("GOOGLE_AUTHORIZE_URL")?,
+            google_token_url: required_env("GOOGLE_TOKEN_URL")?,
+            google_userinfo_url: required_env("GOOGLE_USERINFO_URL")?,
+        })
+    }
+}
+
+/// Shared optional-bool-env parser — same fail-closed-on-garbage
+/// contract as `parse_cors_enabled` above, generalized past that one
+/// call site now that a second boolean env var (`GATEWAY_COOKIE_SECURE`)
+/// needs the identical parsing rule.
+/// Split the same way `cors_enabled_env_value`/`parse_cors_enabled` are
+/// (a thin `Result<String, VarError> -> Result<Option<String>, _>` step,
+/// separate from the actual default-applying logic) so the default-
+/// applying half is testable with a plain `Option<String>` value, never
+/// real process-global `env::set_var` in a test.
+fn optional_env_value(key: &str, raw: Result<String, env::VarError>) -> Result<Option<String>, ConfigError> {
+    match raw {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError {
+            message: format!("{key} is set but not valid UTF-8"),
+        }),
+    }
+}
+
+/// An optional env var with a real default — same "absent means default,
+/// present-but-invalid means fail loud" contract as `parse_cors_enabled`,
+/// generalized for a value this module does not itself parse (e.g.
+/// `WORKSPACE_MEMORY_LIMIT`'s `4g`/`512m` — Docker's own `docker create`
+/// call is the real validator for that syntax, not this function).
+/// "Invalid" here means only "set but empty/whitespace" — a deployer who
+/// explicitly sets `WORKSPACE_MEMORY_LIMIT=` almost certainly meant to
+/// unset it, not to pass an empty string to `docker create --memory`,
+/// which would itself fail confusingly at container-launch time instead
+/// of at startup where the real mistake is easy to see and fix.
+fn apply_optional_default(key: &str, raw: Option<String>, default: &str) -> Result<String, ConfigError> {
+    match raw {
+        None => Ok(default.to_string()),
+        Some(value) if value.trim().is_empty() => Err(ConfigError {
+            message: format!(
+                "{key} is set but empty — unset it entirely to use the default \
+                 ({default:?}), or set a real value"
+            ),
+        }),
+        Some(value) => Ok(value),
+    }
+}
+
+fn optional_env_or(key: &str, default: &str) -> Result<String, ConfigError> {
+    let raw = optional_env_value(key, env::var(key))?;
+    apply_optional_default(key, raw, default)
+}
+
+fn parse_bool_env(key: &str, default: bool) -> Result<bool, ConfigError> {
+    match env::var(key) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(ConfigError {
+                message: format!("{key} must be \"true\" or \"false\", got {value:?}"),
+            }),
+        },
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError {
+            message: format!("{key} is set but not valid UTF-8"),
+        }),
     }
 }
 
@@ -238,7 +505,12 @@ mod tests {
     use super::*;
     use std::os::unix::ffi::OsStringExt;
 
-    fn config(host: &str, port: u16, frontend_origin: &str) -> GatewayConfig {
+    fn config(
+        host: &str,
+        port: u16,
+        frontend_origin: &str,
+        extra_wrapper_allowed_origins: Vec<&str>,
+    ) -> GatewayConfig {
         GatewayConfig {
             host: host.to_string(),
             port,
@@ -246,7 +518,12 @@ mod tests {
             backend_port: 9999,
             frontend_origin: frontend_origin.to_string(),
             workspace_default_path: "/workspace/default".to_string(),
+            workspace_gateway_url: "http://gateway-internal:8080".to_string(),
             cors_enabled: true,
+            extra_wrapper_allowed_origins: extra_wrapper_allowed_origins
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         }
     }
 
@@ -255,7 +532,7 @@ mod tests {
     /// might use, so both must be present.
     #[test]
     fn wrapper_allowed_origins_includes_both_frontend_and_gateway_when_different() {
-        let cfg = config("127.0.0.1", 8080, "http://localhost:5173");
+        let cfg = config("127.0.0.1", 8080, "http://localhost:5173", vec![]);
         let origins = cfg.wrapper_allowed_origins();
         assert!(
             origins.split(',').any(|o| o == "http://localhost:5173"),
@@ -275,9 +552,109 @@ mod tests {
     /// produce a duplicate comma-separated entry.
     #[test]
     fn wrapper_allowed_origins_deduplicates_when_frontend_origin_equals_gateway_origin() {
-        let cfg = config("127.0.0.1", 8080, "http://127.0.0.1:8080");
+        let cfg = config("127.0.0.1", 8080, "http://127.0.0.1:8080", vec![]);
         let origins = cfg.wrapper_allowed_origins();
         assert_eq!(origins, "http://127.0.0.1:8080");
+    }
+
+    /// The real bug this field exists for: GATEWAY_HOST=127.0.0.1 but the
+    /// user opens the app via http://localhost:8080 — a different browser
+    /// origin from http://127.0.0.1:8080 even on the same machine. An
+    /// EXTRA_WRAPPER_ALLOWED_ORIGINS entry must show up alongside the two
+    /// origins that were already always present.
+    #[test]
+    fn wrapper_allowed_origins_includes_extra_origins_alongside_frontend_and_gateway() {
+        let cfg = config(
+            "127.0.0.1",
+            8080,
+            "http://localhost:5173",
+            vec!["http://localhost:8080"],
+        );
+        let origins = cfg.wrapper_allowed_origins();
+        assert!(
+            origins.split(',').any(|o| o == "http://localhost:5173"),
+            "must still include the frontend origin, got {origins:?}"
+        );
+        assert!(
+            origins.split(',').any(|o| o == "http://127.0.0.1:8080"),
+            "must still include the gateway's own listen address, got {origins:?}"
+        );
+        assert!(
+            origins.split(',').any(|o| o == "http://localhost:8080"),
+            "must include the configured extra origin, got {origins:?}"
+        );
+    }
+
+    /// An extra entry that exactly equals `frontend_origin` (or the
+    /// gateway's own computed origin, or another extra entry) must not
+    /// produce a duplicate comma-separated entry — same rule the two
+    /// built-in origins already follow.
+    #[test]
+    fn wrapper_allowed_origins_deduplicates_extra_origins_against_existing_entries() {
+        let cfg = config(
+            "127.0.0.1",
+            8080,
+            "http://localhost:5173",
+            vec![
+                "http://localhost:5173",
+                "http://127.0.0.1:8080",
+                "http://localhost:8080",
+                "http://localhost:8080",
+            ],
+        );
+        let origins = cfg.wrapper_allowed_origins();
+        assert_eq!(
+            origins,
+            "http://localhost:5173,http://127.0.0.1:8080,http://localhost:8080"
+        );
+    }
+
+    /// Unset and set-to-empty must behave identically: zero entries, not
+    /// one empty-string entry (which would otherwise leak a trailing ","
+    /// into HERMES_WEBUI_ALLOWED_ORIGINS). Trailing commas and whitespace
+    /// must not produce empty entries either.
+    #[test]
+    fn parse_extra_wrapper_allowed_origins_treats_empty_like_unset() {
+        assert_eq!(
+            parse_extra_wrapper_allowed_origins(None),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_extra_wrapper_allowed_origins(Some("".to_string())),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_extra_wrapper_allowed_origins(Some("  , ,".to_string())),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_extra_wrapper_allowed_origins(Some(
+                " http://localhost:8080 , https://alt.example.com,".to_string()
+            )),
+            vec![
+                "http://localhost:8080".to_string(),
+                "https://alt.example.com".to_string()
+            ]
+        );
+    }
+
+    /// An entry with no `http://`/`https://` scheme can never match a
+    /// browser's Origin header, so it is skipped (with a warning) rather
+    /// than failing the whole gateway's startup — the other, valid
+    /// entries in the same list must still come through.
+    #[test]
+    fn parse_extra_wrapper_allowed_origins_skips_entries_missing_a_scheme() {
+        let parsed = parse_extra_wrapper_allowed_origins(Some(
+            "localhost:8080,http://localhost:8080,ftp://nope.example.com,https://alt.example.com"
+                .to_string(),
+        ));
+        assert_eq!(
+            parsed,
+            vec![
+                "http://localhost:8080".to_string(),
+                "https://alt.example.com".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -309,18 +686,79 @@ mod tests {
 
     #[test]
     fn parse_cors_enabled_parses_false() {
-        assert_eq!(parse_cors_enabled(Some("false".to_string())).unwrap(), false);
+        assert_eq!(
+            parse_cors_enabled(Some("false".to_string())).unwrap(),
+            false
+        );
     }
 
     #[test]
     fn parse_cors_enabled_is_case_insensitive() {
         assert_eq!(parse_cors_enabled(Some("TRUE".to_string())).unwrap(), true);
-        assert_eq!(parse_cors_enabled(Some("False".to_string())).unwrap(), false);
+        assert_eq!(
+            parse_cors_enabled(Some("False".to_string())).unwrap(),
+            false
+        );
     }
 
     #[test]
     fn parse_cors_enabled_rejects_invalid_value() {
         let err = parse_cors_enabled(Some("bogus".to_string())).unwrap_err();
         assert!(err.to_string().contains("CORS_ENABLED"));
+    }
+
+    #[test]
+    fn apply_optional_default_uses_default_when_absent() {
+        let value = apply_optional_default("WORKSPACE_MEMORY_LIMIT", None, "4g").unwrap();
+        assert_eq!(value, "4g");
+    }
+
+    #[test]
+    fn apply_optional_default_uses_the_real_value_when_present() {
+        let value = apply_optional_default(
+            "WORKSPACE_MEMORY_LIMIT",
+            Some("8g".to_string()),
+            "4g",
+        )
+        .unwrap();
+        assert_eq!(value, "8g");
+    }
+
+    #[test]
+    fn apply_optional_default_rejects_an_explicitly_empty_value() {
+        // A deployer who writes `WORKSPACE_MEMORY_LIMIT=` almost certainly
+        // meant to unset it, not to pass an empty string straight through
+        // to `docker create --memory` (which would fail confusingly at
+        // container-launch time instead of at startup).
+        let err = apply_optional_default(
+            "WORKSPACE_MEMORY_LIMIT",
+            Some("   ".to_string()),
+            "4g",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("WORKSPACE_MEMORY_LIMIT"));
+        assert!(err.to_string().contains("4g"));
+    }
+
+    #[test]
+    fn optional_env_value_maps_not_present_to_none() {
+        let value =
+            optional_env_value("WORKSPACE_MEMORY_LIMIT", Err(env::VarError::NotPresent)).unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn optional_env_value_maps_ok_to_some() {
+        let value = optional_env_value("WORKSPACE_MEMORY_LIMIT", Ok("8g".to_string())).unwrap();
+        assert_eq!(value, Some("8g".to_string()));
+    }
+
+    #[test]
+    fn optional_env_value_fails_closed_on_non_unicode() {
+        let bad = std::ffi::OsString::from_vec(vec![0x66, 0xff, 0x6f]);
+        let err =
+            optional_env_value("WORKSPACE_MEMORY_LIMIT", Err(env::VarError::NotUnicode(bad)))
+                .unwrap_err();
+        assert!(err.to_string().contains("WORKSPACE_MEMORY_LIMIT"));
     }
 }

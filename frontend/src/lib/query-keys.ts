@@ -50,4 +50,29 @@ export const queryKeys = {
     sessionModel: (workspaceId: string, sessionId: string) =>
       [...queryKeys.models.all, workspaceId, 'sessions', sessionId, 'model'] as const,
   },
+  commands: {
+    all: ['commands'] as const,
+    // Agent-scoped: the wrapper resolves the command/bundle list per Hermes
+    // profile (`?agent=`), so two agents may legitimately see different lists.
+    list: (workspaceId: string, agent: string) =>
+      [...queryKeys.commands.all, workspaceId, 'agents', agent, 'list'] as const,
+    bundles: (workspaceId: string, agent: string) =>
+      [...queryKeys.commands.all, workspaceId, 'agents', agent, 'bundles'] as const,
+  },
+  integrations: {
+    all: ['integrations'] as const,
+    // Not workspace-scoped: the provider catalog is the same for every
+    // workspace (see rust_gateway's GET /integrations/providers).
+    providers: () => [...queryKeys.integrations.all, 'providers'] as const,
+    // Not workspace-scoped either, but content differs per search text, so
+    // the params ARE the identity (two searches must never share a cache
+    // entry). Pagination progression lives in the infinite query's own
+    // page cache under this one key, not in the key itself.
+    catalog: (params: { search: string; limit: number; offset: number }) =>
+      [...queryKeys.integrations.all, 'catalog', params] as const,
+    connections: (workspaceId: string) =>
+      [...queryKeys.integrations.all, workspaceId, 'connections'] as const,
+    agentEnablement: (workspaceId: string) =>
+      [...queryKeys.integrations.all, workspaceId, 'agent-enablement'] as const,
+  },
 } as const

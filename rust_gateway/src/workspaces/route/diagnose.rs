@@ -209,7 +209,13 @@ mod tests {
             .await
             .expect("begin_creation succeeds");
         store
-            .mark_ready("healthy-ws", "container-1", wrapper_port, desktop_port)
+            .mark_ready(
+                "healthy-ws",
+                "container-1",
+                wrapper_port,
+                desktop_port,
+                desktop_port,
+            )
             .await
             .expect("mark_ready succeeds");
         let launcher = FakeLauncher::that_reports(crate::workspaces::container::ContainerState {

@@ -77,7 +77,14 @@ library never silently shadows one tool with another.
 ```bash
 pip install "seeder-kit[mcp]"
 hermes-seeder-runner --tools-dir my_tools
+# one process per agent? give it that agent's identity — injected into every
+# tool call as arguments["_agent_id"] (caller-supplied values are stripped):
+hermes-seeder-runner --tools-dir my_tools --agent-id pm
 ```
+
+`--agent-id` is optional; see `discovery.py`'s module docstring ("Runner-injected
+`arguments` key") for the contract, and `build_mcp_server_entry(..., agent_id=...)`
+to emit it from a host's config.
 
 ### 4. Or describe a whole agent tree, scoped by mode, and let a host apply it
 

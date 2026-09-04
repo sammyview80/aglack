@@ -15,8 +15,8 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::workspaces::route::WorkspacesState;
 use super::wrapper_prefix_proxy::forward_to_wrapper_namespace;
+use crate::workspaces::route::WorkspacesState;
 
 /// Handles `/workspaces/:id/agent-history/*path` — axum captures both
 /// segments, so `path` is always present here (possibly empty only if a
@@ -43,12 +43,12 @@ pub async fn agent_history_proxy_route_root(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::workspaces::container::FakeLauncher;
     use crate::workspaces::test_support::{
         assert_failed_workspace_returns_409_not_ready, assert_not_ready_workspace_returns_409,
         assert_unknown_workspace_id_returns_404, spawn_echo_wrapper, temp_store,
     };
-    use super::*;
-    use crate::workspaces::container::FakeLauncher;
     use axum::{
         body::{to_bytes, Body},
         http::{Request as HttpRequest, StatusCode},
@@ -94,7 +94,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);
@@ -113,7 +113,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let echoed_path = String::from_utf8(bytes.to_vec()).unwrap();
-        assert_eq!(echoed_path, "/api/wrapper/v1/agent-history/agents/pm/sessions");
+        assert_eq!(
+            echoed_path,
+            "/api/wrapper/v1/agent-history/agents/pm/sessions"
+        );
     }
 
     /// Same as above, but the ROOT route (`_route_root`, the exact
@@ -128,7 +131,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);
@@ -167,7 +170,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);

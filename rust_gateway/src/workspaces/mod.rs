@@ -23,15 +23,17 @@ pub(crate) mod test_support;
 
 pub use container::{ContainerLauncher, DockerCliLauncher, LaunchedContainer};
 pub use daemon_watch::{run as run_daemon_watch, DEFAULT_POLL_INTERVAL};
+pub use proxy::browser_proxy_route;
 pub use proxy::{agent_history_proxy_route_root, agent_history_proxy_route_with_path};
 pub use proxy::{agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path};
 pub use proxy::{chat_proxy_route_root, chat_proxy_route_with_path};
+pub use proxy::{commands_proxy_route_root, commands_proxy_route_with_path};
 pub use proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
 pub use proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
 pub use proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};
 pub use route::{
     create_workspace_route, delete_workspace_route, diagnose_workspace_route,
-    list_workspaces_route, WorkspacesState,
+    list_workspaces_route, create_workspace_route_authenticated, list_workspaces_route_authenticated, WorkspacesState,
 };
 pub use store::{WorkspaceRecord, WorkspaceStatus, WorkspaceStore};
 
@@ -152,6 +154,7 @@ async fn launch_and_record(
                         &launched.container_name,
                         launched.wrapper_port,
                         launched.desktop_port,
+                        launched.browser_port,
                     )
                     .await?)
             }

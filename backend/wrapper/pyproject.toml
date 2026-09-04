@@ -7,7 +7,10 @@ name = "hermes-webui-wrapper"
 version = "0.1.0"
 description = "FastAPI wrapper around the pinned upstream Hermes Web UI (stdlib http.server) request-handling code."
 readme = "README.md"
-license = { text = "LicenseRef-PolyForm-Noncommercial-1.0.0" }
+# See backend/seeder_kit/pyproject.toml's comment on this same field —
+# setuptools >=77 (PEP 639) rejects the older `{ text = "..." }` table
+# form with "project.license must be string".
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
@@ -37,6 +40,14 @@ dependencies = [
     # this plain name is satisfied by whatever's already in the
     # environment, with zero path baked in here at all.
     "seeder-kit",
+    # Real MCP server SDK — see features/integrations/mcp_server.py's
+    # module docstring for why a plain FastAPI route cannot serve the
+    # agent's own MCP client (real Streamable HTTP protocol, not bare
+    # JSON). Same version constraint as seeder_kit's own `[mcp]` extra
+    # (../seeder_kit/pyproject.toml) — both must resolve to the same
+    # installed version in the shared venv this wrapper and seeder_kit
+    # are installed into (see ../workspace-image/Dockerfile).
+    "mcp>=1.28,<2",
 ]
 
 [project.optional-dependencies]

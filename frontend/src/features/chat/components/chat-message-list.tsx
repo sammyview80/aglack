@@ -8,7 +8,7 @@ import { ToolActivityList, ToolActivitySummary } from '@/features/chat/component
 import { chatUi } from '@/features/chat/chat-ui'
 import type { ChatTurn } from '@/features/chat/hooks/use-chat'
 import type { ToolActivity } from '@/features/chat/types'
-import { AGENT_STATUS_WORDS, CyclingWords, PulseDot, TypingIndicator, motionPresets } from '@/components/motion'
+import { PulseDot, TypingIndicator, motionPresets } from '@/components/motion'
 import { cn } from '@/lib/utils'
 
 function messageTimestamp(at: number): number {
@@ -180,14 +180,12 @@ export function ChatMessageList({
                 </div>
               </div>
             </div>
-            <span
-              className={cn(chatUi.messageTime, chatUi.messageTimeAssistant, 'inline-flex items-baseline')}
-            >
-              <CyclingWords words={AGENT_STATUS_WORDS} className="text-[11px]" />
-            </span>
+            
           </div>
         </div>
       ) : null}
     </div>
   )
 }
+
+

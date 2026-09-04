@@ -375,8 +375,7 @@ mod tests {
                 .uri("/events")
                 .body(Body::empty())
                 .unwrap();
-            let response =
-                forward_to(&reqwest::Client::new(), &target_addr, request, None).await;
+            let response = forward_to(&reqwest::Client::new(), &target_addr, request, None).await;
             assert_eq!(response.status(), StatusCode::OK);
 
             let mut stream = response.into_body().into_data_stream();

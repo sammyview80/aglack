@@ -48,7 +48,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 # the upstream response body incrementally instead of buffering it whole
 # (see docs/streaming-proxy-plan.md) — required for SSE responses, which
 # never end, to reach the caller at all.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Loads .env files into the process environment at startup. Used only to
@@ -65,6 +65,29 @@ dotenvy = "0.15"
 # src/db/mod.rs and src/workspaces/store.rs.
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
 uuid = { version = "1", features = ["v4"] }
+# Parses backend/integrations/providers.yaml (src/integrations/providers.rs)
+# — the only YAML this crate reads; everything else is JSON.
+serde_yaml = "0.9"
+# SHA-256 for workspace_runtime_tokens.token_hash (src/integrations/mcp_proxy.rs)
+# — the raw bearer a workspace container holds is never stored, only its
+# hash, so a database read alone cannot recover a valid credential.
+sha2 = "0.10"
+# Safe Set-Cookie construction/parsing for the gateway's own session
+# cookie (src/auth/) — hand-rolling cookie-string parsing is exactly the
+# class of bug this crate already treats as a real risk elsewhere (see
+# chat_proxy.rs's CRLF-injection test for the hermes_profile cookie);
+# reusing a maintained crate for the SAME concern on the gateway's own
+# auth cookie rather than writing a second, less-tested parser.
+cookie = "0.18"
+# AES-256-GCM for encrypting `workspace_runtime_tokens.openconnector_bearer`
+# at rest (src/crypto.rs) — that column previously stored the raw
+# OpenConnector bearer in plaintext, flagged as a required fix since the
+# column was first introduced (see migration 0005's own comment on it).
+aes-gcm = "0.10"
+# Standard base64 for TokenCipher's on-disk encoding (src/crypto.rs) —
+# used instead of hand-rolling encode/decode for a security-sensitive
+# path; a well-audited crate is worth the dependency here.
+base64 = "0.22"
 # ContainerLauncher (src/workspaces/container/mod.rs) is a trait with async
 # methods; async fn in traits needs this until the language feature is
 # fully stable for our MSRV.
@@ -77,8 +100,41 @@ tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 # writes the generated boot script to a real temp file before `docker cp`
 # delivers it into a container — see container/mod.rs's `deliver_boot_script`.
 tempfile = "3"
+# Structured logging (Issue 3) — replaces this crate's previous
+# println!/eprintln! startup messages and the previously-silent
+# `let _ = state.store.record_audit(...).await;` audit-write failures
+# with real, filterable log events. `tracing` is the call-site macro
+# surface used throughout src/; `tracing-subscriber` (with `env-filter`)
+# is what actually renders/filters those events at process start (see
+# `bin/rust_gateway.rs`'s `main`) — a library crate would only need
+# `tracing` itself, but this crate also owns its own binaries.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Constant-time byte comparison for the MCP bearer check
+# (src/integrations/mcp_proxy.rs) — a plain `!=` on the hex-encoded hash
+# leaks timing proportional to the first differing byte, small but real
+# for a route reachable without session auth (see `auth/middleware.rs`'s
+# `/workspaces/:id/mcp` exemption). Small, standard crate for exactly
+# this comparison, nothing else.
+subtle = "2"
+# Per-workspace MCP bearer failure lockout (src/integrations/mcp_proxy.rs)
+# — needs a concurrent map keyed by workspace id updated from any request
+# task, unlike `auth/route.rs`'s single global `Mutex<LoginAttempts>`
+# (one shared credential, no per-key dimension there).
+dashmap = "6"
 
 [dev-dependencies]
 # "util" enables ServiceExt::oneshot, used to exercise build_router's
 # response headers (CORS) directly in a test without binding a real port.
 tower = { version = "0.5", features = ["util"] }
+# Mock HTTP server for OpenConnectorClient's own HTTP-calling methods
+# (src/integrations/openconnector.rs) — e.g. asserting `forward_mcp`
+# checks the response status before parsing its body, against a REAL
+# HTTP response (status + headers + body), not a hand-built
+# `reqwest::Response` (which `reqwest` does not expose a public
+# constructor for). Standard, widely used for exactly this.
+wiremock = "0.6"
+# Captures `tracing` output into test-visible logs (Issue 3) —
+# `#[traced_test]` + `logs_contain(...)` to assert an audit-write failure
+# is actually logged rather than silently swallowed.
+tracing-test = "0.2"

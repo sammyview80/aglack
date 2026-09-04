@@ -7,9 +7,7 @@ import {
   Ellipsis,
   ExternalLink,
   FileText,
-  Hash,
   History,
-  Laptop,
   Maximize2,
   Monitor,
   Pencil,
@@ -33,9 +31,16 @@ import { AgentHistoryPanel } from '@/features/agent-history/components/agent-his
 import { useAgents } from '@/features/agent-history/hooks/use-agent-history'
 import { RandomAvatar } from '@/components/random-avatar'
 import { PulseDot, motionPresets } from '@/components/motion'
-import { avatarToneStyles, threadsUi, type AvatarTone } from '@/components/threads-ui'
+import {
+  DESKTOP_NATIVE_HEIGHT,
+  DESKTOP_NATIVE_WIDTH,
+  avatarToneStyles,
+  threadsUi,
+  type AvatarTone,
+} from '@/components/threads-ui'
 import { chatUi } from '@/features/chat/chat-ui'
 import { desktopUrl } from '@/features/workspace/api'
+import { WorkspaceDock } from '@/components/workspace-dock'
 import type { AgentSession } from '@/features/agent-history/types'
 
 export type { AvatarTone }
@@ -50,6 +55,16 @@ type ThreadsShellProps = {
   workspaceName: string
   title: string
   alignCenter?: boolean
+  /** When true the AUDIENCE panel (agent history) and its toggle button are
+   * not rendered at all. Use on settings/integrations pages. */
+  hideAudiencePanel?: boolean
+  /** When true, WorkspaceDock (the floating bottom nav pill) is not
+   * rendered at all. Use on the chat screen — its composer already has an
+   * always-visible input at the bottom; a second floating element there
+   * competes with it instead of adding value. */
+  hideDock?: boolean
+  /** Keep workspace navigation on mobile while desktop chat keeps its clear composer. */
+  mobileDock?: boolean
   onCompose?: () => void
   onPublish?: (text: string) => void
   search?: string
@@ -73,20 +88,7 @@ type ThreadsShellProps = {
 
 const TONES = ['gold', 'lavender', 'aqua', 'pink', 'blue', 'gray'] as const
 
-const PLACEHOLDER_CHANNELS = [
-  { icon: '❓', label: 'ask-anything' },
-  { icon: '🐛', label: 'bug-reports' },
-  { icon: '📣', label: 'company-announcements' },
-  { icon: '👾', label: 'design-brand' },
-  { icon: '▥', label: 'design-www' },
-] as const
-
-const EXTRA_CHANNELS = [
-  { icon: 'hash' as const, label: 'product-feedback' },
-  { icon: 'hash' as const, label: 'team-updates' },
-]
-
-const THREAD_SECTIONS = new Set(['Inbox', 'Thread', 'design-www', 'Setup'])
+const THREAD_SECTIONS = new Set(['Inbox', 'Thread', 'Setup', 'Plugins'])
 
 type GuildEntry = { id: string; name: string; mark: string }
 
@@ -143,6 +145,9 @@ export function ThreadsShell({
   workspaceName,
   title,
   alignCenter = false,
+  hideAudiencePanel = false,
+  hideDock = false,
+  mobileDock = false,
   onCompose,
   onPublish,
   search,
@@ -154,15 +159,20 @@ export function ThreadsShell({
 }: ThreadsShellProps) {
   const navigate = useNavigate()
   const [section, setSection] = useState(title === 'Thread' ? 'Inbox' : title)
-  const heading = section === 'Inbox' ? 'Aglack' : section
+  const heading = section === 'Inbox' ? workspaceName.trim() || 'Workspace' : section
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeText, setComposeText] = useState('')
   const [composeEmoji, setComposeEmoji] = useState(false)
-  const [moreOpen, setMoreOpen] = useState(false)
   const [headerMore, setHeaderMore] = useState(false)
-  const [audienceOpen, setAudienceOpen] = useState(false)
   const [audiencePanelOpen, setAudiencePanelOpen] = useState(false)
-  const [audience, setAudience] = useState('DESIGN-WWW')
+  // Static now — its only setter was the removed CHANNELS section's
+  // per-channel click handlers (setAudience(channel.label...)); with that
+  // fake/placeholder channel list gone, there's no real signal left to
+  // drive this compose-modal "in {audience}" label. Left as the prior
+  // default rather than guessing new semantics — worth a real design
+  // decision (e.g. drop the "in ..." line, or wire it to the current
+  // agent/thread) as a follow-up, not silently invented here.
+  const audience = 'DESIGN-WWW'
   // Replaces the ENTIRE content area (where chat/thread normally renders)
   // with a full, embedded live desktop (webtop/KasmVNC) for this
   // workspace — no AUDIENCE/history panel, no sidebar change. Independent
@@ -236,7 +246,6 @@ export function ThreadsShell({
   function openSection(next: string) {
     setSection(next)
     setHeaderMore(false)
-    setAudienceOpen(false)
   }
 
   function openCompose() {
@@ -271,8 +280,13 @@ export function ThreadsShell({
    * panel. Below the three-column breakpoint this also has to force the
    * panel open, same reasoning as `selectAgentHistory`. */
   function openDesktopPanel() {
-    setDesktopPanelOpen((v) => !v)
-    if (!isAudienceDesktop) setAudiencePanelOpen(true)
+    setDesktopPanelOpen((v) => {
+      const next = !v
+      // Only force the mobile drawer open when actually turning desktop ON —
+      // closing it must not re-open the drawer out from under the user.
+      if (next && !isAudienceDesktop) setAudiencePanelOpen(true)
+      return next
+    })
   }
 
   // Shared by the sidebar's own click handler above and
@@ -309,20 +323,20 @@ export function ThreadsShell({
   return (
     <TooltipProvider delay={200}>
     <main className={threadsUi.root} data-workspace={workspaceId || workspaceName}>
-      <div className={threadsUi.appWindow}>
-        <WorkspaceRail
-          workspaceId={workspaceId}
-          workspaceName={workspaceName}
-          onOpenSettings={() => openSection('Settings')}
-        />
-        <aside className={threadsUi.sidebar}>
-          <div className={threadsUi.workspaceRow}>
-            <button type="button" className={threadsUi.workspaceHome} onClick={() => navigate('/')}>
+      {/* The right-hand panel column normally only exists on chat pages
+          (AUDIENCE/history). Desktop is universal — every page can open it —
+          so a hideAudiencePanel page (Integrations/Settings) must still gain
+          that 4th column whenever desktopPanelOpen is true, even though it
+          has no AUDIENCE panel of its own. */}
+      <div className={cn(threadsUi.appWindow, hideAudiencePanel && !desktopPanelOpen && 'grid-cols-[72px_317px_minmax(560px,1fr)] max-[1120px]:grid-cols-[72px_250px_minmax(500px,1fr)]')}>
+        <header className={threadsUi.navbar}>
+          <div className={threadsUi.navbarBrand}>
+            <button type="button" className={threadsUi.navbarHome} onClick={() => navigate('/')}>
               <div className={threadsUi.workspaceMark}>
                 <span>▪▪</span>
                 <span>▪▪</span>
               </div>
-              <strong>Aglack</strong>
+              <strong>{workspaceName.trim() || 'Workspace'}</strong>
               <ChevronDown size={15} strokeWidth={2.5} />
             </button>
             <button
@@ -333,13 +347,103 @@ export function ThreadsShell({
             >
               <History size={21} />
             </button>
-            <button type="button" className={threadsUi.iconButton} aria-label="Quick actions" onClick={openCompose}>
+            <button type="button" className={cn(threadsUi.iconButton, 'max-[760px]:hidden')} aria-label="Quick actions" onClick={openCompose}>
               <Zap size={21} />
             </button>
           </div>
 
+          <div className={threadsUi.navbarActions}>
+            <button
+              type="button"
+              className={threadsUi.iconButton}
+              aria-label="Notifications"
+              onClick={() => openSection('Activity')}
+            >
+              <Bell size={19} />
+            </button>
+            <button
+              type="button"
+              className={threadsUi.iconButton}
+              aria-label="More"
+              onClick={() => setHeaderMore((v) => !v)}
+            >
+              <Ellipsis size={22} />
+            </button>
+            <label className={threadsUi.searchBox}>
+              <Search size={17} />
+              <input
+                value={query}
+                onChange={(e) => updateSearch(e.target.value)}
+                placeholder="Search"
+                aria-label="Search"
+              />
+            </label>
+            <button type="button" className={threadsUi.iconButton} aria-label="Help" onClick={() => openSection('Help')}>
+              <CircleHelp size={20} />
+            </button>
+            {!hideAudiencePanel ? (
+              <button
+                type="button"
+                className={cn(threadsUi.iconButton, threadsUi.audienceToggle)}
+                aria-label="Toggle agent history"
+                onClick={() => setAudiencePanelOpen((v) => !v)}
+              >
+                <History size={20} />
+              </button>
+            ) : null}
+            {workspaceId ? (
+              <button
+                type="button"
+                className={threadsUi.iconButton}
+                aria-pressed={desktopPanelOpen}
+                aria-label={desktopPanelOpen ? 'Hide desktop' : 'Show desktop'}
+                title={desktopPanelOpen ? 'Hide desktop' : 'Show desktop'}
+                onClick={openDesktopPanel}
+              >
+                <Monitor size={20} />
+              </button>
+            ) : null}
+            <ThemeSwitch />
+            {hideAudiencePanel ? (
+              <PixelAvatar seed="you" tone="gold" small />
+            ) : (
+              <button
+                type="button"
+                className={threadsUi.profileButton}
+                aria-label="Members"
+                onClick={openCompose}
+              >
+                <PixelAvatar seed="you" tone="gold" small />
+                <PixelAvatar seed="profile-2" tone="lavender" small />
+              </button>
+            )}
+            {headerMore ? (
+              <div className={cn(threadsUi.headerMenu, motionPresets.dropdownEnter)}>
+                <button type="button" className={threadsUi.menuButton} onClick={copyLink}>
+                  Copy link
+                </button>
+                <button type="button" className={threadsUi.menuButton} onClick={() => openSection('Inbox')}>
+                  Open thread
+                </button>
+                <button type="button" className={threadsUi.menuButton} onClick={() => openCompose()}>
+                  New comment
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </header>
+
+        <WorkspaceRail
+          workspaceId={workspaceId}
+          workspaceName={workspaceName}
+          onOpenSettings={() =>
+            workspaceId &&
+            navigate(`/workspaces/${workspaceId}/integrations`, { state: { name: workspaceName } })
+          }
+        />
+        <aside className={threadsUi.sidebar}>
           <button type="button" className={threadsUi.composeButton} onClick={openCompose}>
-            <Pencil size={20} /> Compose
+            <Pencil size={14} strokeWidth={2.2} /> Compose
           </button>
 
           <nav className={threadsUi.primaryNav} aria-label="Primary navigation">
@@ -394,57 +498,7 @@ export function ThreadsShell({
             ))}
           </section>
 
-          <section className={threadsUi.sidebarSection}>
-            <div className={threadsUi.sectionLabel}>
-              <ChevronDown size={14} /> CHANNELS
-            </div>
-            {PLACEHOLDER_CHANNELS.map((channel) => {
-              const selected =
-                section === channel.label || (section === 'Inbox' && channel.label === 'design-www')
-              return (
-              <button
-                key={channel.label}
-                type="button"
-                className={cn(threadsUi.channelItem, selected && threadsUi.channelSelected)}
-                onClick={() => {
-                  setAudience(channel.label.toUpperCase())
-                  openSection(channel.label)
-                }}
-              >
-                <span className={threadsUi.channelEmoji}>{channel.icon}</span>
-                {channel.label}
-              </button>
-              )
-            })}
-            <button type="button" className={threadsUi.moreButton} onClick={() => setMoreOpen((v) => !v)}>
-              <ChevronDown size={19} className={moreOpen ? threadsUi.rotate180 : undefined} /> view more
-            </button>
-            {moreOpen
-              ? EXTRA_CHANNELS.map((channel) => (
-                  <div className={threadsUi.extraChannels} key={channel.label}>
-                    <button
-                      type="button"
-                      className={cn(
-                        threadsUi.channelItem,
-                        threadsUi.extraChannelItem,
-                        section === channel.label && threadsUi.channelSelected,
-                      )}
-                      onClick={() => {
-                        setAudience(channel.label.toUpperCase())
-                        openSection(channel.label)
-                      }}
-                    >
-                      <Hash size={16} /> {channel.label}
-                    </button>
-                  </div>
-                ))
-              : null}
-          </section>
-
           <div className={threadsUi.sidebarFooter}>
-            <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Settings')}>
-              <Settings2 size={18} /> Settings
-            </button>
             <button type="button" className={threadsUi.footerButton} onClick={() => openSection('Help')}>
               <CircleHelp size={18} /> Help
             </button>
@@ -452,83 +506,6 @@ export function ThreadsShell({
         </aside>
 
         <section className={threadsUi.contentArea}>
-          <header className={threadsUi.contentHeader}>
-            <h1 className={threadsUi.companyHeading}>{heading}</h1>
-            <div className={threadsUi.headerActions}>
-              <button
-                type="button"
-                className={threadsUi.iconButton}
-                aria-label="Notifications"
-                onClick={() => openSection('Activity')}
-              >
-                <Bell size={19} />
-              </button>
-              <button
-                type="button"
-                className={threadsUi.iconButton}
-                aria-label="More"
-                onClick={() => setHeaderMore((v) => !v)}
-              >
-                <Ellipsis size={22} />
-              </button>
-              <label className={threadsUi.searchBox}>
-                <Search size={17} />
-                <input
-                  value={query}
-                  onChange={(e) => updateSearch(e.target.value)}
-                  placeholder="Search"
-                  aria-label="Search"
-                />
-              </label>
-              <button type="button" className={threadsUi.iconButton} aria-label="Help" onClick={() => openSection('Help')}>
-                <CircleHelp size={20} />
-              </button>
-              <button
-                type="button"
-                className={cn(threadsUi.iconButton, threadsUi.audienceToggle)}
-                aria-label="Toggle agent history"
-                onClick={() => setAudiencePanelOpen((v) => !v)}
-              >
-                <History size={20} />
-              </button>
-              {workspaceId ? (
-                <button
-                  type="button"
-                  className={threadsUi.iconButton}
-                  aria-pressed={desktopPanelOpen}
-                  aria-label={desktopPanelOpen ? 'Hide desktop' : 'Show desktop'}
-                  title={desktopPanelOpen ? 'Hide desktop' : 'Show desktop'}
-                  onClick={openDesktopPanel}
-                >
-                  <Monitor size={20} />
-                </button>
-              ) : null}
-              <ThemeSwitch />
-              <button
-                type="button"
-                className={threadsUi.profileButton}
-                aria-label="Members"
-                onClick={openCompose}
-              >
-                <PixelAvatar seed="you" tone="gold" small />
-                <PixelAvatar seed="profile-2" tone="lavender" small />
-              </button>
-              {headerMore ? (
-                <div className={cn(threadsUi.headerMenu, motionPresets.dropdownEnter)}>
-                  <button type="button" className={threadsUi.menuButton} onClick={copyLink}>
-                    Copy link
-                  </button>
-                  <button type="button" className={threadsUi.menuButton} onClick={() => openSection('Inbox')}>
-                    Open thread
-                  </button>
-                  <button type="button" className={threadsUi.menuButton} onClick={() => openCompose()}>
-                    New comment
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </header>
-
           {showThread ? (
             alignCenter ? (
               <div className={threadsUi.threadScroll}>
@@ -552,13 +529,19 @@ export function ThreadsShell({
           )}
         </section>
 
-        {audiencePanelOpen ? (
+        {/* This panel is normally chat-only (AUDIENCE/history), but Desktop
+            is universal — every page can open it — so a hideAudiencePanel
+            page (Integrations/Settings) still needs this slot whenever
+            desktopPanelOpen is true, even with no AUDIENCE content of its
+            own to show alongside it. */}
+        {(!hideAudiencePanel || desktopPanelOpen) && audiencePanelOpen ? (
           <div
             className={cn(threadsUi.audienceBackdrop, motionPresets.overlayEnter)}
             onClick={() => setAudiencePanelOpen(false)}
           />
         ) : null}
 
+        {!hideAudiencePanel || desktopPanelOpen ? (
         <aside className={cn(threadsUi.audiencePanel, audiencePanelOpen && threadsUi.audiencePanelOpen)}>
           <button
             type="button"
@@ -569,27 +552,9 @@ export function ThreadsShell({
             <X size={18} />
           </button>
           <div className={threadsUi.audienceTitle}>
-            <strong>AUDIENCE</strong>
-            <button type="button" onClick={() => setAudienceOpen((v) => !v)}>
-              <Laptop size={14} fill="currentColor" /> {audience} <ChevronDown size={14} fill="currentColor" />
-            </button>
-            {audienceOpen ? (
-              <div className={cn(threadsUi.audienceMenu, motionPresets.dropdownEnter)}>
-                {PLACEHOLDER_CHANNELS.map((channel) => (
-                  <button
-                    key={channel.label}
-                    type="button"
-                    className={threadsUi.menuButton}
-                    onClick={() => {
-                      setAudience(channel.label.toUpperCase())
-                      openSection(channel.label)
-                    }}
-                  >
-                    {channel.label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
+            <strong>
+              {desktopPanelOpen ? 'DESKTOP' : historyAgent ? 'SESSIONS' : 'AUDIENCE'}
+            </strong>
           </div>
           {desktopPanelOpen ? (
             <DesktopPreview workspaceId={workspaceId} workspaceName={workspaceName} />
@@ -603,6 +568,7 @@ export function ThreadsShell({
             />
           )}
         </aside>
+        ) : null}
       </div>
 
       {composeOpen ? (
@@ -653,6 +619,18 @@ export function ThreadsShell({
           </div>
         </div>
       ) : null}
+      {(!hideDock || mobileDock) ? (
+        <WorkspaceDock
+          workspaceId={workspaceId}
+          workspaceName={workspaceName}
+          hideAudiencePanel={hideAudiencePanel}
+          audiencePanelOpen={audiencePanelOpen}
+          onToggleAudiencePanel={() => setAudiencePanelOpen((v) => !v)}
+          desktopPanelOpen={desktopPanelOpen}
+          onToggleDesktopPanel={openDesktopPanel}
+          mobileOnly={hideDock}
+        />
+      ) : null}
     </main>
     </TooltipProvider>
   )
@@ -664,13 +642,12 @@ export function ThreadsShell({
  * surface. The AUDIENCE-panel thumb is a non-interactive preview; click
  * it for Fullscreen (in-app stretch, pointer events on) or Open in new
  * tab. */
-// Native desktop is 1024×768 (Xvnc -geometry). Iframe uses those as HTML
-// width/height so KasmVNC renders the full desktop, then CSS scale()
-// shrinks it to the box. Thumb is w-full + aspect-[1024/768]. Scale is
-// measured (ResizeObserver): Chrome rejects cqi inside transform:scale().
-// Control bar is hidden server-side by patch_kasmvnc_hide_control_bar.py.
-const DESKTOP_NATIVE_WIDTH = 1024
-const DESKTOP_NATIVE_HEIGHT = 768
+// Native desktop is 1024×576 (Xvnc -geometry; DESKTOP_NATIVE_WIDTH/HEIGHT
+// in threads-ui.ts). Iframe uses those as HTML width/height so KasmVNC
+// renders the full desktop, then CSS scale() shrinks it to the box. Thumb
+// is w-full + aspect-[1024/576]. Scale is measured (ResizeObserver):
+// Chrome rejects cqi inside transform:scale(). Control bar is hidden
+// server-side by patch_kasmvnc_hide_control_bar.py.
 
 function useDesktopScale(fit: 'width' | 'contain') {
   const [el, setEl] = useState<HTMLDivElement | null>(null)

@@ -1,10 +1,50 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentHistoryPanel } from '@/features/agent-history/components/agent-history-panel'
-import { renderWithClient } from '@/test/utils'
+import { renderWithClient, createTestQueryClient } from '@/test/utils'
+import { QueryClientProvider } from '@tanstack/react-query'
 import * as api from '@/features/agent-history/api'
+
+/**
+ * Agent switching inside this panel is externally controlled now (the CHAT
+ * sidebar in threads-shell.tsx owns it) — there is no in-panel "back to
+ * agents" affordance. This harness reproduces that: a `selectedAgent` prop
+ * driven from outside, changed by re-rendering with a new value, the same
+ * way threads-shell changes it.
+ */
+function renderControlled(
+  props: { workspaceId: string; selectedAgent: string | null; onSelectSession?: (agentName: string, session: unknown) => void },
+  client = createTestQueryClient(),
+) {
+  const view = render(
+    <QueryClientProvider client={client}>
+      <AgentHistoryPanel
+        workspaceId={props.workspaceId}
+        open
+        selectedAgent={props.selectedAgent}
+        onSelectedAgentChange={() => {}}
+        onSelectSession={props.onSelectSession as never}
+      />
+    </QueryClientProvider>,
+  )
+  return {
+    ...view,
+    setAgent: (agentName: string | null) =>
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <AgentHistoryPanel
+            workspaceId={props.workspaceId}
+            open
+            selectedAgent={agentName}
+            onSelectedAgentChange={() => {}}
+            onSelectSession={props.onSelectSession as never}
+          />
+        </QueryClientProvider>,
+      ),
+  }
+}
 
 vi.mock('@/features/agent-history/api')
 
@@ -55,7 +95,6 @@ describe('AgentHistoryPanel fetch gating', () => {
 
 describe('AgentHistoryPanel agent switching', () => {
   it('never shows the previous agent sessions while the new agent is still loading', async () => {
-    const user = userEvent.setup()
     mockedApi.listAgents.mockResolvedValue({
       agents: [{ name: 'agent-a', isWorking: false }, { name: 'agent-b', isWorking: false }],
     })
@@ -80,15 +119,13 @@ describe('AgentHistoryPanel agent switching', () => {
       return pendingB.promise
     })
 
-    renderWithClient(<AgentHistoryPanel workspaceId="ws-1" open={true} />)
+    // Switching agent A -> B is driven externally (the CHAT sidebar), not
+    // by any in-panel back button — this panel has none.
+    const { setAgent } = renderControlled({ workspaceId: 'ws-1', selectedAgent: 'agent-a' })
 
-    await screen.findByLabelText('agent-a')
-    await user.click(screen.getByLabelText('agent-a'))
     await screen.findByText('Agent A session title')
 
-    await user.click(screen.getByLabelText('Back to agents'))
-    await screen.findByLabelText('agent-b')
-    await user.click(screen.getByLabelText('agent-b'))
+    setAgent('agent-b')
 
     // agent-b's sessions are still pending: agent-a's title must not leak through.
     expect(screen.queryByText('Agent A session title')).not.toBeInTheDocument()
@@ -148,9 +185,11 @@ describe('AgentHistoryPanel onSelectSession', () => {
     await user.click(screen.getByText('No callback wired'))
 
     // The click stays on the sessions list — no crash, no navigation, no
-    // separate transcript view, even with no callback to report to.
+    // separate transcript view, even with no callback to report to. Still
+    // showing this agent's history header confirms it (no in-panel back
+    // control exists to have navigated away via).
     expect(screen.getByText('No callback wired')).toBeInTheDocument()
-    expect(screen.getByLabelText('Back to agents')).toBeInTheDocument()
+    expect(screen.getByTestId('audience-history')).toBeInTheDocument()
   })
 })
 

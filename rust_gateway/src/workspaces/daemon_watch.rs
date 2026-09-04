@@ -116,10 +116,7 @@ async fn heal_all_ready_workspaces(
 
         match result {
             Ok(report) => {
-                if !matches!(
-                    report.action,
-                    super::diagnosis::DiagnosisAction::None
-                ) {
+                if !matches!(report.action, super::diagnosis::DiagnosisAction::None) {
                     println!(
                         "rust_gateway: daemon_watch re-checked workspace {:?} after daemon \
                          recovery — action: {:?}",
@@ -143,7 +140,7 @@ mod tests {
     use super::*;
     use crate::workspaces::container::{ContainerState, FakeLauncher};
     use crate::workspaces::create_workspace;
-    use crate::workspaces::test_support::temp_store;
+    use crate::workspaces::test_support::{temp_integrations_state, temp_store};
 
     /// End-to-end proof of the actual feature the user asked for: a
     /// workspace whose container is NOT running (simulating "Docker
@@ -179,6 +176,7 @@ mod tests {
             store,
             launcher,
             http_client: reqwest::Client::new(),
+            integrations: temp_integrations_state(),
         });
 
         // Daemon starts unreachable, then becomes reachable — the exact
@@ -258,6 +256,7 @@ mod tests {
             store,
             launcher,
             http_client: reqwest::Client::new(),
+            integrations: temp_integrations_state(),
         });
 
         let watch_handle = {

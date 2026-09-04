@@ -1,0 +1,8 @@
+.git
+frontend/node_modules
+frontend/dist
+rust_gateway/target
+rust_gateway/.env
+deploy/.env
+data
+logs

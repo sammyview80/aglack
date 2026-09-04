@@ -238,7 +238,8 @@ pub async fn diagnose_workspace(
     // `launch_and_record`'s own "best-effort store update" stance.
     if after.is_unhealthy() {
         let _ = store.mark_failed_by_workspace_id(workspace_id).await;
-    } else if let (Some(wrapper_port), Some(desktop_port)) = (record.host_port, record.desktop_port)
+    } else if let (Some(wrapper_port), Some(desktop_port), Some(browser_port)) =
+        (record.host_port, record.desktop_port, record.browser_port)
     {
         let _ = store
             .mark_ready_by_workspace_id(
@@ -246,6 +247,7 @@ pub async fn diagnose_workspace(
                 &container_name,
                 wrapper_port as u16,
                 desktop_port as u16,
+                browser_port as u16,
             )
             .await;
     }
@@ -450,7 +452,13 @@ mod tests {
             .await
             .unwrap();
         store
-            .mark_ready("healthy-ws", "container-1", wrapper_port, desktop_port)
+            .mark_ready(
+                "healthy-ws",
+                "container-1",
+                wrapper_port,
+                desktop_port,
+                desktop_port,
+            )
             .await
             .unwrap();
 
@@ -486,7 +494,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .mark_ready("still-broken", "container-1", 1, 2)
+            .mark_ready("still-broken", "container-1", 1, 2, 3)
             .await
             .unwrap();
 
@@ -552,7 +560,13 @@ mod tests {
             .await
             .unwrap();
         store
-            .mark_ready("recovers", "container-1", wrapper_port, desktop_port)
+            .mark_ready(
+                "recovers",
+                "container-1",
+                wrapper_port,
+                desktop_port,
+                desktop_port,
+            )
             .await
             .unwrap();
 

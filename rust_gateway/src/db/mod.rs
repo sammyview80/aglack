@@ -29,10 +29,36 @@ pub async fn connect(path: &Path) -> Result<SqlitePool, sqlx::Error> {
         })?;
     }
 
+    // WAL: readers (MCP proxy's per-call token lookup) no longer block
+    // writers (audit inserts) and vice versa — the plain default
+    // (rollback journal) serializes every writer against every reader,
+    // which surfaces as `SQLITE_BUSY` under the concurrency this gateway
+    // actually has (one audit insert per proxied MCP call, alongside
+    // reads for the same request). `busy_timeout` covers the remaining
+    // writer-vs-writer case WAL does not remove (SQLite still allows only
+    // one writer at a time) by making a losing writer retry briefly
+    // instead of failing immediately. `foreign_keys(true)`: no migration
+    // in this crate was written assuming FK enforcement is off (checked:
+    // none of the `migrations/*.sql` files rely on an FK being silently
+    // unenforced), so turning it on only makes an already-intended
+    // constraint real.
     let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .foreign_keys(true);
 
-    let pool = SqlitePoolOptions::new().connect_with(options).await?;
+    // Fixed operational tuning constant, not a per-environment address —
+    // matches AGENTS.md rule #2's actual concern (no hardcoded
+    // host/port/URL), which this is not. 8 comfortably covers this
+    // gateway's real concurrency (one process, a handful of proxied
+    // routes each doing at most a couple of sequential queries) without
+    // starving SQLite, which serializes writers regardless of pool size.
+    let pool = SqlitePoolOptions::new()
+        .max_connections(8)
+        .connect_with(options)
+        .await?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
 
@@ -63,5 +89,20 @@ mod tests {
 
         assert!(names.contains(&"idx_workspace_creations_workspace_id".to_string()));
         assert!(names.contains(&"idx_workspace_creations_created_at".to_string()));
+    }
+
+    #[tokio::test]
+    async fn connect_enables_wal_journal_mode() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("test.db");
+
+        let pool = connect(&db_path).await.expect("connect succeeds");
+
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .expect("query PRAGMA journal_mode");
+
+        assert_eq!(mode.to_lowercase(), "wal");
     }
 }

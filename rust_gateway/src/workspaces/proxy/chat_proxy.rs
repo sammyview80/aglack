@@ -22,21 +22,20 @@
 //! cookie, and neither a browser-global cookie nor `EventSource` (no custom
 //! headers at all) can supply a different one per agent from a single
 //! origin, so this proxy injects it server-side per request instead. See
-//! `docs/chat-proxy-plan.md` for the full write-up.
+//! `docs/chat-proxy-plan.md` for the full write-up. The injection itself
+//! lives in `agent_cookie.rs` so `commands_proxy.rs` shares the exact same
+//! validation and merge rules.
 
 use axum::{
     extract::{Path, Request, State},
-    http::{HeaderValue, StatusCode},
     response::Response,
 };
 use std::sync::Arc;
 
+use super::agent_cookie::inject_agent_cookie;
+use crate::proxy::forward_to;
 use crate::workspaces::resolve::resolve_ready_workspace;
 use crate::workspaces::route::WorkspacesState;
-use crate::proxy::forward_to;
-use crate::response::error;
-
-const PROFILE_COOKIE_NAME: &str = "hermes_profile";
 
 /// Handles `/workspaces/:id/chat/*path`.
 pub async fn chat_proxy_route_with_path(
@@ -58,91 +57,6 @@ pub async fn chat_proxy_route_root(
     chat_proxy(state, workspace_id, "", req).await
 }
 
-/// Only a conservative charset is allowed into the `Cookie` header value —
-/// CR, LF, `;`, and whitespace are exactly the characters that would let an
-/// `agent` query param forge additional headers/cookies on the outgoing
-/// request (see docs/chat-proxy-plan.md's security note). Reject anything
-/// outside ASCII alphanumerics, `-`, `_`, `.` rather than trying to escape
-/// it — Hermes profile names have no legitimate need for anything else.
-/// Minimal `application/x-www-form-urlencoded` value decoder — enough to
-/// find the `agent` param and decode `+`/`%XX` escapes without pulling in
-/// a new crate dependency (`url`, though present transitively via
-/// `reqwest`, is not a direct dependency this crate can name). Malformed
-/// `%XX` sequences pass through as literal bytes; `is_valid_agent_name`
-/// rejects anything that doesn't fit the allowed charset either way.
-fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
-                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                    Some(byte) => {
-                        out.push(byte);
-                        i += 3;
-                    }
-                    None => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                }
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Finds `agent=<value>` in a raw query string and decodes it, without a
-/// URL-parsing dependency (see `percent_decode`).
-fn extract_agent_param(query: &str) -> Option<String> {
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        (key == "agent").then(|| percent_decode(value))
-    })
-}
-
-fn is_valid_agent_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-}
-
-/// Merge the injected `hermes_profile` cookie into any pre-existing
-/// `Cookie` header on the incoming request, with the injected value taking
-/// precedence for that one cookie name. Other cookies survive unchanged.
-fn merge_cookie_header(existing: Option<&HeaderValue>, agent: &str) -> String {
-    let injected = format!("{PROFILE_COOKIE_NAME}={agent}");
-    let Some(existing) = existing.and_then(|v| v.to_str().ok()) else {
-        return injected;
-    };
-    let kept: Vec<&str> = existing
-        .split(';')
-        .map(str::trim)
-        .filter(|pair| !pair.is_empty())
-        .filter(|pair| {
-            pair.split_once('=')
-                .map(|(name, _)| name.trim() != PROFILE_COOKIE_NAME)
-                .unwrap_or(true)
-        })
-        .collect();
-    if kept.is_empty() {
-        injected
-    } else {
-        format!("{}; {injected}", kept.join("; "))
-    }
-}
-
 async fn chat_proxy(
     state: Arc<WorkspacesState>,
     workspace_id: String,
@@ -157,30 +71,9 @@ async fn chat_proxy(
     // `agent` is read from the query string but deliberately left IN the
     // forwarded query string below (not stripped) — Hermes ignores unknown
     // params, and leaving it keeps the forwarded URL an honest reflection
-    // of the original request.
-    let agent = req.uri().query().and_then(extract_agent_param);
-
-    if let Some(agent) = &agent {
-        if !is_valid_agent_name(agent) {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "invalid_agent",
-                "agent must match [A-Za-z0-9_.-]+",
-            );
-        }
-        let cookie_value = merge_cookie_header(req.headers().get(axum::http::header::COOKIE), agent);
-        let header_value = match HeaderValue::from_str(&cookie_value) {
-            Ok(value) => value,
-            Err(_) => {
-                return error(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_agent",
-                    "agent must match [A-Za-z0-9_.-]+",
-                )
-            }
-        };
-        req.headers_mut()
-            .insert(axum::http::header::COOKIE, header_value);
+    // of the original request. See `agent_cookie.rs`.
+    if let Err(response) = inject_agent_cookie(&mut req) {
+        return response;
     }
 
     let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
@@ -196,12 +89,11 @@ async fn chat_proxy(
 
 #[cfg(test)]
 mod tests {
-    use crate::workspaces::test_support::{
-        assert_not_ready_workspace_returns_409, assert_unknown_workspace_id_returns_404,
-        temp_store,
-    };
     use super::*;
     use crate::workspaces::container::FakeLauncher;
+    use crate::workspaces::test_support::{
+        assert_not_ready_workspace_returns_409, assert_unknown_workspace_id_returns_404, temp_store,
+    };
     use axum::{
         body::{to_bytes, Body},
         http::{Request as HttpRequest, StatusCode},
@@ -252,7 +144,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         (state_with_store(store), echo_port)

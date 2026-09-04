@@ -12,6 +12,15 @@ real Hermes profiles is
 seeder/
   tools/                     global MCP tools — every agent, in EVERY mode, gets these
     update_soul.py
+    open_browser.py          per-agent browser lifecycle; identity comes from the
+    close_browser.py         runner's own --agent-id, never the caller (see each docstring)
+    browser_task.py          run a natural-language browsing task in THIS agent's own
+                             browser via browser-use, driven by this agent's OWN
+                             configured model (seeder_kit's `[browser]` extra)
+    _browser_gateway.py      shared helpers, NOT tools — a leading underscore is
+    _browser_use_llm.py      skipped by seeder_kit's tool discovery (see each docstring)
+  tests/                     pytest unit tests for tools/*.py (no gateway/browser/
+                             hermes_cli needed): `cd seeder && python3 -m pytest -q`
   skills/                    global skills — every agent, in EVERY mode, gets these
     tickoff_agent/SKILL.md
     org-tool-use/SKILL.md    company-mode tool-naming/restrictions reference (harmless

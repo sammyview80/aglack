@@ -1,0 +1,12 @@
+-- Adds the host port a workspace's browser-manager daemon (see
+-- backend/workspace-image/browser_manager.py, container-internal port
+-- 9400 by default) is published on, alongside the existing `host_port`
+-- (wrapper) and `desktop_port` (webtop desktop) columns. A third separate
+-- port because this is a THIRD separate service inside the same
+-- container, not the wrapper and not the desktop — see
+-- workspaces/proxy/browser_proxy.rs.
+--
+-- Nullable and set at the same moment as `host_port`/`desktop_port` (see
+-- store.rs's mark_ready) — a Ready row always has all three set together,
+-- never some without the others.
+ALTER TABLE workspace_creations ADD COLUMN browser_port INTEGER;

@@ -14,6 +14,12 @@ knows how to read one given its name):
         agent.md                       -> that agent's instructions file content
         tools/*.py                     per-agent MCP tools, additive to <root>/tools/
         skills/<name>/SKILL.md         per-agent skills, additive to <root>/skills/
+        browser.disabled               -> presence-only marker (content ignored,
+                                        matching every other per-agent marker in
+                                        this tree): this agent opts OUT of the
+                                        per-profile browser-automation capability
+                                        every agent otherwise gets by default.
+                                        See `AgentSpec.wants_browser`.
 
 Global `tools/`/`skills/` live at the tree root, OUTSIDE any mode — a tool
 or skill every agent should get regardless of mode belongs there once, not
@@ -75,6 +81,26 @@ class AgentSpec:
     skills_dir: Path | None
     """`<agent_dir>/skills/`, or None if it doesn't exist as a directory."""
 
+    wants_browser: bool = True
+    """True unless `<agent_dir>/browser.disabled` exists as a FILE — a
+    presence-only marker (its content, if any, is never read), matching
+    every other per-agent marker in this tree (`soul.md`/`agent.md`/
+    `tools/`/`skills/` are likewise detected by existence, not parsed
+    content).
+
+    Opt-OUT model: every agent gets browser automation available by
+    default; an agent that genuinely should never touch a browser marks
+    itself with `browser.disabled`. A leftover `browser.enabled` file from
+    the earlier opt-in model is harmless and ignored (its presence alone
+    cannot change the default-True outcome); if both markers are somehow
+    present, `browser.disabled` wins — exclusion is the conservative
+    outcome for a contradictory tree. See the host application's own
+    translation of this into whatever "enable a browser for this agent"
+    means for it (e.g. Hermes WebUI's `features/agent_seeder/service.py`
+    writing a `browser:` block into that profile's `config.yaml`). The
+    field default keeps this dataclass backward compatible for any caller
+    constructing an `AgentSpec` positionally without it."""
+
     def read_soul(self) -> str | None:
         return self.soul_path.read_text(encoding="utf-8") if self.soul_path else None
 
@@ -132,6 +158,7 @@ def _parse_agent_dir(agent_dir: Path) -> AgentSpec:
         agent_instructions_path=_existing_file_or_none(agent_dir / "agent.md"),
         tools_dir=_existing_dir_or_none(agent_dir / "tools"),
         skills_dir=_existing_dir_or_none(agent_dir / "skills"),
+        wants_browser=not (agent_dir / "browser.disabled").is_file(),
     )
 
 

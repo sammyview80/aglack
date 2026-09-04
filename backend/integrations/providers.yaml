@@ -1,0 +1,773 @@
+# Provider catalog for the integrations feature. Loaded by
+# rust_gateway/src/integrations/providers.rs at startup — validated
+# fail-fast (see that file's loader).
+#
+# `openconnector_service` values are the OpenConnector catalog keys.
+# Verify a new provider against the REAL catalog before adding it here —
+# see ../../docs/integrations-poc-findings.md's "Provider keys confirmed"
+# section: `google` as a single combined key does NOT exist (Gmail,
+# Calendar and Drive are separate catalog entries), and no plain
+# `microsoft-teams`/`teams` key was found at all in the pass done there.
+# Only providers actually confirmed against a running OpenConnector
+# instance belong in this file.
+#
+# `oauth_client_env` names the env-var PREFIX for this provider's OAuth
+# client id/secret (see rust_gateway/src/integrations/providers.rs's
+# `Provider::oauth_credentials` and rust_gateway/.env.example) — e.g.
+# `GITHUB_OAUTH` means `GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`.
+# Omit it entirely for a provider that only supports `api_key` connect.
+# A provider WITH this field but no credentials set in the environment
+# simply reports `oauth_available: false` — never a hard startup error.
+providers:
+  - id: github
+    name: GitHub
+    icon: github
+    openconnector_service: github
+    homepage_url: https://github.com
+    description: Repos, issues, pull requests
+    oauth_client_env: GITHUB_OAUTH
+
+  # Google is deliberately split into per-service rows, not one combined
+  # "google" row — see the caveat above. Each needs its own OAuth client
+  # registered against the SAME Google Cloud project/credentials; the
+  # split only affects OpenConnector's catalog key and proxy base URL,
+  # not how many times a user has to click through consent (Google's
+  # OAuth app is shared across all three) — all three share the SAME
+  # oauth_client_env prefix for exactly that reason.
+  - id: gmail
+    name: Gmail
+    icon: google
+    openconnector_service: gmail
+    homepage_url: https://mail.google.com
+    description: Read and send email
+    oauth_client_env: GOOGLE_OAUTH
+
+  - id: google-calendar
+    name: Google Calendar
+    icon: google
+    openconnector_service: googlecalendar
+    homepage_url: https://workspace.google.com/products/calendar/
+    description: Events and scheduling
+    oauth_client_env: GOOGLE_OAUTH
+
+  - id: google-drive
+    name: Google Drive
+    icon: google
+    openconnector_service: googledrive
+    homepage_url: https://workspace.google.com/products/drive/
+    description: Files and folders
+    oauth_client_env: GOOGLE_OAUTH
+
+  - id: slack
+    name: Slack
+    icon: slack
+    openconnector_service: slack
+    homepage_url: https://slack.com
+    description: Channels and messages
+    oauth_client_env: SLACK_OAUTH
+
+  - id: notion
+    name: Notion
+    icon: notion
+    openconnector_service: notion
+    homepage_url: https://www.notion.so
+    description: Pages and databases
+    oauth_client_env: NOTION_OAUTH
+
+  - id: airtable
+    name: Airtable
+    openconnector_service: airtable
+    homepage_url: https://airtable.com
+    description: Productivity, Data
+    oauth_client_env: AIRTABLE_OAUTH
+
+  - id: alpaca
+    name: Alpaca
+    openconnector_service: alpaca
+    homepage_url: https://alpaca.markets/
+    description: Finance, Data
+    oauth_client_env: ALPACA_OAUTH
+
+  - id: apaleo
+    name: apaleo
+    openconnector_service: apaleo
+    homepage_url: https://apaleo.com
+    description: Productivity, Finance
+    oauth_client_env: APALEO_OAUTH
+
+  - id: asana
+    name: Asana
+    openconnector_service: asana
+    homepage_url: https://asana.com
+    description: Productivity
+    oauth_client_env: ASANA_OAUTH
+
+  - id: attio
+    name: Attio
+    openconnector_service: attio
+    homepage_url: https://attio.com
+    description: Productivity, Data
+    oauth_client_env: ATTIO_OAUTH
+
+  - id: baidu-netdisk
+    name: Baidu Netdisk
+    openconnector_service: baidu_netdisk
+    homepage_url: https://pan.baidu.com
+    description: Storage, Productivity
+    oauth_client_env: BAIDU_NETDISK_OAUTH
+
+  - id: bamboohr
+    name: BambooHR
+    openconnector_service: bamboohr
+    homepage_url: https://www.bamboohr.com
+    description: Productivity, Data
+    oauth_client_env: BAMBOOHR_OAUTH
+
+  - id: bitbucket
+    name: Bitbucket
+    openconnector_service: bitbucket
+    homepage_url: https://bitbucket.org
+    description: Developer Tools
+    oauth_client_env: BITBUCKET_OAUTH
+
+  - id: box
+    name: Box
+    openconnector_service: box
+    homepage_url: https://www.box.com
+    description: Storage, Productivity
+    oauth_client_env: BOX_OAUTH
+
+  - id: cal
+    name: Cal.com
+    openconnector_service: cal
+    homepage_url: https://cal.com
+    description: Productivity, Communication
+    oauth_client_env: CAL_OAUTH
+
+  - id: calendly
+    name: Calendly
+    openconnector_service: calendly
+    homepage_url: https://calendly.com
+    description: Productivity
+    oauth_client_env: CALENDLY_OAUTH
+
+  - id: canva
+    name: Canva
+    openconnector_service: canva
+    homepage_url: https://www.canva.com
+    description: "Design & Media, Productivity"
+    oauth_client_env: CANVA_OAUTH
+
+  - id: canva-cn
+    name: Canva China
+    openconnector_service: canva_cn
+    homepage_url: https://www.canva.cn
+    description: "Design & Media, Productivity"
+    oauth_client_env: CANVA_CN_OAUTH
+
+  - id: clickup
+    name: ClickUp
+    openconnector_service: clickup
+    homepage_url: https://clickup.com
+    description: Productivity
+    oauth_client_env: CLICKUP_OAUTH
+
+  - id: cloudflare-browser-rendering
+    name: Cloudflare Browser Run
+    openconnector_service: cloudflare_browser_rendering
+    homepage_url: https://developers.cloudflare.com/browser-run/
+    description: Developer Tools, Data
+    oauth_client_env: CLOUDFLARE_BROWSER_RENDERING_OAUTH
+
+  - id: cloudflare-dns
+    name: Cloudflare DNS
+    openconnector_service: cloudflare_dns
+    homepage_url: https://www.cloudflare.com
+    description: Developer Tools, Security
+    oauth_client_env: CLOUDFLARE_DNS_OAUTH
+
+  - id: cloudflare-mcp
+    name: Cloudflare MCP
+    openconnector_service: cloudflare_mcp
+    homepage_url: https://github.com/cloudflare/mcp
+    description: Developer Tools, Infrastructure
+    oauth_client_env: CLOUDFLARE_MCP_OAUTH
+
+  - id: cloudflare-r2
+    name: Cloudflare R2
+    openconnector_service: cloudflare_r2
+    homepage_url: https://www.cloudflare.com/developer-platform/products/r2/
+    description: Storage, Developer Tools
+    oauth_client_env: CLOUDFLARE_R2_OAUTH
+
+  - id: cloudflare-worker
+    name: Cloudflare Worker
+    openconnector_service: cloudflare_worker
+    homepage_url: https://workers.cloudflare.com
+    description: Developer Tools
+    oauth_client_env: CLOUDFLARE_WORKER_OAUTH
+
+  - id: coinbase
+    name: Coinbase
+    openconnector_service: coinbase
+    homepage_url: https://www.coinbase.com
+    description: Finance
+    oauth_client_env: COINBASE_OAUTH
+
+  - id: confluence
+    name: Confluence
+    openconnector_service: confluence
+    homepage_url: https://www.atlassian.com/software/confluence
+    description: Productivity
+    oauth_client_env: CONFLUENCE_OAUTH
+
+  - id: convex
+    name: Convex
+    openconnector_service: convex
+    homepage_url: https://www.convex.dev
+    description: Developer Tools
+    oauth_client_env: CONVEX_OAUTH
+
+  - id: crowdin
+    name: Crowdin
+    openconnector_service: crowdin
+    homepage_url: https://crowdin.com
+    description: Productivity, Communication
+    oauth_client_env: CROWDIN_OAUTH
+
+  - id: datadog
+    name: Datadog
+    openconnector_service: datadog
+    homepage_url: https://www.datadoghq.com/
+    description: Developer Tools, Data
+    oauth_client_env: DATADOG_OAUTH
+
+  - id: dida365
+    name: Dida365
+    openconnector_service: dida365
+    homepage_url: https://dida365.com
+    description: Productivity
+    oauth_client_env: DIDA365_OAUTH
+
+  - id: discord
+    name: Discord
+    openconnector_service: discord
+    homepage_url: https://discord.com
+    description: Communication, Social
+    oauth_client_env: DISCORD_OAUTH
+
+  - id: dropbox
+    name: Dropbox
+    openconnector_service: dropbox
+    homepage_url: https://www.dropbox.com
+    description: Storage, Productivity
+    oauth_client_env: DROPBOX_OAUTH
+
+  - id: dropbox-sign
+    name: Dropbox Sign
+    openconnector_service: dropbox_sign
+    homepage_url: https://sign.dropbox.com
+    description: Productivity
+    oauth_client_env: DROPBOX_SIGN_OAUTH
+
+  - id: esa
+    name: esa
+    openconnector_service: esa
+    homepage_url: https://esa.io
+    description: Productivity, Developer Tools
+    oauth_client_env: ESA_OAUTH
+
+  - id: excel
+    name: Excel
+    openconnector_service: excel
+    homepage_url: https://www.microsoft.com/microsoft-365/excel
+    description: Productivity, Data
+    oauth_client_env: EXCEL_OAUTH
+
+  - id: feishu
+    name: Feishu
+    openconnector_service: feishu
+    homepage_url: https://www.feishu.cn
+    description: Communication, Productivity, Storage
+    oauth_client_env: FEISHU_OAUTH
+
+  - id: figma
+    name: Figma
+    openconnector_service: figma
+    homepage_url: https://www.figma.com
+    description: Design, Productivity
+    oauth_client_env: FIGMA_OAUTH
+
+  - id: gist
+    name: Gist
+    openconnector_service: gist
+    homepage_url: https://gist.github.com
+    description: Developer Tools
+    oauth_client_env: GIST_OAUTH
+
+  - id: gitee
+    name: Gitee
+    openconnector_service: gitee
+    homepage_url: https://gitee.com
+    description: Developer Tools
+    oauth_client_env: GITEE_OAUTH
+
+  - id: gitlab
+    name: GitLab
+    openconnector_service: gitlab
+    homepage_url: https://gitlab.com
+    description: Developer Tools
+    oauth_client_env: GITLAB_OAUTH
+
+  - id: google-analytics
+    name: Google Analytics
+    openconnector_service: google_analytics
+    homepage_url: https://analytics.google.com
+    description: Data, Marketing
+    oauth_client_env: GOOGLE_ANALYTICS_OAUTH
+
+  - id: google-bigquery
+    name: Google BigQuery
+    openconnector_service: google_bigquery
+    homepage_url: https://cloud.google.com/bigquery
+    description: Data, Developer Tools
+    oauth_client_env: GOOGLE_BIGQUERY_OAUTH
+
+  - id: google-search-console
+    name: Google Search Console
+    openconnector_service: google_search_console
+    homepage_url: https://search.google.com/search-console
+    description: Data, Marketing
+    oauth_client_env: GOOGLE_SEARCH_CONSOLE_OAUTH
+
+  - id: googleads
+    name: Google Ads
+    openconnector_service: googleads
+    homepage_url: https://ads.google.com
+    description: Marketing, Data
+    oauth_client_env: GOOGLEADS_OAUTH
+
+  - id: googlechat
+    name: Google Chat
+    openconnector_service: googlechat
+    homepage_url: https://workspace.google.com/products/chat/
+    description: Communication, Productivity
+    oauth_client_env: GOOGLECHAT_OAUTH
+
+  - id: googledocs
+    name: Google Docs
+    openconnector_service: googledocs
+    homepage_url: https://workspace.google.com/products/docs/
+    description: Productivity
+    oauth_client_env: GOOGLEDOCS_OAUTH
+
+  - id: googleforms
+    name: Google Forms
+    openconnector_service: googleforms
+    homepage_url: https://workspace.google.com/products/forms/
+    description: Productivity, Data
+    oauth_client_env: GOOGLEFORMS_OAUTH
+
+  - id: googlemeet
+    name: Google Meet
+    openconnector_service: googlemeet
+    homepage_url: https://workspace.google.com/products/meet/
+    description: Communication, Productivity
+    oauth_client_env: GOOGLEMEET_OAUTH
+
+  - id: googlephotos
+    name: Google Photos
+    openconnector_service: googlephotos
+    homepage_url: https://www.google.com/photos/about/
+    description: Storage, Design
+    oauth_client_env: GOOGLEPHOTOS_OAUTH
+
+  - id: googlesheets
+    name: Google Sheets
+    openconnector_service: googlesheets
+    homepage_url: https://workspace.google.com/products/sheets/
+    description: Productivity, Data
+    oauth_client_env: GOOGLESHEETS_OAUTH
+
+  - id: googleslides
+    name: Google Slides
+    openconnector_service: googleslides
+    homepage_url: https://workspace.google.com/products/slides/
+    description: Productivity, Design
+    oauth_client_env: GOOGLESLIDES_OAUTH
+
+  - id: googletasks
+    name: Google Tasks
+    openconnector_service: googletasks
+    homepage_url: https://tasks.google.com
+    description: Productivity
+    oauth_client_env: GOOGLETASKS_OAUTH
+
+  - id: harvest
+    name: Harvest
+    openconnector_service: harvest
+    homepage_url: https://www.getharvest.com
+    description: Productivity
+    oauth_client_env: HARVEST_OAUTH
+
+  - id: helium10
+    name: Helium 10
+    openconnector_service: helium10
+    homepage_url: https://www.helium10.com
+    description: Data, Marketing
+    oauth_client_env: HELIUM10_OAUTH
+
+  - id: helpscout
+    name: Help Scout
+    openconnector_service: helpscout
+    homepage_url: https://www.helpscout.com
+    description: Communication, Productivity
+    oauth_client_env: HELPSCOUT_OAUTH
+
+  - id: heygen
+    name: HeyGen
+    openconnector_service: heygen
+    homepage_url: https://www.heygen.com
+    description: "AI, Design & Media"
+    oauth_client_env: HEYGEN_OAUTH
+
+  - id: hubspot
+    name: HubSpot
+    openconnector_service: hubspot
+    homepage_url: https://www.hubspot.com
+    description: Marketing, Productivity
+    oauth_client_env: HUBSPOT_OAUTH
+
+  - id: huggingface
+    name: Hugging Face
+    openconnector_service: huggingface
+    homepage_url: https://huggingface.co
+    description: AI, Developer Tools
+    oauth_client_env: HUGGINGFACE_OAUTH
+
+  - id: indeed
+    name: Indeed
+    openconnector_service: indeed
+    homepage_url: https://www.indeed.com
+    description: Human Resources
+    oauth_client_env: INDEED_OAUTH
+
+  - id: intercom
+    name: Intercom
+    openconnector_service: intercom
+    homepage_url: https://www.intercom.com
+    description: Communication, Productivity
+    oauth_client_env: INTERCOM_OAUTH
+
+  - id: jira
+    name: Jira
+    openconnector_service: jira
+    homepage_url: https://www.atlassian.com/software/jira
+    description: Productivity, Developer Tools
+    oauth_client_env: JIRA_OAUTH
+
+  - id: linear
+    name: Linear
+    openconnector_service: linear
+    homepage_url: https://linear.app
+    description: Productivity, Developer Tools
+    oauth_client_env: LINEAR_OAUTH
+
+  - id: linkedin
+    name: LinkedIn
+    openconnector_service: linkedin
+    homepage_url: https://www.linkedin.com
+    description: Social, Marketing
+    oauth_client_env: LINKEDIN_OAUTH
+
+  - id: linkhut
+    name: Linkhut
+    openconnector_service: linkhut
+    homepage_url: https://ln.ht
+    description: Productivity
+    oauth_client_env: LINKHUT_OAUTH
+
+  - id: longbridge
+    name: Longbridge
+    openconnector_service: longbridge
+    homepage_url: https://longbridge.com
+    description: Finance, Data
+    oauth_client_env: LONGBRIDGE_OAUTH
+
+  - id: mailchimp
+    name: Mailchimp
+    openconnector_service: mailchimp
+    homepage_url: https://mailchimp.com
+    description: Communication, Marketing
+    oauth_client_env: MAILCHIMP_OAUTH
+
+  - id: mendeley
+    name: Mendeley
+    openconnector_service: mendeley
+    homepage_url: https://www.mendeley.com/
+    description: Productivity, Data
+    oauth_client_env: MENDELEY_OAUTH
+
+  - id: microsoft-todo
+    name: Microsoft To Do
+    openconnector_service: microsoft_todo
+    homepage_url: https://to-do.office.com
+    description: Productivity
+    oauth_client_env: MICROSOFT_TODO_OAUTH
+
+  - id: miro
+    name: Miro
+    openconnector_service: miro
+    homepage_url: https://miro.com
+    description: Design, Productivity
+    oauth_client_env: MIRO_OAUTH
+
+  - id: monday
+    name: Monday
+    openconnector_service: monday
+    homepage_url: https://monday.com
+    description: Productivity
+    oauth_client_env: MONDAY_OAUTH
+
+  - id: netlify
+    name: Netlify
+    openconnector_service: netlify
+    homepage_url: https://www.netlify.com
+    description: Developer Tools
+    oauth_client_env: NETLIFY_OAUTH
+
+  - id: okta
+    name: Okta
+    openconnector_service: okta
+    homepage_url: https://www.okta.com/
+    description: Security
+    oauth_client_env: OKTA_OAUTH
+
+  - id: one-drive
+    name: OneDrive
+    openconnector_service: one_drive
+    homepage_url: https://www.microsoft.com/microsoft-365/onedrive/online-cloud-storage
+    description: Storage, Productivity
+    oauth_client_env: ONE_DRIVE_OAUTH
+
+  - id: orcid
+    name: ORCID
+    openconnector_service: orcid
+    homepage_url: https://orcid.org/
+    description: Data
+    oauth_client_env: ORCID_OAUTH
+
+  - id: oura
+    name: Oura
+    openconnector_service: oura
+    homepage_url: https://ouraring.com
+    description: Data
+    oauth_client_env: OURA_OAUTH
+
+  - id: outlook
+    name: Outlook
+    openconnector_service: outlook
+    homepage_url: https://www.microsoft.com/microsoft-365/outlook/email-and-calendar-software-microsoft-outlook
+    description: Communication, Productivity
+    oauth_client_env: OUTLOOK_OAUTH
+
+  - id: posthog
+    name: PostHog
+    openconnector_service: posthog
+    homepage_url: https://posthog.com
+    description: Data, Developer Tools
+    oauth_client_env: POSTHOG_OAUTH
+
+  - id: reddit
+    name: Reddit
+    openconnector_service: reddit
+    homepage_url: https://www.reddit.com
+    description: Social, Marketing
+    oauth_client_env: REDDIT_OAUTH
+
+  - id: sentry
+    name: Sentry
+    openconnector_service: sentry
+    homepage_url: https://sentry.io
+    description: Developer Tools, Security
+    oauth_client_env: SENTRY_OAUTH
+
+  - id: shopify
+    name: Shopify REST Admin (Legacy)
+    openconnector_service: shopify
+    homepage_url: https://www.shopify.com
+    description: Marketing, Data
+    oauth_client_env: SHOPIFY_OAUTH
+
+  - id: slackbot
+    name: Slack Bot
+    openconnector_service: slackbot
+    homepage_url: https://slack.com
+    description: Communication, Productivity
+    oauth_client_env: SLACKBOT_OAUTH
+
+  - id: spotify
+    name: Spotify
+    openconnector_service: spotify
+    homepage_url: https://spotify.com
+    description: Design, Social
+    oauth_client_env: SPOTIFY_OAUTH
+
+  - id: strava
+    name: Strava
+    openconnector_service: strava
+    homepage_url: https://www.strava.com
+    description: Social
+    oauth_client_env: STRAVA_OAUTH
+
+  - id: sunsama-mcp
+    name: Sunsama MCP
+    openconnector_service: sunsama_mcp
+    homepage_url: https://help.sunsama.com/docs/integrations/mcp/
+    description: Productivity
+    oauth_client_env: SUNSAMA_MCP_OAUTH
+
+  - id: supabase
+    name: Supabase
+    openconnector_service: supabase
+    homepage_url: https://supabase.com
+    description: Developer Tools, Data, Storage
+    oauth_client_env: SUPABASE_OAUTH
+
+  - id: survey-monkey
+    name: SurveyMonkey
+    openconnector_service: survey_monkey
+    homepage_url: https://www.surveymonkey.com
+    description: Productivity, Data
+    oauth_client_env: SURVEY_MONKEY_OAUTH
+
+  - id: tencent-docs
+    name: Tencent Docs
+    openconnector_service: tencent_docs
+    homepage_url: https://docs.qq.com
+    description: Productivity, Storage
+    oauth_client_env: TENCENT_DOCS_OAUTH
+
+  - id: ticktick
+    name: TickTick
+    openconnector_service: ticktick
+    homepage_url: https://ticktick.com
+    description: Productivity
+    oauth_client_env: TICKTICK_OAUTH
+
+  - id: tiktok-business
+    name: TikTok Business
+    openconnector_service: tiktok_business
+    homepage_url: https://business.tiktok.com
+    description: Marketing, Data
+    oauth_client_env: TIKTOK_BUSINESS_OAUTH
+
+  - id: tiktok-business-mcp
+    name: TikTok for Business MCP
+    openconnector_service: tiktok_business_mcp
+    homepage_url: https://business.tiktok.com
+    description: Marketing, Advertising
+    oauth_client_env: TIKTOK_BUSINESS_MCP_OAUTH
+
+  - id: todoist
+    name: Todoist
+    openconnector_service: todoist
+    homepage_url: https://todoist.com
+    description: Productivity
+    oauth_client_env: TODOIST_OAUTH
+
+  - id: twitter
+    name: X (Twitter)
+    openconnector_service: twitter
+    homepage_url: https://x.com
+    description: Social, Marketing
+    oauth_client_env: TWITTER_OAUTH
+
+  - id: typeform
+    name: Typeform
+    openconnector_service: typeform
+    homepage_url: https://www.typeform.com
+    description: Productivity, Data
+    oauth_client_env: TYPEFORM_OAUTH
+
+  - id: vimeo
+    name: Vimeo
+    openconnector_service: vimeo
+    homepage_url: https://vimeo.com
+    description: "Design & Media, Social"
+    oauth_client_env: VIMEO_OAUTH
+
+  - id: webex
+    name: Webex
+    openconnector_service: webex
+    homepage_url: https://www.webex.com
+    description: Communication, Productivity
+    oauth_client_env: WEBEX_OAUTH
+
+  - id: webflow
+    name: Webflow
+    openconnector_service: webflow
+    homepage_url: https://webflow.com
+    description: "Design & Media, Marketing"
+    oauth_client_env: WEBFLOW_OAUTH
+
+  - id: wordpress
+    name: WordPress
+    openconnector_service: wordpress
+    homepage_url: https://wordpress.org
+    description: Productivity, Marketing
+    oauth_client_env: WORDPRESS_OAUTH
+
+  - id: workday
+    name: Workday
+    openconnector_service: workday
+    homepage_url: https://www.workday.com
+    description: Productivity, Data
+    oauth_client_env: WORKDAY_OAUTH
+
+  - id: xero
+    name: Xero
+    openconnector_service: xero
+    homepage_url: https://www.xero.com
+    description: Finance, Data
+    oauth_client_env: XERO_OAUTH
+
+  - id: youtube
+    name: YouTube
+    openconnector_service: youtube
+    homepage_url: https://www.youtube.com/
+    description: "Design & Media, Social"
+    oauth_client_env: YOUTUBE_OAUTH
+
+  - id: zendesk
+    name: Zendesk
+    openconnector_service: zendesk
+    homepage_url: https://www.zendesk.com
+    description: Communication, Productivity
+    oauth_client_env: ZENDESK_OAUTH
+
+  - id: zeplin
+    name: Zeplin
+    openconnector_service: zeplin
+    homepage_url: https://zeplin.io
+    description: "Design & Media, Productivity"
+    oauth_client_env: ZEPLIN_OAUTH
+
+  - id: zoom
+    name: Zoom
+    openconnector_service: zoom
+    homepage_url: https://www.zoom.com
+    description: Communication, Productivity
+    oauth_client_env: ZOOM_OAUTH
+
+  # Microsoft Teams: NOT yet confirmed against the OpenConnector catalog
+  # (see poc-findings.md). Left commented out rather than guessed — a
+  # wrong openconnector_service value would fail fast at connect time
+  # with a confusing error, not at gateway startup like other mistakes
+  # this loader catches. Uncomment once verified.
+  # - id: microsoft-teams
+  #   name: Microsoft Teams
+  #   icon: microsoft-teams
+  #   openconnector_service: <confirm this>
+  #   description: Channels and messages
+  #   oauth_client_env: MICROSOFT_OAUTH

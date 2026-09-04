@@ -22,7 +22,7 @@ name: Upstream pin
 
 on:
   push:
-    branches: [main, master, aglack]
+    branches: [main, master, aglack, 'integration/**']
   pull_request:
 
 permissions:

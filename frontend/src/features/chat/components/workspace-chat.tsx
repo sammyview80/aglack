@@ -141,6 +141,23 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
     bumpSessionStore()
   }
 
+  // A user's OWN send must always land at the bottom, unlike an incoming
+  // stream update — `useChatTranscriptScroll`'s turnCount-driven autoscroll
+  // (see its own effect) only scrolls when the viewport is ALREADY near the
+  // bottom, deliberately, so it doesn't yank the view while someone reads
+  // older history during a live response. But the user just typed and hit
+  // send, so scrolled-up-reading-history no longer applies — force it here
+  // instead of waiting on that near-bottom gate.
+  function sendAndScroll(text: string, files?: File[]) {
+    chat.send(text, files)
+    // The new user turn hasn't committed to the DOM yet (state update is
+    // async) — scrolling now would just land at the CURRENT bottom, one
+    // message short. `requestAnimationFrame` waits for the commit + paint
+    // that follows this render, so `scrollHeight` already includes the
+    // just-sent message by the time this fires.
+    requestAnimationFrame(() => transcriptScroll.scrollToBottom('smooth'))
+  }
+
   const transcriptKey = `${agent ?? ''}:${selectedSessionId ?? 'new'}`
 
   return (
@@ -148,6 +165,8 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
       workspaceId={workspaceId}
       workspaceName={workspaceName}
       title="Thread"
+      hideDock
+      mobileDock
       onSelectSession={selectSession}
       selectedAgent={agent}
       onSelectAgent={selectAgent}
@@ -224,7 +243,11 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
             ) : agent ? (
               <>
                 <div className={chatUi.transcript} ref={transcriptScroll.ref}>
-                  <AnimatedPanel swapKey={transcriptKey} className={chatUi.transcriptInner}>
+                  <AnimatedPanel
+                    ref={transcriptScroll.contentRef}
+                    swapKey={transcriptKey}
+                    className={chatUi.transcriptInner}
+                  >
                     {chat.isLoadingTranscript ? (
                       <ChatTranscriptSkeleton />
                     ) : (
@@ -241,7 +264,7 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
                           streamingText={chat.assistantText}
                           reasoningText={chat.reasoningText}
                           tools={chat.tools}
-                          onSuggest={chat.send}
+                          onSuggest={sendAndScroll}
                           workspaceId={workspaceId}
                           sessionId={chat.sessionId}
                         />
@@ -271,7 +294,11 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
                   </AnimatedPanel>
                 </div>
                 {pendingInput ? (
-                  <AnimatedPanel swapKey={pendingInput.kind} animation={motionPresets.panelEnter}>
+                  <AnimatedPanel
+                    swapKey={pendingInput.kind}
+                    animation={motionPresets.panelEnter}
+                    className={chatUi.promptDock}
+                  >
                     <PendingInputPanel
                       pendingInput={pendingInput}
                       focusRef={pendingInputFocus.ref}
@@ -299,8 +326,24 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
               sessionId={chat.sessionId}
               disabled={chat.isSending || chat.isUploadingAttachments || !agent}
               isStreaming={chat.isStreaming}
-              onSend={chat.send}
+              onSend={sendAndScroll}
               onStop={chat.stop}
+              // Same action as the header's own "New chat" button
+              // (see `newChat` above) — `/new`/`/reset` typed in the
+              // composer now does exactly what that button does, not a
+              // second, divergent reset path.
+              onNewChat={newChat}
+              // A slash command's echo + result now renders as a REAL
+              // chat message pair, matching upstream Hermes WebUI's own
+              // command interception exactly (see `pushLocalCommandResult`'s
+              // own doc comment) — not a floating banner.
+              onCommandResult={chat.pushLocalCommandResult}
+              // `/compress` rewrites the session's message history
+              // server-side (upstream's own `_applyManualCompressionResult`
+              // re-reads `data.session.messages` directly) — reloadMessages
+              // is this app's equivalent re-fetch, so the compacted
+              // transcript actually shows once the job completes.
+              onCompressionApplied={chat.reloadMessages}
             />
           ) : null}
         </article>

@@ -32,6 +32,18 @@ describe('ModelPicker empty state', () => {
     expect(screen.getByText(/no models picked yet/i)).toBeInTheDocument()
   })
 
+  it('closes its menu when the user taps outside it', async () => {
+    const user = userEvent.setup()
+    mockedModelsApi.fetchSessionModel.mockResolvedValue({ model: null })
+    renderWithClient(<ModelPicker workspaceId="ws-1" agent="agent-a" sessionId="sess-1" />)
+
+    await user.click(screen.getByRole('button', { name: /add model/i }))
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    await user.click(document.body)
+
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
   it('renders nothing when there is no active agent', () => {
     const { container } = renderWithClient(
       <ModelPicker workspaceId="ws-1" agent={null} sessionId={null} />,

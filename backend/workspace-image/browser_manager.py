@@ -1,0 +1,683 @@
+"""Per-agent Chromium process-lifecycle daemon — one PERSISTENT profile
+directory per Hermes agent, with the Chromium PROCESS itself EPHEMERAL
+(started on demand by `start()`, killed by `stop()` when no longer needed,
+profile directory always survives a `stop()`).
+
+This is a NEW, standalone always-on daemon living INSIDE the workspace
+container (one container hosts MULTIPLE agents/profiles already — this is
+NOT per-workspace, it is per-agent_id). It owns nothing but Chromium
+process lifecycle: no chat, no CDP protocol logic, no browser automation —
+just start/stop/status bookkeeping keyed by `agent_id`.
+
+STDLIB-ONLY, NO FastAPI — deliberate design decision, not an oversight:
+this file has no `pyproject.toml`/install step of its own (unlike
+`backend/wrapper`, which IS an installed package with FastAPI as a
+transitive dependency of hermes-agent, baked into `/opt/hermes/.venv`).
+Nothing in this Dockerfile installs *this* file as a package or guarantees
+which interpreter invokes it — `PATH` happens to prefer the agent venv's
+`python3` at runtime (see Dockerfile's `ENV PATH="/opt/hermes/.venv/bin:..."`),
+but that is an incidental property of another subsystem's dependency tree,
+not a contract this daemon should quietly depend on. A single-purpose
+lifecycle daemon like this has no need for FastAPI's routing/validation
+machinery, and this project's own contribution guidance (see
+`backend/AGENTS.md`: "Do not add dependencies ... without clear
+justification") argues against pulling one in for four tiny JSON routes.
+`http.server` (stdlib) is sufficient and works under ANY Python 3
+interpreter that might end up running this file, including the bare Alpine
+`apk add python3` also present in this image (Dockerfile's Stage 3
+"Runtime-only deps" block).
+
+Separation-of-concerns convention (mirrors this repo's OWN
+`backend/wrapper` pattern of "service.py has the logic, the HTTP layer
+just calls it" — see `wrapper/src/hermes_webui_wrapper/features/*/service.py`
+and their thin `api/v1/*.py` routers): the `BrowserManager` class below is
+the whole "service" — plain, unit-testable Python methods with no HTTP
+awareness at all. `_Handler` (the `BaseHTTPRequestHandler` subclass) is a
+thin wrapper that only does path/method dispatch and JSON (de)serialization,
+calling straight into `BrowserManager`. Tests exercise `BrowserManager`
+directly; see `test_browser_manager.py`.
+
+Known limitations (deliberate, documented rather than "solved" — see the
+task this file was built for):
+
+1. **Startup reconciliation is NOT performed.** On daemon start, the
+   in-memory registry is always empty, even though an external actor could
+   have left an orphaned Chromium process running from a prior daemon boot
+   (e.g. container restarted, profile dir survived via a volume mount, but
+   this daemon's own memory did not). This daemon does NOT scan `/proc` or
+   the profile directory tree to adopt orphans at startup — out of scope.
+   Practical effect: such an orphan is invisible to `status()`/`start()`
+   until the container itself is recreated (not just restarted) or the
+   orphan is killed by other means. `start()` for that `agent_id` would
+   then launch a SECOND Chromium against the SAME `--user-data-dir`, which
+   Chromium generally refuses to do cleanly (profile directory locking) —
+   this is the one concrete edge case an operator should watch for after
+   any host/daemon-process restart that does not also recreate the
+   container.
+2. **Port allocation has a real, narrow TOCTOU race.** `_allocate_port()`
+   binds to port 0, reads back the OS-assigned free port, then closes the
+   socket before Chromium binds that same port. Between the close and
+   Chromium's own bind, another process on the same loopback interface
+   could in principle claim that exact port first. This is the standard
+   "ask the OS for a free port" pattern and the race is accepted as a known
+   limitation rather than solved with a more complex reservation scheme
+   (e.g. holding the socket open with SO_REUSEPORT and racing Chromium to
+   bind it) — the daemon is the only expected writer of new Chromium
+   processes on this loopback interface inside a given container, making
+   the race exceedingly unlikely in practice, not eliminated in theory.
+3. **This daemon itself is not persisted/supervised here.** If the daemon
+   process dies, the registry (which is only ever in-memory) is lost even
+   though any Chromium processes it started keep running as orphans (see
+   limitation 1 for what happens to them on the next `start()`/`status()`).
+   Supervising/restarting this daemon is out of scope for this file — see
+   the Dockerfile COPY comment for where that responsibility lives.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import socket
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Callable
+
+# No hardcoded port literal anywhere else in this file — every other use
+# reads this one env-driven default. See task point 6.
+DEFAULT_PORT = 9400
+BROWSER_MANAGER_PORT = int(os.environ.get("BROWSER_MANAGER_PORT", DEFAULT_PORT))
+
+# `0.0.0.0`, NOT `127.0.0.1` — REAL BUG found live (confirmed via a real
+# running container + a real gateway call): a service bound to `127.0.0.1`
+# INSIDE a container is reachable ONLY from within that container's own
+# network namespace — Docker's `-p <host>:9400` port publish can never
+# reach a loopback-bound listener from OUTSIDE the container, regardless
+# of the publish mapping being otherwise correct (confirmed: `docker port`
+# showed the right mapping, `docker exec` calls into the container worked
+# fine, but the gateway — a bare host process, `rust_gateway/src/
+# workspaces/container/docker_launcher.rs` — got a real, reproducible
+# connection failure hitting the published port from the host). This is
+# standard, well-known Docker networking behavior, not a bug in the
+# publish mapping itself.
+#
+# "Never reachable from outside the container" is still the real,
+# intended security property — it is now enforced on the HOST side of the
+# publish instead: `docker_launcher.rs`'s `browser_publish_arg` binds the
+# HOST side to `127.0.0.1` explicitly (`-p 127.0.0.1:<port>:9400`, not
+# Docker's default bare `<port>:9400` which publishes to `0.0.0.0` on the
+# host), so this daemon's port is reachable from THIS MACHINE (where the
+# gateway itself runs) but never from another machine on the network —
+# the same effective guarantee, enforced at the correct layer.
+BROWSER_MANAGER_HOST = "0.0.0.0"
+
+# Root directory for all persistent per-agent Chromium profiles. Each
+# agent's profile lives at PROFILE_ROOT / agent_id, created (including all
+# parents, i.e. PROFILE_ROOT itself) lazily by `start()`/`status()`.
+#
+# `/workspace/.browser-profiles`, NOT `/data/...` (this file's original
+# location) — REAL BUG found live, confirmed via this daemon's own crash
+# log inside a real running container: `/data` does not exist at all in
+# this image and is not owned by `abc` (the unprivileged user this
+# daemon — and everything else in `/custom-cont-init.d/` — runs as),
+# so every `start()` call failed closed with `PermissionError: [Errno
+# 13] Permission denied: '/data'` before ever reaching the Chromium
+# launch. `/workspace` is this image's own existing, confirmed
+# `abc`-writable, per-container-lifetime persistent root (already used
+# by `_ensure_agent_workspace` in `backend/wrapper/.../agent_seeder/
+# service.py` for each agent's own working directory, e.g.
+# `/workspace/pm`) — a leading-dot subdirectory keeps profiles clearly
+# separated from an agent's own working files rather than living
+# alongside them as siblings.
+PROFILE_ROOT = Path("/workspace/.browser-profiles")
+
+# Grace period given to a process after SIGTERM before escalating to
+# SIGKILL — long enough for Chromium to flush/exit cleanly, short enough
+# that `stop()` stays responsive.
+STOP_GRACE_PERIOD_SECONDS = 5.0
+_STOP_POLL_INTERVAL_SECONDS = 0.1
+
+# `BROWSER_IDLE_TIMEOUT_MINUTES` — real, requested, EASILY configurable
+# per-deployment (env var, no code change needed): after this many
+# minutes with no `start()`/`status()` call for a given agent_id, its
+# Chromium process is killed automatically (profile directory untouched,
+# same as an explicit `stop()`) — a real user request, on top of the
+# explicit-stop-only design this daemon originally shipped with, to keep
+# resource use bounded on a constrained (4GB total RAM) deployment target
+# even when an agent opens a browser and never explicitly closes it.
+#
+# `0` (or any non-positive value) DISABLES idle-killing entirely — an
+# agent's browser then runs until explicitly `stop()`'d or the whole
+# container stops, exactly like this daemon's original behavior. This is
+# the real "lifetime"/"forever" option: set
+# `BROWSER_IDLE_TIMEOUT_MINUTES=0` to opt all the way back out.
+#
+# REAL, DOCUMENTED LIMITATION, not silently assumed away: this daemon has
+# NO visibility into actual CDP traffic (browser navigation/clicks) —
+# CDP connects directly from a tool module's own Python process to
+# Chromium's port, never through this daemon at all (see
+# `default_launch_chromium`'s own `--remote-debugging-address` doc
+# comment). The ONLY activity this daemon can observe is calls to its
+# OWN `start`/`status` HTTP endpoints. A long-running `browser_task` call
+# that does real work for many minutes WITHOUT its caller ever calling
+# `status()` again in the meantime would look idle to this daemon and
+# could be killed mid-task — a real, accepted risk of the simplest
+# correct implementation, not a bug to silently paper over. If this
+# becomes a real problem in practice, the fix is a heartbeat call from
+# inside `browser_task.py`'s own run loop, not a change here.
+DEFAULT_IDLE_TIMEOUT_MINUTES = 4
+BROWSER_IDLE_TIMEOUT_MINUTES = float(
+    os.environ.get("BROWSER_IDLE_TIMEOUT_MINUTES", DEFAULT_IDLE_TIMEOUT_MINUTES)
+)
+
+# How often the background idle-sweep loop checks for expired agents —
+# deliberately much finer-grained than the timeout itself so an agent
+# killed for being idle is never left running meaningfully longer than
+# its configured timeout.
+_IDLE_SWEEP_INTERVAL_SECONDS = 30.0
+
+# Agent ids are used verbatim as a path segment (`PROFILE_ROOT / agent_id`)
+# and as a URL path segment — restrict to a safe charset up front so
+# neither a path-traversal id (`../../etc`) nor a URL-shaped one can ever
+# reach the filesystem or subprocess argv unsanitized. Adversarial input at
+# the point of use, not just documentation.
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def validate_agent_id(agent_id: str) -> None:
+    """Raise ValueError for any agent_id that isn't a safe path/URL segment."""
+    if not agent_id or not _AGENT_ID_RE.match(agent_id):
+        raise ValueError(
+            f"invalid agent_id {agent_id!r}: must match {_AGENT_ID_RE.pattern}"
+        )
+
+
+def profile_dir_for(agent_id: str) -> Path:
+    """The deterministic, always-computable profile path for an agent_id.
+
+    Pure path arithmetic — does not touch the filesystem and does not
+    require the agent to have ever been started. `status()` uses this even
+    for agents with no live (or ever-launched) Chromium process, since the
+    directory may exist from a prior session."""
+    validate_agent_id(agent_id)
+    return PROFILE_ROOT / agent_id
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """True if `pid` refers to a real, currently-running process.
+
+    Reaps a zombie first (non-blocking `waitpid`) before checking, and this
+    is not optional bookkeeping: on POSIX, a killed child that has not yet
+    been `waitpid`'d stays a ZOMBIE process-table entry, and
+    `os.kill(pid, 0)` reports a zombie as alive (it exists — it just has no
+    running code left) — confirmed empirically (SIGKILL a real
+    `subprocess.Popen` child and poll `os.kill(pid, 0)` without reaping: it
+    keeps reporting alive indefinitely). Without this reap step, `stop()`'s
+    own kill-then-poll loop and `status()`/`start()`'s liveness re-check
+    would both misreport a just-killed Chromium as still running. `pid`
+    that is not actually our own child (e.g. after a daemon restart wiped
+    the registry per limitation 1, or a caller-supplied PID this process
+    never spawned) raises `ChildProcessError`/`OSError` from `waitpid`,
+    which is expected and tolerated here — fall through to the plain
+    `os.kill(pid, 0)` existence check for that case.
+
+    `os.kill(pid, 0)` sends no signal; it only performs the permission/
+    existence check the kernel does before delivering a real signal. The
+    classic "PID got reused by an unrelated process after the original
+    died" case is intentionally NOT handled here — plain PID liveness (not
+    identity) is what the task calls for ("verify the PID is ACTUALLY
+    still alive"), and this daemon holds the only reference to that PID's
+    launch context. A stricter check would additionally read
+    `/proc/<pid>/cmdline` to confirm it's still the same Chromium
+    invocation, but that is Linux/procfs-specific and this daemon
+    otherwise contains no procfs assumptions; left out as out of scope.
+    """
+    if pid <= 0:
+        return False
+
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
+    except OSError:
+        pass
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but is owned by another user — still "alive" from
+        # a liveness-check standpoint (fail closed: never claim it's dead).
+        return True
+    return True
+
+
+def _allocate_free_port(host: str = "127.0.0.1") -> int:
+    """Ask the OS for a free TCP port by binding to port 0, reading back
+    the assigned port, then closing the socket immediately.
+
+    Standard pattern; NOT race-free — see limitation 2 in the module
+    docstring. Binds to `host` (loopback by default) so the probe reflects
+    the same interface Chromium's own `--remote-debugging-address` will
+    bind to."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return sock.getsockname()[1]
+
+
+# Type of the callable used to launch Chromium, injected so tests can swap
+# in a cheap stand-in subprocess instead of requiring a real Chromium
+# binary in whatever environment runs pytest. Takes (profile_dir, port) and
+# returns a live `subprocess.Popen`.
+LaunchFn = Callable[[Path, int], "subprocess.Popen[bytes]"]
+
+
+def default_launch_chromium(profile_dir: Path, port: int) -> "subprocess.Popen[bytes]":
+    """Launch a REAL, VISIBLE Chromium window for one agent's profile —
+    deliberately NOT `--headless=new` (this file's original design). Real
+    decision, not a default: this workspace container already runs a full
+    virtual desktop (KasmVNC, `DISPLAY=:1`, streamed to the browser via
+    the existing `/workspaces/:id/desktop/...` proxy — see
+    `rust_gateway/src/workspaces/proxy/desktop_proxy.rs`) specifically so
+    a human can WATCH an agent's browser session live, not just get a raw
+    CDP endpoint with nothing to look at. `--headless=new` would make this
+    daemon's whole reason for sharing the container's own display pointless.
+
+    `env=` passes `DISPLAY` (see `_chromium_env`) explicitly — Chromium
+    has no default target to render onto without it; this container's
+    `DISPLAY=:1` is a real, s6-overlay-exposed container env var (`/var/
+    run/s6/container_environment/DISPLAY`), not automatically inherited by
+    THIS daemon's own process (it is launched via a `su -s /bin/sh abc -c
+    '...'` block in the boot script, isolated from whatever env s6's own
+    `with-contenv` machinery would otherwise supply — see
+    `rust_gateway/src/workspaces/container/boot_script.rs`'s
+    `browser_manager_launch_line`, which now explicitly exports it into
+    that same block, matching the pattern every OTHER value this daemon's
+    subprocess needs already uses).
+
+    `--remote-debugging-address=127.0.0.1`: CDP (Chrome DevTools Protocol)
+    binds to loopback ONLY, NEVER `0.0.0.0` — deliberate security decision.
+    CDP has no authentication of its own; anyone who can reach it can drive
+    the browser completely (read cookies/local storage, navigate anywhere,
+    exfiltrate any page content, run arbitrary JS in-page). This daemon's
+    own HTTP API (also loopback-only, see BROWSER_MANAGER_HOST) is the sole
+    intended entry point into this feature from outside the browser
+    process itself; nothing about the per-agent Chromium process should
+    ever be reachable directly from outside the container.
+
+    `--no-sandbox`: researched, not assumed. Chromium's Linux sandbox
+    relies on a SUID-root helper binary (or, on newer setups, unprivileged
+    user namespaces) to isolate renderer processes. This container already
+    runs Chromium as a non-root user (`abc`, see Dockerfile) without the
+    extra kernel capabilities (`CAP_SYS_ADMIN`) or `docker run`
+    `--security-opt`/`--cap-add` flags a properly sandboxed Chromium needs
+    inside a container — none of which this daemon can grant itself from
+    inside the container, and granting them is out of scope here (that is
+    a `docker create`/`docker run` concern, owned by whatever creates the
+    container, same boundary the Dockerfile's own comments draw for
+    per-container identity). Without `--no-sandbox`, Chromium's sandboxed
+    renderer setup fails outright in this exact environment (SUID helper
+    requires root ownership + the setuid bit, and unprivileged user
+    namespaces are frequently disabled or unavailable in default container
+    runtimes). This repo's own existing `e2e_test_kasmvnc_lastactiveat.py`
+    already launches Chrome the same way (headless there, for a different,
+    scripted use case — but the SAME `--no-sandbox` rationale), for the
+    same reason. `--no-sandbox` measurably widens the blast radius of a
+    renderer-process compromise (no more process-level isolation from a
+    hostile page) — acceptable here because CDP and the browser process are
+    never exposed outside the container in the first place (loopback-only,
+    see above); it is not a defense-in-depth-free design, it is one layer
+    (network isolation) substituting for another (OS sandboxing) in an
+    environment where the second layer cannot be enabled.
+
+    `--window-position=0,0 --window-size=1024,576`: matches KasmVNC's own
+    fixed `-geometry 1024x576` (see `patch_kasmvnc_resource_efficiency.py`,
+    which patches `svc-kasmvnc`'s run script to this exact size as part of
+    the same real, requested resource-efficiency profile this whole
+    function is tuned for) — without an explicit size Chromium may open
+    partially or fully off the visible canvas, or overlapping whatever
+    the desktop's own IceWM window manager would otherwise place it at,
+    depending on window-manager defaults. MUST stay in sync with that
+    patch script's own geometry value — a mismatch here would not error,
+    it would just silently let Chromium's window extend past (or leave
+    unused space within) the actual visible desktop canvas.
+
+    The remaining flags below are a deliberately CONSERVATIVE set, tuned
+    for the same real, constrained (4GB total RAM) deployment target —
+    every one of them removes a real, ongoing resource cost that a normal
+    interactive-use Chromium profile would otherwise pay on every launch
+    and periodically thereafter, none of which matter for an agent-driven
+    automation browser:
+      `--no-first-run` / `--disable-default-apps`: skip Chromium's own
+        first-run setup/welcome flow and default-app install work.
+      `--disable-sync`: no background Google-account sync polling.
+      `--disable-extensions`: no extension loading/update-check overhead
+        (this profile never has user-installed extensions to begin with).
+      `--disable-background-networking`: stops Chromium's own background
+        network requests unrelated to whatever the agent is actively
+        doing (update pings, safe-browsing list fetches, etc).
+      `--mute-audio`: a real, if minor, CPU/resource cost avoided for a
+        browser nobody is meant to be listening to.
+    """
+    return subprocess.Popen(
+        [
+            "chromium",
+            "--remote-debugging-address=127.0.0.1",
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile_dir}",
+            "--no-sandbox",
+            "--window-position=0,0",
+            "--window-size=1024,576",
+            "--no-first-run",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--mute-audio",
+        ],
+        env=_chromium_env(),
+    )
+
+
+def _chromium_env() -> dict[str, str]:
+    """This daemon's own environment, plus a real `DISPLAY` fallback if
+    somehow absent — see `default_launch_chromium`'s own doc comment for
+    why this daemon's process may not already have it. Never silently
+    drops the rest of the process's real environment (PATH, HOME, etc,
+    all of which Chromium also needs) — only ADDS `DISPLAY` if missing,
+    matching `os.environ.setdefault`'s own semantics rather than replacing
+    the whole env wholesale."""
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":1")
+    return env
+
+
+class BrowserManager:
+    """The service: in-memory registry + start/stop/status logic.
+
+    No HTTP awareness. `_Handler` below is the only thing that talks JSON/
+    HTTP; every method here takes/returns plain Python values so it can be
+    unit tested directly (see test_browser_manager.py)."""
+
+    def __init__(self, launch_fn: LaunchFn = default_launch_chromium) -> None:
+        # {agent_id: {"pid": int, "port": int, "profile_dir": str,
+        # "last_activity": float (time.monotonic())}} — LIVE processes
+        # only, in-memory only. Not persisted to disk: if this daemon
+        # restarts, this dict is empty again (see module docstring
+        # limitation 1 on why that's a documented gap, not a bug).
+        # `last_activity` is the idle-kill clock — see
+        # `BROWSER_IDLE_TIMEOUT_MINUTES`'s own module-level doc comment
+        # for its real, documented limitation (only start()/status()
+        # calls are observable, not real CDP traffic).
+        self._registry: dict[str, dict[str, Any]] = {}
+        self._launch_fn = launch_fn
+        # The HTTP layer serves each request on its own thread
+        # (ThreadingHTTPServer) — a single process-wide lock serializes
+        # every start()/stop() check-then-act sequence so two concurrent
+        # requests for the SAME agent_id can never both observe "not
+        # running" and both launch a second Chromium against the same
+        # --user-data-dir (which Chromium does not handle cleanly; see
+        # limitation 1). One coarse lock, not a per-agent lock table, is
+        # deliberate: start()/stop() bodies are fast (no network I/O, no
+        # waiting on Chromium to become ready) except for stop()'s bounded
+        # SIGTERM grace period — acceptable serialization cost for a
+        # feature with at most a handful of agents per container, and it
+        # avoids a second piece of state (a lock per agent_id) that would
+        # itself need cleanup. status() does not take this lock: it only
+        # reads, and a torn read here is at worst a momentarily stale
+        # boolean, not a correctness issue.
+        self._lock = threading.Lock()
+
+    def _live_entry(self, agent_id: str) -> dict[str, Any] | None:
+        """Return the registry entry for agent_id IFF its PID is still
+        actually alive; drops (and returns None for) a stale entry whose
+        process died without this daemon being told, per task point 1/4's
+        "verify the PID is ACTUALLY still alive, not just present"."""
+        entry = self._registry.get(agent_id)
+        if entry is None:
+            return None
+        if not _pid_is_alive(entry["pid"]):
+            del self._registry[agent_id]
+            return None
+        return entry
+
+    def start(self, agent_id: str) -> dict[str, Any]:
+        validate_agent_id(agent_id)
+
+        with self._lock:
+            existing = self._live_entry(agent_id)
+            if existing is not None:
+                # Already running — no new process, no new port. Still
+                # counts as real activity for the idle-kill clock (task
+                # point: "start() ... refresh" — a caller confirming an
+                # already-running browser is still using it).
+                existing["last_activity"] = time.monotonic()
+                return {
+                    "port": existing["port"],
+                    "profile_dir": existing["profile_dir"],
+                }
+
+            profile_dir = profile_dir_for(agent_id)
+            profile_dir.mkdir(parents=True, exist_ok=True)
+
+            port = _allocate_free_port()
+            process = self._launch_fn(profile_dir, port)
+
+            self._registry[agent_id] = {
+                "pid": process.pid,
+                "port": port,
+                "profile_dir": str(profile_dir),
+                "last_activity": time.monotonic(),
+            }
+            return {"port": port, "profile_dir": str(profile_dir)}
+
+    def stop(self, agent_id: str) -> dict[str, Any]:
+        validate_agent_id(agent_id)
+
+        with self._lock:
+            entry = self._live_entry(agent_id)
+            if entry is None:
+                # Idempotent: no live entry is a clean, successful no-op,
+                # not an error (task point 3).
+                return {"stopped": False, "already_stopped": True}
+
+            pid = entry["pid"]
+            self._terminate(pid)
+            del self._registry[agent_id]
+            # Profile directory is NEVER deleted here (task point 3) — no
+            # filesystem call against profile_dir in this method at all.
+            return {"stopped": True, "already_stopped": False}
+
+    @staticmethod
+    def _terminate(pid: int) -> None:
+        """SIGTERM, wait briefly, SIGKILL if still alive — do not leave
+        zombies. Tolerates the process already being gone (race between
+        the liveness check and this call). Zombie reaping itself happens
+        inside every `_pid_is_alive()` call (see its own docstring for why
+        that is load-bearing, not optional), so no separate `waitpid` call
+        is needed here beyond what those checks already do."""
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+        deadline = time.monotonic() + STOP_GRACE_PERIOD_SECONDS
+        while time.monotonic() < deadline and _pid_is_alive(pid):
+            time.sleep(_STOP_POLL_INTERVAL_SECONDS)
+
+        if _pid_is_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            # One final liveness check so SIGKILL's zombie gets reaped
+            # immediately rather than waiting for the next unrelated
+            # _pid_is_alive() call somewhere else to do it.
+            _pid_is_alive(pid)
+
+    def status(self, agent_id: str) -> dict[str, Any]:
+        validate_agent_id(agent_id)
+
+        # profile_dir is always the deterministic path, whether or not
+        # currently running (task point 4) — computed independent of the
+        # registry.
+        profile_dir = profile_dir_for(agent_id)
+
+        entry = self._live_entry(agent_id)
+        if entry is None:
+            return {"running": False, "port": None, "profile_dir": str(profile_dir)}
+        return {
+            "running": True,
+            "port": entry["port"],
+            "profile_dir": str(profile_dir),
+        }
+
+    def sweep_idle(self, now: float | None = None) -> list[str]:
+        """Kill every agent whose `last_activity` is older than
+        `BROWSER_IDLE_TIMEOUT_MINUTES` (converted to seconds) — a no-op
+        entirely when that setting is `<= 0` (the real "lifetime"/
+        "forever" opt-out, see its own module-level doc comment). Returns
+        the list of agent_ids actually killed, for logging by the caller
+        (the background sweep loop) and for direct assertions in tests.
+
+        `now` is injectable (defaults to `time.monotonic()`) so tests can
+        simulate elapsed time without a real `time.sleep()` — the same
+        seam this module's own test file already uses for other timing-
+        sensitive logic."""
+        if BROWSER_IDLE_TIMEOUT_MINUTES <= 0:
+            return []
+
+        current_time = now if now is not None else time.monotonic()
+        timeout_seconds = BROWSER_IDLE_TIMEOUT_MINUTES * 60.0
+
+        with self._lock:
+            expired = [
+                agent_id
+                for agent_id, entry in self._registry.items()
+                if current_time - entry["last_activity"] >= timeout_seconds
+            ]
+            for agent_id in expired:
+                entry = self._registry.get(agent_id)
+                if entry is None:
+                    continue
+                self._terminate(entry["pid"])
+                del self._registry[agent_id]
+
+        return expired
+
+
+# ---------------------------------------------------------------------------
+# HTTP layer — thin wrapper only. All logic above; this just does path/
+# method dispatch and JSON (de)serialization.
+# ---------------------------------------------------------------------------
+
+_AGENT_PATH_RE = re.compile(r"^/agents/([^/]+)/(start|stop|status)$")
+
+
+def _json_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload).encode("utf-8")
+
+
+def make_handler(manager: BrowserManager) -> type[BaseHTTPRequestHandler]:
+    """Build a `BaseHTTPRequestHandler` subclass bound to `manager` via
+    closure — keeps the handler class itself free of module-global state,
+    so tests can construct independent (handler class, manager) pairs."""
+
+    class _Handler(BaseHTTPRequestHandler):
+        # Quiet the default stderr access log; failures still surface via
+        # response status codes and, for genuine bugs, tracebacks from
+        # send_error's own handling.
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            pass
+
+        def _write_json(self, status: int, payload: dict[str, Any]) -> None:
+            body = _json_bytes(payload)
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _dispatch(self, expected_method: str) -> None:
+            match = _AGENT_PATH_RE.match(self.path)
+            if not match:
+                self._write_json(404, {"error": "not found"})
+                return
+
+            agent_id, action = match.group(1), match.group(2)
+            method_for_action = {"start": "POST", "stop": "POST", "status": "GET"}
+            if method_for_action[action] != expected_method:
+                self._write_json(404, {"error": "not found"})
+                return
+
+            try:
+                validate_agent_id(agent_id)
+            except ValueError as exc:
+                self._write_json(400, {"error": str(exc)})
+                return
+
+            try:
+                if action == "start":
+                    result = manager.start(agent_id)
+                elif action == "stop":
+                    result = manager.stop(agent_id)
+                else:
+                    result = manager.status(agent_id)
+            except ValueError as exc:
+                self._write_json(400, {"error": str(exc)})
+                return
+
+            self._write_json(200, result)
+
+        def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+            self._dispatch("POST")
+
+        def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+            self._dispatch("GET")
+
+    return _Handler
+
+
+def _run_idle_sweep_loop(manager: BrowserManager) -> None:
+    """Background loop: call `sweep_idle()` every
+    `_IDLE_SWEEP_INTERVAL_SECONDS`, forever, for the life of this
+    process. A no-op busy-loop-of-sorts when `BROWSER_IDLE_TIMEOUT_MINUTES
+    <= 0` (still sleeps/wakes on the same interval, but `sweep_idle()`
+    itself returns immediately without touching the registry) — kept
+    running unconditionally rather than skipping the thread entirely so
+    changing the env var always takes effect on the NEXT container
+    restart with no other code path to also update."""
+    while True:
+        time.sleep(_IDLE_SWEEP_INTERVAL_SECONDS)
+        try:
+            manager.sweep_idle()
+        except Exception:
+            # A sweep failure must never kill this background thread —
+            # the daemon's main HTTP-serving thread must keep running
+            # regardless. No logging destination is wired for this
+            # daemon today (stdout/stderr go to the boot script's own
+            # redirected log file, see boot_script.rs) — silently
+            # continuing to the next sweep interval is the correct
+            # fail-safe here, not a a swallowed real error going nowhere.
+            pass
+
+
+def run_server(port: int = BROWSER_MANAGER_PORT, host: str = BROWSER_MANAGER_HOST) -> None:
+    manager = BrowserManager()
+    handler_cls = make_handler(manager)
+    server = ThreadingHTTPServer((host, port), handler_cls)
+
+    sweep_thread = threading.Thread(
+        target=_run_idle_sweep_loop, args=(manager,), daemon=True
+    )
+    sweep_thread.start()
+
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    run_server()

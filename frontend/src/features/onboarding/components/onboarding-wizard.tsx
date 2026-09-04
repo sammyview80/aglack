@@ -77,7 +77,7 @@ export function OnboardingWizard({
 
   if (status.completed) {
     return (
-      <Shell>
+      <Shell workspaceId={workspaceId}>
         <CompleteCard status={status} onDone={onFinished} onBack={onBack} />
       </Shell>
     )
@@ -93,7 +93,7 @@ export function OnboardingWizard({
   })
 
   return (
-    <Shell>
+    <Shell workspaceId={workspaceId}>
       <form
         className="flex w-full flex-col gap-5"
         onSubmit={(e) => {
@@ -274,8 +274,8 @@ export function OnboardingWizard({
 
 const SELF_HOSTED = new Set(['ollama', 'lmstudio'])
 
-function Shell({ children }: { children: ReactNode }) {
-  return <SlackOnboardingLayout>{children}</SlackOnboardingLayout>
+function Shell({ children, workspaceId }: { children: ReactNode; workspaceId: string }) {
+  return <SlackOnboardingLayout workspaceId={workspaceId}>{children}</SlackOnboardingLayout>
 }
 
 function CompleteCard({
