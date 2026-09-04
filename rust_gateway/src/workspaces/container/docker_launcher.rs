@@ -5,7 +5,7 @@ use tokio::process::Command;
 use super::boot_script::deliver_boot_script;
 use super::desktop::desktop_subfolder_env_arg;
 use super::docker_cli::{docker_daemon_reachable, pick_free_port, run_docker};
-use super::health::{wait_for_desktop_ready, wait_for_wrapper_ready};
+use super::health::{wait_for_desktop_ready_at, wait_for_wrapper_ready_at};
 use super::inspect::inspect_container_state;
 use super::{ContainerLauncher, ContainerState, LaunchedContainer};
 
@@ -248,21 +248,37 @@ impl ContainerLauncher for DockerCliLauncher {
         )
         .await?;
 
-        deliver_boot_script(
-            &container_name,
-            &self.allowed_origins,
-            &self.workspace_default_path,
-            &self.frontend_origin,
-            workspace_id,
-            &self.gateway_internal_url,
-            &self.browser_idle_timeout_minutes,
-        )
-        .await?;
+        let launch_result = async {
+            deliver_boot_script(
+                &container_name,
+                &self.allowed_origins,
+                &self.workspace_default_path,
+                &self.frontend_origin,
+                workspace_id,
+                &self.gateway_internal_url,
+                &self.browser_idle_timeout_minutes,
+            )
+            .await?;
 
-        run_docker(&container_name, &["start", &container_name]).await?;
+            run_docker(&container_name, &["start", &container_name]).await?;
 
-        wait_for_wrapper_ready(wrapper_port, Duration::from_secs(30)).await?;
-        wait_for_desktop_ready(workspace_id, desktop_port, Duration::from_secs(15)).await?;
+            let health_host = reqwest::Url::parse(&self.gateway_internal_url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "127.0.0.1".to_string());
+            wait_for_wrapper_ready_at(&health_host, wrapper_port, Duration::from_secs(30)).await?;
+            wait_for_desktop_ready_at(&health_host, workspace_id, desktop_port, Duration::from_secs(15)).await?;
+            Ok::<_, super::super::CreateWorkspaceError>(())
+        }
+        .await;
+
+        if let Err(err) = launch_result {
+            // A health/readiness failure happens after `docker create`; remove
+            // the failed attempt before the retry reuses this deterministic
+            // workspace name.
+            let _ = self.remove(&container_name).await;
+            return Err(err);
+        }
 
         // Deliberately NO readiness wait for `browser_port`, unlike the
         // wrapper/desktop waits directly above — two reasons, together:

@@ -18,7 +18,15 @@ pub(crate) async fn wait_for_wrapper_ready(
     wrapper_port: u16,
     timeout: Duration,
 ) -> Result<(), super::super::CreateWorkspaceError> {
-    let health_url = format!("http://127.0.0.1:{wrapper_port}/api/wrapper/v1/health");
+    wait_for_wrapper_ready_at("127.0.0.1", wrapper_port, timeout).await
+}
+
+pub(crate) async fn wait_for_wrapper_ready_at(
+    host: &str,
+    wrapper_port: u16,
+    timeout: Duration,
+) -> Result<(), super::super::CreateWorkspaceError> {
+    let health_url = format!("http://{host}:{wrapper_port}/api/wrapper/v1/health");
     // `json_client()`, not a bare `reqwest::Client::new()`: without a
     // per-request timeout, one hung `send()` (the wrapper accepting the
     // TCP connection but never answering) can itself outlast this
@@ -58,8 +66,17 @@ pub(crate) async fn wait_for_desktop_ready(
     desktop_port: u16,
     timeout: Duration,
 ) -> Result<(), super::super::CreateWorkspaceError> {
+    wait_for_desktop_ready_at("127.0.0.1", workspace_id, desktop_port, timeout).await
+}
+
+pub(crate) async fn wait_for_desktop_ready_at(
+    host: &str,
+    workspace_id: &str,
+    desktop_port: u16,
+    timeout: Duration,
+) -> Result<(), super::super::CreateWorkspaceError> {
     let url = format!(
-        "http://127.0.0.1:{desktop_port}{}",
+        "http://{host}:{desktop_port}{}",
         desktop_subpath(workspace_id)
     );
     // See `wait_for_wrapper_ready`'s identical comment above.
