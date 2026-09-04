@@ -18,11 +18,7 @@ impl SessionStore {
     /// SHA-256 hex digest of the raw session token — the raw token itself
     /// is never stored, only ever held in memory long enough to set the
     /// cookie (see `route.rs`'s `login_route`).
-    pub async fn create(
-        &self,
-        token_hash: &str,
-        expires_at: &str,
-    ) -> Result<(), sqlx::Error> {
+    pub async fn create(&self, token_hash: &str, expires_at: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO gateway_sessions (token_hash, created_at, expires_at) VALUES (?, ?, ?)",
         )
@@ -41,12 +37,10 @@ impl SessionStore {
     /// conflating them avoids a timing/behavior difference an attacker
     /// could use to enumerate which hashes ever existed.
     pub async fn is_valid(&self, token_hash: &str) -> Result<bool, sqlx::Error> {
-        let row = sqlx::query(
-            "SELECT expires_at FROM gateway_sessions WHERE token_hash = ?",
-        )
-        .bind(token_hash)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query("SELECT expires_at FROM gateway_sessions WHERE token_hash = ?")
+            .bind(token_hash)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(match row {
             Some(row) => row.get::<String, _>("expires_at").as_str() > now().as_str(),
             None => false,
@@ -102,7 +96,10 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("connect in-memory sqlite");
-        sqlx::migrate!("./migrations").run(&pool).await.expect("run migrations");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
         pool
     }
 

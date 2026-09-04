@@ -524,7 +524,10 @@ mod tests {
     /// must not produce empty entries either.
     #[test]
     fn parse_extra_wrapper_allowed_origins_treats_empty_like_unset() {
-        assert_eq!(parse_extra_wrapper_allowed_origins(None), Vec::<String>::new());
+        assert_eq!(
+            parse_extra_wrapper_allowed_origins(None),
+            Vec::<String>::new()
+        );
         assert_eq!(
             parse_extra_wrapper_allowed_origins(Some("".to_string())),
             Vec::<String>::new()

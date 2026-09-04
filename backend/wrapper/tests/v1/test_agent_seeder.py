@@ -315,6 +315,119 @@ def test_apply_writes_mcp_servers_config_entry(
     assert str(_agent_dir(synthetic_seeder_tree, "simple", agent_name) / "tools") in entry["args"]
 
 
+def test_apply_mcp_servers_entry_carries_this_agents_own_agent_id(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """The `hermes-seeder` stdio entry is what gives an agent's tool
+    subprocess real per-agent identity: `--agent-id` must be immediately
+    followed by THIS agent's own resolved slug (never another agent's,
+    never absent), so `seeder_kit.runner` can inject it as `_agent_id` for
+    the `open_browser`/`close_browser` tool modules."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    (_agent_dir(synthetic_seeder_tree, "simple", agent_name) / "browser.enabled").write_text(
+        "", encoding="utf-8"
+    )
+
+    client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+
+    home = get_hermes_home_for_profile(agent_name)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    args = config["mcp_servers"]["hermes-seeder"]["args"]
+    assert args.count("--agent-id") == 1
+    assert args[args.index("--agent-id") + 1] == agent_name
+
+
+def test_apply_mcp_servers_entry_carries_agent_id_even_without_browser_marker(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """`agent_id` is passed unconditionally (see `_apply_mcp_tools`'s own
+    comment) — an agent WITHOUT `browser.enabled` still gets its own slug,
+    which is harmless for tool modules that never read `_agent_id`."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+
+    home = get_hermes_home_for_profile(agent_name)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    args = config["mcp_servers"]["hermes-seeder"]["args"]
+    assert args[args.index("--agent-id") + 1] == agent_name
+
+
+# --- browser: config.yaml block (opt-in per-agent capability) ---
+
+
+def test_apply_does_not_write_browser_block_without_the_marker_file(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """The default fixture's agent has no `browser.enabled` marker — the
+    `browser:` block must not appear at all, and the result must report
+    `browser_enabled: False`."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+    entry = response.json()["data"]["applied"][0]
+    assert entry["browser_enabled"] is False
+
+    home = get_hermes_home_for_profile(agent_name)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert "browser" not in config
+
+
+def test_apply_writes_browser_block_when_agent_opts_in(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """`browser.enabled` present in this agent's own seeder-tree folder ->
+    a `browser:` config.yaml block is written, keyed to THIS agent's own
+    slug — never a permanent cdp_url/port, only identity (see
+    `_apply_browser_capability`'s own doc comment)."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    (_agent_dir(synthetic_seeder_tree, "simple", agent_name) / "browser.enabled").write_text(
+        "", encoding="utf-8"
+    )
+
+    response = client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+    entry = response.json()["data"]["applied"][0]
+    assert entry["browser_enabled"] is True
+
+    home = get_hermes_home_for_profile(agent_name)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert config["browser"] == {
+        "enabled": True,
+        "profile_id": agent_name,
+        "persistent": True,
+    }
+    # Never merged into the unrelated mcp_servers entry — a separate
+    # top-level key.
+    assert "browser" not in config.get("mcp_servers", {})
+
+
+def test_apply_browser_block_is_separate_from_mcp_servers_entry(
+    client: TestClient, synthetic_seeder_tree: Path, agent_name: str
+) -> None:
+    """An agent that opts into BOTH tools (mcp_servers.hermes-seeder,
+    written unconditionally by this fixture's tool dirs) AND the browser
+    capability must end up with both top-level keys, independently."""
+    import yaml
+    from api.profiles import get_hermes_home_for_profile
+
+    (_agent_dir(synthetic_seeder_tree, "simple", agent_name) / "browser.enabled").write_text(
+        "", encoding="utf-8"
+    )
+
+    client.post("/api/wrapper/v1/agent-seeder/simple/apply")
+
+    home = get_hermes_home_for_profile(agent_name)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert "hermes-seeder" in config["mcp_servers"]
+    assert config["browser"]["profile_id"] == agent_name
+
+
 def test_apply_skips_agent_md_when_no_agent_md_file(
     client: TestClient, synthetic_seeder_tree: Path
 ) -> None:

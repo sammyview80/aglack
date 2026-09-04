@@ -3,6 +3,7 @@ import { ArrowUp, Mic, Plus, Square, X } from 'lucide-react'
 import { chatUi } from '@/features/chat/chat-ui'
 import { useSpeechInput } from '@/features/chat/components/use-speech-input'
 import { ModelPicker } from '@/features/models/components/model-picker'
+import { getCompressionStatus, startCompression } from '@/features/chat/api'
 import { execCommand, resolveBundleCommand } from '@/features/commands/api'
 import {
   CommandAutocomplete,
@@ -22,6 +23,7 @@ export function ChatComposer({
   onSend,
   onStop,
   onNewChat,
+  onCompressionApplied,
   onCommandResult,
 }: {
   workspaceId: string
@@ -48,6 +50,16 @@ export function ChatComposer({
    * omit it; `/new` then falls back to the same "not available" message
    * as `unsupported` — see `submit()`. */
   onNewChat?: () => void
+  /** Backs `/compress`/`/compact` (see `use-slash-commands.ts`'s
+   * `isLocalCompressCommand`) — re-fetches the session's messages after
+   * a manual compression completes server-side, so the compacted history
+   * upstream's own `_applyManualCompressionResult` writes actually shows
+   * up (`useChat.reloadMessages`). Optional for the same reason as
+   * `onNewChat`; without it, `/compress` still runs (the backend job
+   * genuinely completes) but the composer has no way to refresh the
+   * visible transcript afterward — see `submit()`'s own comment on that
+   * tradeoff. */
+  onCompressionApplied?: () => void
   /**
    * Pushes a slash command's echo + result as a REAL chat message pair
    * (`useChat.pushLocalCommandResult`) — matches upstream Hermes WebUI's
@@ -123,6 +135,22 @@ export function ChatComposer({
         '[ChatComposer] onCommandResult not provided — command result dropped:',
         resultText,
       )
+    }
+  }
+
+  /** Polls `getCompressionStatus` until the job leaves `running` — mirrors
+   * upstream's own `_pollManualCompressionResult` exactly: same starting
+   * delay (700ms), same +300ms backoff step, same 2000ms cap. Resolves to
+   * the terminal status; `startCompression`/`getCompressionStatus` already
+   * remap upstream's own `idle` status to `'error'` (see their doc
+   * comments in `chat/api.ts`), so this never has to special-case it. */
+  async function pollCompressionStatus(sid: string): Promise<'done' | 'error'> {
+    let delay = 700
+    while (true) {
+      const { status } = await getCompressionStatus(workspaceId, agent as string, sid)
+      if (status !== 'running') return status
+      await new Promise((resolve) => window.setTimeout(resolve, delay))
+      delay = Math.min(2000, delay + 300)
     }
   }
 
@@ -225,6 +253,49 @@ export function ChatComposer({
           `/${match.name} is not available from this chat — it only works in the Hermes CLI/terminal session.`,
           true,
         )
+      }
+      return
+    }
+
+    if (match?.kind === 'local-compress') {
+      // `/compress` (alias `/compact`): real backend job, already reachable
+      // through the existing chat proxy (see `chat/api.ts`'s own doc
+      // comments on `startCompression`/`getCompressionStatus`) — no new
+      // gateway/wrapper work needed, only client wiring. Mirrors upstream's
+      // `_runManualCompression` exactly: start the job, poll until it
+      // leaves `running`, then refresh the transcript (upstream re-reads
+      // `data.session.messages` directly; this app's equivalent is
+      // `onCompressionApplied`/`useChat.reloadMessages`, since compression
+      // rewrites the session's message history server-side — the old
+      // in-memory `turns` are stale the moment the job completes).
+      if (!sessionId) {
+        setIsResolvingCommand(false)
+        clearDraft()
+        pushResult(text, 'No active session to compress yet — send a message first.', true)
+        return
+      }
+      if (isStreaming) {
+        setIsResolvingCommand(false)
+        clearDraft()
+        pushResult(text, "Can't compress while a message is still streaming.", true)
+        return
+      }
+      setIsResolvingCommand(true)
+      clearDraft()
+      try {
+        const started = await startCompression(workspaceId, agent as string, sessionId, match.focusTopic)
+        const finalStatus = started.status === 'done' ? 'done' : await pollCompressionStatus(sessionId)
+        if (finalStatus === 'error') {
+          pushResult(text, 'Compression failed.', true)
+        } else if (onCompressionApplied) {
+          onCompressionApplied()
+        } else {
+          pushResult(text, 'Compression finished, but the transcript could not be refreshed.', true)
+        }
+      } catch (err) {
+        pushResult(text, errorMessage(err, 'Compression failed.'), true)
+      } finally {
+        setIsResolvingCommand(false)
       }
       return
     }

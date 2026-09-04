@@ -94,7 +94,10 @@ pub struct LoginRequest {
 /// non-zero — skipping it entirely once locked out avoids doing that work
 /// for an attacker who has already shown intent to brute-force).
 fn login_rate_limit_check(state: &AuthState) -> bool {
-    let mut attempts = state.login_attempts.lock().expect("login_attempts mutex poisoned");
+    let mut attempts = state
+        .login_attempts
+        .lock()
+        .expect("login_attempts mutex poisoned");
     if attempts.window_start.elapsed() > LOCKOUT_WINDOW {
         *attempts = LoginAttempts::default();
     }
@@ -102,12 +105,18 @@ fn login_rate_limit_check(state: &AuthState) -> bool {
 }
 
 fn record_login_failure(state: &AuthState) {
-    let mut attempts = state.login_attempts.lock().expect("login_attempts mutex poisoned");
+    let mut attempts = state
+        .login_attempts
+        .lock()
+        .expect("login_attempts mutex poisoned");
     attempts.failures += 1;
 }
 
 fn record_login_success(state: &AuthState) {
-    let mut attempts = state.login_attempts.lock().expect("login_attempts mutex poisoned");
+    let mut attempts = state
+        .login_attempts
+        .lock()
+        .expect("login_attempts mutex poisoned");
     *attempts = LoginAttempts::default();
 }
 
@@ -131,7 +140,11 @@ pub async fn login_route(
     if !password::verify(&request.password, &state.admin_password_hash) {
         record_login_failure(&state);
         tokio::time::sleep(LOGIN_FAILURE_DELAY).await;
-        return error(StatusCode::UNAUTHORIZED, "invalid_password", "Incorrect password.");
+        return error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_password",
+            "Incorrect password.",
+        );
     }
     record_login_success(&state);
 
@@ -155,10 +168,12 @@ pub async fn login_route(
     }
 
     let mut response = success(StatusCode::OK, serde_json::json!({ "ok": true }));
-    let cookie_header = build_session_cookie(&raw_token, state.cookie_secure, SESSION_LIFETIME_SECS);
-    response
-        .headers_mut()
-        .insert(header::SET_COOKIE, cookie_header.parse().expect("valid cookie header"));
+    let cookie_header =
+        build_session_cookie(&raw_token, state.cookie_secure, SESSION_LIFETIME_SECS);
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        cookie_header.parse().expect("valid cookie header"),
+    );
     response
 }
 
@@ -172,9 +187,10 @@ pub async fn logout_route(State(state): State<Arc<AuthState>>, headers: HeaderMa
 
     let mut response = success(StatusCode::OK, serde_json::json!({ "ok": true }));
     let cookie_header = build_expired_session_cookie(state.cookie_secure);
-    response
-        .headers_mut()
-        .insert(header::SET_COOKIE, cookie_header.parse().expect("valid cookie header"));
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        cookie_header.parse().expect("valid cookie header"),
+    );
     response
 }
 

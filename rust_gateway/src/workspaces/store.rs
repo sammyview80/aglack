@@ -66,6 +66,11 @@ pub struct WorkspaceRecord {
     /// is published on — same lifecycle as `host_port`, set together with
     /// it. See `../../migrations/0003_add_desktop_port.sql`.
     pub desktop_port: Option<i64>,
+    /// Host port this workspace's browser-manager daemon (see
+    /// `workspaces/proxy/browser_proxy.rs`) is published on — same
+    /// lifecycle as `host_port`/`desktop_port`, set together with them.
+    /// See `../../migrations/0009_add_browser_port.sql`.
+    pub browser_port: Option<i64>,
 }
 
 /// One row of `WorkspaceStore::list`'s result — deliberately a separate,
@@ -83,6 +88,7 @@ pub struct WorkspaceListItem {
     pub status: WorkspaceStatus,
     pub host_port: Option<i64>,
     pub desktop_port: Option<i64>,
+    pub browser_port: Option<i64>,
     pub created_at: String,
 }
 
@@ -102,7 +108,7 @@ impl WorkspaceStore {
         idempotency_key: &str,
     ) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT workspace_id, status, container_name, host_port, desktop_port \
+            "SELECT workspace_id, status, container_name, host_port, desktop_port, browser_port \
              FROM workspace_creations WHERE idempotency_key = ?",
         )
         .bind(idempotency_key)
@@ -124,7 +130,7 @@ impl WorkspaceStore {
         workspace_id: &str,
     ) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT workspace_id, status, container_name, host_port, desktop_port \
+            "SELECT workspace_id, status, container_name, host_port, desktop_port, browser_port \
              FROM workspace_creations WHERE workspace_id = ?",
         )
         .bind(workspace_id)
@@ -145,7 +151,7 @@ impl WorkspaceStore {
     pub async fn list_ready_with_container(&self) -> Result<Vec<WorkspaceRecord>, sqlx::Error> {
         let status = WorkspaceStatus::Ready.as_db_str();
         let rows = sqlx::query(
-            "SELECT workspace_id, status, container_name, host_port, desktop_port \
+            "SELECT workspace_id, status, container_name, host_port, desktop_port, browser_port \
              FROM workspace_creations \
              WHERE status = ? AND container_name IS NOT NULL",
         )
@@ -177,7 +183,8 @@ impl WorkspaceStore {
         offset: i64,
     ) -> Result<Vec<WorkspaceListItem>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT workspace_id, idempotency_key, status, host_port, desktop_port, created_at \
+            "SELECT workspace_id, idempotency_key, status, host_port, desktop_port, \
+                    browser_port, created_at \
              FROM workspace_creations \
              ORDER BY created_at DESC, rowid DESC \
              LIMIT ? OFFSET ?",
@@ -195,6 +202,7 @@ impl WorkspaceStore {
                 status: WorkspaceStatus::from_db_str(row.get("status")),
                 host_port: row.get::<Option<i64>, _>("host_port"),
                 desktop_port: row.get::<Option<i64>, _>("desktop_port"),
+                browser_port: row.get::<Option<i64>, _>("browser_port"),
                 created_at: row.get("created_at"),
             })
             .collect())
@@ -207,6 +215,7 @@ impl WorkspaceStore {
             container_name: row.get("container_name"),
             host_port: row.get::<Option<i64>, _>("host_port"),
             desktop_port: row.get::<Option<i64>, _>("desktop_port"),
+            browser_port: row.get::<Option<i64>, _>("browser_port"),
         }
     }
 
@@ -243,6 +252,7 @@ impl WorkspaceStore {
                 container_name: None,
                 host_port: None,
                 desktop_port: None,
+                browser_port: None,
             }),
             // SQLite raises this specific error when the PRIMARY KEY
             // (idempotency_key) already exists — exactly the race this
@@ -257,29 +267,34 @@ impl WorkspaceStore {
     }
 
     /// Record that `idempotency_key`'s container has finished launching,
-    /// including both host ports its wrapper and desktop were published
-    /// on (needed by the onboarding/hermes-webui/desktop proxy routes to
-    /// forward to this specific workspace). Always set together in one
-    /// UPDATE — a `Ready` row's `host_port` and `desktop_port` are both
-    /// `Some` or both `None`, never a mix; every reader relies on that
-    /// invariant (see e.g. `resolve.rs`) rather than re-checking it.
+    /// including all three host ports its wrapper, desktop, and
+    /// browser-manager daemon were published on (needed by the
+    /// onboarding/hermes-webui/desktop/browser proxy routes to forward to
+    /// this specific workspace). Always set together in one UPDATE — a
+    /// `Ready` row's `host_port`, `desktop_port`, and `browser_port` are
+    /// always all `Some` or all `None`, never a mix; every reader relies
+    /// on that invariant (see e.g. `resolve.rs`) rather than re-checking
+    /// it.
     pub async fn mark_ready(
         &self,
         idempotency_key: &str,
         container_name: &str,
         host_port: u16,
         desktop_port: u16,
+        browser_port: u16,
     ) -> Result<WorkspaceRecord, sqlx::Error> {
         let status = WorkspaceStatus::Ready.as_db_str();
         sqlx::query(
             "UPDATE workspace_creations \
-             SET status = ?, container_name = ?, host_port = ?, desktop_port = ? \
+             SET status = ?, container_name = ?, host_port = ?, desktop_port = ?, \
+                 browser_port = ? \
              WHERE idempotency_key = ?",
         )
         .bind(status)
         .bind(container_name)
         .bind(i64::from(host_port))
         .bind(i64::from(desktop_port))
+        .bind(i64::from(browser_port))
         .bind(idempotency_key)
         .execute(&self.pool)
         .await?;
@@ -336,17 +351,20 @@ impl WorkspaceStore {
         container_name: &str,
         host_port: u16,
         desktop_port: u16,
+        browser_port: u16,
     ) -> Result<Option<WorkspaceRecord>, sqlx::Error> {
         let status = WorkspaceStatus::Ready.as_db_str();
         sqlx::query(
             "UPDATE workspace_creations \
-             SET status = ?, container_name = ?, host_port = ?, desktop_port = ? \
+             SET status = ?, container_name = ?, host_port = ?, desktop_port = ?, \
+                 browser_port = ? \
              WHERE workspace_id = ?",
         )
         .bind(status)
         .bind(container_name)
         .bind(i64::from(host_port))
         .bind(i64::from(desktop_port))
+        .bind(i64::from(browser_port))
         .bind(workspace_id)
         .execute(&self.pool)
         .await?;
@@ -467,7 +485,7 @@ mod list_tests {
             .await
             .expect("begin_creation succeeds");
         store
-            .mark_ready("ready-ws", "container-1", 12345, 12346)
+            .mark_ready("ready-ws", "container-1", 12345, 12346, 12347)
             .await
             .expect("mark_ready succeeds");
 
@@ -476,6 +494,7 @@ mod list_tests {
         assert_eq!(result[0].status, WorkspaceStatus::Ready);
         assert_eq!(result[0].host_port, Some(12345));
         assert_eq!(result[0].desktop_port, Some(12346));
+        assert_eq!(result[0].browser_port, Some(12347));
     }
 
     #[tokio::test]
@@ -521,7 +540,7 @@ mod list_tests {
             .expect("mark_failed succeeds");
 
         let updated = store
-            .mark_ready_by_workspace_id("id-heal", "container-1", 111, 222)
+            .mark_ready_by_workspace_id("id-heal", "container-1", 111, 222, 333)
             .await
             .expect("mark_ready_by_workspace_id succeeds")
             .expect("row exists");
@@ -529,13 +548,14 @@ mod list_tests {
         assert_eq!(updated.status, WorkspaceStatus::Ready);
         assert_eq!(updated.host_port, Some(111));
         assert_eq!(updated.desktop_port, Some(222));
+        assert_eq!(updated.browser_port, Some(333));
     }
 
     #[tokio::test]
     async fn mark_ready_by_workspace_id_returns_none_for_unknown_id() {
         let store = temp_store().await;
         let result = store
-            .mark_ready_by_workspace_id("does-not-exist", "container-1", 111, 222)
+            .mark_ready_by_workspace_id("does-not-exist", "container-1", 111, 222, 333)
             .await
             .expect("does not error");
         assert!(result.is_none());
@@ -549,7 +569,7 @@ mod list_tests {
             .await
             .expect("begin_creation succeeds");
         store
-            .mark_ready("to-fail", "container-1", 111, 222)
+            .mark_ready("to-fail", "container-1", 111, 222, 333)
             .await
             .expect("mark_ready succeeds");
 
@@ -570,5 +590,36 @@ mod list_tests {
             .await
             .expect("does not error");
         assert!(result.is_none());
+    }
+
+    /// New test proving `browser_port` round-trips through `mark_ready`
+    /// and is readable back out via `find` — mirrors
+    /// `list_includes_ports_for_ready_workspaces`'s style but asserts
+    /// directly against the `WorkspaceRecord`, not the list projection.
+    #[tokio::test]
+    async fn mark_ready_round_trips_browser_port_through_find() {
+        let store = temp_store().await;
+        store
+            .begin_creation("browser-ws", "id-browser")
+            .await
+            .expect("begin_creation succeeds");
+        store
+            .mark_ready("browser-ws", "container-1", 111, 222, 9401)
+            .await
+            .expect("mark_ready succeeds");
+
+        let record = store
+            .find("browser-ws")
+            .await
+            .expect("find succeeds")
+            .expect("row exists");
+        assert_eq!(record.browser_port, Some(9401));
+
+        let by_id = store
+            .find_by_workspace_id("id-browser")
+            .await
+            .expect("find_by_workspace_id succeeds")
+            .expect("row exists");
+        assert_eq!(by_id.browser_port, Some(9401));
     }
 }

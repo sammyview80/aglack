@@ -13,9 +13,9 @@
 use axum::{extract::Request, response::Response};
 use std::sync::Arc;
 
+use crate::proxy::forward_to;
 use crate::workspaces::resolve::resolve_ready_workspace;
 use crate::workspaces::route::WorkspacesState;
-use crate::proxy::forward_to;
 
 pub(super) async fn forward_to_wrapper_namespace(
     state: Arc<WorkspacesState>,

@@ -37,6 +37,15 @@ processes/languages). Currently: `list_connections`, `execute_action`,
 `find_action`'s own doc comment below), and `search_connection` (an
 in-memory substring filter over `list_connections`'s own result — see its
 doc comment below).
+
+Deliberately NOT here: `open_browser`/`close_browser`. They were briefly
+mounted on this server and always failed closed, because this ONE shared
+HTTP server (same URL in every agent's `config.yaml`) structurally cannot
+know which agent is calling — see `features/browser/service.py`'s module
+docstring. They now live as per-agent STDIO tool modules in
+`backend/seeder/tools/open_browser.py`/`close_browser.py`, served by
+`seeder_kit.runner` launched with `--agent-id <slug>` per agent (real
+process-level identity). Do not re-add them here.
 """
 from __future__ import annotations
 
@@ -48,10 +57,8 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 
-from hermes_webui_wrapper.features.integrations.service import (
-    IntegrationsError,
-    relay_mcp_call,
-)
+from hermes_webui_wrapper.features.errors import FeatureError
+from hermes_webui_wrapper.features.integrations.service import relay_mcp_call
 
 _T = TypeVar("_T", bound=dict[str, Any])
 
@@ -90,14 +97,20 @@ def _tool_error_boundary(
     Bug WR-01's fix, `relay_mcp_call` raises `IntegrationsError` for every
     non-2xx gateway response, not just network failures, so every tool
     that calls it needs this same boundary; one shared decorator instead
-    of repeating identical try/except in each of the 3 tool bodies below.
+    of repeating identical try/except in each tool body below.
+
+    Catches the SHARED `FeatureError` base (not just `IntegrationsError`
+    specifically) so any future tool here raising a sibling feature's
+    error class gets the exact same boundary without a second, duplicated
+    decorator — every error class a feature service can raise is a
+    `FeatureError` subclass (see `features/errors.py`).
     """
 
     @functools.wraps(fn)
     async def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
         try:
             return await fn(*args, **kwargs)
-        except IntegrationsError as exc:
+        except FeatureError as exc:
             return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
 
     return wrapped

@@ -155,10 +155,8 @@ where
 /// Shared body for the "workspace `failed` -> 409 not ready" test
 /// duplicated across `onboarding_proxy.rs`, `agent_seeder_proxy.rs`, and
 /// `agent_history_proxy.rs` (the only 3 files that have this test today).
-pub(crate) async fn assert_failed_workspace_returns_409_not_ready<F, Fut>(
-    namespace: &str,
-    route: F,
-) where
+pub(crate) async fn assert_failed_workspace_returns_409_not_ready<F, Fut>(namespace: &str, route: F)
+where
     F: Fn(State<Arc<WorkspacesState>>, Path<String>, Request) -> Fut,
     Fut: Future<Output = Response>,
 {

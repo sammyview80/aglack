@@ -117,6 +117,24 @@ def test_profile_dir_for_is_deterministic_and_pure() -> None:
     assert p1 == p2 == Path("/data/browser-profiles/agent-x")
 
 
+def test_default_profile_root_is_under_workspace_not_data() -> None:
+    """Regression guard for a REAL bug found live: the original default,
+    `/data/browser-profiles`, does not exist in the real workspace image
+    and is not owned by `abc` (the unprivileged user this daemon runs
+    as) — every real `start()` call failed closed with `PermissionError:
+    [Errno 13] Permission denied: '/data'` before ever reaching the
+    Chromium launch (confirmed via this daemon's own crash log inside a
+    real running container). `/workspace` is this image's actual,
+    confirmed `abc`-writable persistent root."""
+    assert bm.PROFILE_ROOT == Path("/workspace/.browser-profiles")
+    assert str(bm.PROFILE_ROOT).startswith("/workspace/"), (
+        "PROFILE_ROOT must live under /workspace (confirmed abc-writable "
+        "in the real image) — never reintroduce /data or any other path "
+        "not confirmed writable by the unprivileged user this daemon "
+        "runs as."
+    )
+
+
 def test_allocate_free_port_returns_a_real_bindable_port() -> None:
     port = bm._allocate_free_port()
     assert 0 < port < 65536
@@ -291,6 +309,40 @@ def test_two_agents_get_independent_ports_and_profile_dirs() -> None:
 
         manager.stop("agent-h1")
         manager.stop("agent-h2")
+
+
+def test_concurrent_start_calls_for_same_agent_launch_only_one_process() -> None:
+    """Two near-simultaneous start() calls for the SAME agent_id (as would
+    happen from two concurrent HTTP requests on ThreadingHTTPServer) must
+    not both observe 'not running' and both launch Chromium — that would
+    leave two processes racing for the same --user-data-dir."""
+    tmp_roots: list[Path] = []
+    root = _tmp_profile_root(tmp_roots, "concurrent")
+    launch, calls = _make_fake_launch(root)
+    manager = bm.BrowserManager(launch_fn=launch)
+
+    results: list[dict] = []
+    errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            results.append(manager.start("agent-concurrent"))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    with _RootSwap(root):
+        threads = [threading.Thread(target=_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"start() raised under concurrency: {errors}"
+        assert len(calls) == 1, f"expected exactly one Chromium launch, got {len(calls)}: {calls}"
+        ports = {r["port"] for r in results}
+        assert ports == {calls[0][1]}, "every concurrent caller must observe the SAME port"
+
+        manager.stop("agent-concurrent")
 
 
 def test_start_stop_status_reject_invalid_agent_id() -> None:

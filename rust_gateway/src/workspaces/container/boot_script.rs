@@ -169,8 +169,41 @@ pub(crate) fn wrapper_boot_script(
      cd /opt/hermes-webui/wrapper\n\
      exec /opt/hermes/.venv/bin/hermes-webui-wrapper\n\
      ' >/config/hermes-webui-wrapper.log 2>&1 &\n\
-     exit 0\n"
+     {browser_manager_launch_line}\
+     exit 0\n",
+        browser_manager_launch_line = browser_manager_launch_line(),
     )
+}
+
+/// The `setsid su -s /bin/sh abc -c '...'` block that starts
+/// `browser_manager.py` (see `backend/workspace-image/browser_manager.py`)
+/// detached, inside the same boot script as the wrapper above — mirrors
+/// that exact backgrounding shape (`setsid`, run as `abc` not root, output
+/// redirected to its own log file rather than the wrapper's) so this
+/// daemon survives the same way the wrapper does.
+///
+/// No `BROWSER_MANAGER_PORT` env var is set here: the daemon's own default
+/// (9400, see that file's `DEFAULT_PORT`) never needs to differ — the
+/// container-internal port is fixed by the image and only ever reached
+/// via the separately published `browser_port` host mapping (see
+/// `DockerCliLauncher::launch`'s `browser_publish_arg`); no other process
+/// inside this container is expected to also want port 9400, so there is
+/// no collision to avoid by overriding it.
+///
+/// Invoked as a bare `python3` — this file is DELIBERATELY stdlib-only
+/// (see its own module docstring: "no `pyproject.toml`/install step of
+/// its own... nothing in this Dockerfile installs this file as a package
+/// or guarantees which interpreter invokes it"), unlike the wrapper above
+/// which runs a specific installed console-script
+/// (`/opt/hermes/.venv/bin/hermes-webui-wrapper`) from its own installed
+/// package. Using a bare `python3` (resolved via `PATH`, which this image
+/// sets to prefer `/opt/hermes/.venv/bin` first) matches that file's own
+/// stated design rather than hardcoding one specific interpreter path
+/// this daemon's own docstring says not to depend on.
+fn browser_manager_launch_line() -> &'static str {
+    "setsid su -s /bin/sh abc -c '\n\
+     exec python3 /opt/hermes-browser-manager/browser_manager.py\n\
+     ' >/config/hermes-browser-manager.log 2>&1 &\n"
 }
 
 /// Writes `wrapper_boot_script(allowed_origins, workspace_default_path,
@@ -312,6 +345,35 @@ mod tests {
             "http://gateway-internal:8080",
         );
         assert!(script.contains("su -s /bin/sh abc -c"));
+    }
+
+    /// The browser-manager daemon (see
+    /// `backend/workspace-image/browser_manager.py`, copied into the
+    /// image at `/opt/hermes-browser-manager/browser_manager.py`) must
+    /// also be launched by this boot script — mirrors
+    /// `boot_script_runs_wrapper_as_abc_not_root`'s exact style: before
+    /// this, NOTHING started it, so `DockerCliLauncher::launch` published
+    /// a `browser_port` that nothing inside the container was ever
+    /// listening on.
+    #[test]
+    fn boot_script_launches_the_browser_manager_daemon_as_abc_not_root() {
+        let script = wrapper_boot_script(
+            "http://localhost:5173",
+            "/workspace/default",
+            "http://localhost:5173",
+            "ws-test",
+            "http://gateway-internal:8080",
+        );
+        assert!(
+            script.contains("python3 /opt/hermes-browser-manager/browser_manager.py"),
+            "missing the browser-manager daemon launch line, or using the wrong path — must \
+             match the Dockerfile's own COPY destination exactly: got {script}"
+        );
+        assert!(
+            script.matches("su -s /bin/sh abc -c").count() >= 2,
+            "the browser-manager daemon must be started the SAME way the wrapper is — as \
+             `abc`, not root — not merely present somewhere in the script"
+        );
     }
 
     #[test]

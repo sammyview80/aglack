@@ -100,7 +100,22 @@ BROWSER_MANAGER_HOST = "127.0.0.1"
 # Root directory for all persistent per-agent Chromium profiles. Each
 # agent's profile lives at PROFILE_ROOT / agent_id, created (including all
 # parents, i.e. PROFILE_ROOT itself) lazily by `start()`/`status()`.
-PROFILE_ROOT = Path("/data/browser-profiles")
+#
+# `/workspace/.browser-profiles`, NOT `/data/...` (this file's original
+# location) — REAL BUG found live, confirmed via this daemon's own crash
+# log inside a real running container: `/data` does not exist at all in
+# this image and is not owned by `abc` (the unprivileged user this
+# daemon — and everything else in `/custom-cont-init.d/` — runs as),
+# so every `start()` call failed closed with `PermissionError: [Errno
+# 13] Permission denied: '/data'` before ever reaching the Chromium
+# launch. `/workspace` is this image's own existing, confirmed
+# `abc`-writable, per-container-lifetime persistent root (already used
+# by `_ensure_agent_workspace` in `backend/wrapper/.../agent_seeder/
+# service.py` for each agent's own working directory, e.g.
+# `/workspace/pm`) — a leading-dot subdirectory keeps profiles clearly
+# separated from an agent's own working files rather than living
+# alongside them as siblings.
+PROFILE_ROOT = Path("/workspace/.browser-profiles")
 
 # Grace period given to a process after SIGTERM before escalating to
 # SIGKILL — long enough for Chromium to flush/exit cleanly, short enough

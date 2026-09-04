@@ -30,6 +30,7 @@ export type SlashMatch =
   | { kind: 'exec'; name: string; command: CommandInfo }
   | { kind: 'unsupported'; name: string; command: CommandInfo }
   | { kind: 'local-new-chat'; name: string; command: CommandInfo }
+  | { kind: 'local-compress'; name: string; command: CommandInfo; focusTopic?: string }
 
 const EMPTY: SlashSuggestions = { commands: [], bundles: [] }
 
@@ -38,6 +39,17 @@ export function parseSlashName(draft: string): string | null {
   if (!draft.startsWith('/')) return null
   const [head] = draft.slice(1).split(/\s+/, 1)
   return head ?? ''
+}
+
+/** `/foo bar baz` -> `bar baz`; `/foo` -> `''`. Only meaningful once the
+ * caller already knows `draft` starts with `/` (see `parseSlashName`) —
+ * used for commands whose args carry real meaning client-side (e.g.
+ * `/compress <focus topic>`), unlike most local commands which ignore
+ * everything after the name. */
+function parseSlashArgs(draft: string): string {
+  if (!draft.startsWith('/')) return ''
+  const rest = draft.slice(1).split(/\s+/).slice(1).join(' ')
+  return rest.trim()
 }
 
 function matchesPrefix(name: string, prefix: string): boolean {
@@ -91,6 +103,25 @@ function isLocalNewChatCommand(command: CommandInfo): boolean {
   return (
     LOCAL_NEW_CHAT_COMMAND_NAMES.has(command.name.toLowerCase()) ||
     command.aliases.some((a) => LOCAL_NEW_CHAT_COMMAND_NAMES.has(a.toLowerCase()))
+  )
+}
+
+/** `/compress` (alias `/compact`) — same "real command, real existing
+ * capability, just not via /api/commands/exec" case as `/new` above.
+ * Upstream's own `cmdCompress`/`cmdCompact` (`backend/upstream/static/
+ * commands.js`) both call `_runManualCompression`, which hits
+ * `POST /api/session/compress/start` + polls `GET
+ * /api/session/compress/status` — already reachable through this app's
+ * existing chat proxy (`chat/api.ts`'s `startCompression`/
+ * `getCompressionStatus`; no new gateway/wrapper work needed), so this is
+ * wired the same way `/new` is: a real client-side action, never sent as
+ * chat text, never refused as unavailable. */
+const LOCAL_COMPRESS_COMMAND_NAMES = new Set(['compress', 'compact'])
+
+function isLocalCompressCommand(command: CommandInfo): boolean {
+  return (
+    LOCAL_COMPRESS_COMMAND_NAMES.has(command.name.toLowerCase()) ||
+    command.aliases.some((a) => LOCAL_COMPRESS_COMMAND_NAMES.has(a.toLowerCase()))
   )
 }
 
@@ -202,6 +233,10 @@ export function useSlashCommands(workspaceId: string | undefined, agent: string 
     )
     if (!command) return null
     if (isLocalNewChatCommand(command)) return { kind: 'local-new-chat', name: command.name, command }
+    if (isLocalCompressCommand(command)) {
+      const focusTopic = parseSlashArgs(text.trim())
+      return { kind: 'local-compress', name: command.name, command, focusTopic: focusTopic || undefined }
+    }
     if (isExecEligible(command)) return { kind: 'exec', name: command.name, command }
     return { kind: 'unsupported', name: command.name, command }
   }

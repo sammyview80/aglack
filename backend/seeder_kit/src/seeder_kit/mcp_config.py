@@ -26,6 +26,7 @@ def build_mcp_server_entry(
     *,
     server_name: str,
     python_executable: str | None = None,
+    agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Build one `mcp_servers.<name>` entry value:
     `{"command": ..., "args": [...]}`.
@@ -36,11 +37,20 @@ def build_mcp_server_entry(
     launches the command — deliberately never `sys.executable` of the
     process building this entry, which has no reason to be the correct
     interpreter for wherever the host's own MCP-server launcher runs.
+
+    `agent_id`, when given, appends `--agent-id <agent_id>` so the
+    launched `runner.py` knows which ONE agent it serves (see that
+    module's docstring). A host building one entry per agent has this
+    identity at hand; passing it here is what turns the stdio runner into
+    a real per-agent identity boundary. When omitted, `args` is exactly
+    what it was before this parameter existed.
     """
     resolved_python = python_executable or os.environ.get(DEFAULT_PYTHON_ENV_VAR, "python3")
 
     args: list[str] = [str(runner_entry_point()), "--server-name", server_name]
     for tool_dir in tool_dirs:
         args.extend(["--tools-dir", str(tool_dir)])
+    if agent_id is not None:
+        args.extend(["--agent-id", agent_id])
 
     return {"command": resolved_python, "args": args}

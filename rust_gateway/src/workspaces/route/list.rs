@@ -146,7 +146,10 @@ pub async fn list_workspaces_route(
 /// `HEALTH_CHECK_TIMEOUT`'s doc comment for why), returning results in the
 /// SAME order `items` came in (the store's `ORDER BY`, not
 /// task-completion order).
-async fn run_health_checks(client: &reqwest::Client, items: &[WorkspaceListItem]) -> Vec<Option<bool>> {
+async fn run_health_checks(
+    client: &reqwest::Client,
+    items: &[WorkspaceListItem],
+) -> Vec<Option<bool>> {
     let mut checks = tokio::task::JoinSet::new();
     for (index, item) in items.iter().enumerate() {
         if let (WorkspaceStatus::Ready, Some(host_port)) = (&item.status, item.host_port) {
@@ -286,7 +289,7 @@ mod tests {
             .expect("begin_creation succeeds");
         // A real, currently-unbound port: guaranteed nothing answers here.
         store
-            .mark_ready("unreachable-ws", "fake-container", 1, 2)
+            .mark_ready("unreachable-ws", "fake-container", 1, 2, 3)
             .await
             .expect("mark_ready succeeds");
         let state = state_with_store(store, Arc::new(FakeLauncher::default()));
@@ -336,7 +339,7 @@ mod tests {
             .await
             .expect("begin_creation succeeds");
         store
-            .mark_ready("healthy-ws", "fake-container", port, port)
+            .mark_ready("healthy-ws", "fake-container", port, port, port)
             .await
             .expect("mark_ready succeeds");
         let state = state_with_store(store, Arc::new(FakeLauncher::default()));

@@ -78,7 +78,10 @@ async fn main() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     if json_logs {
-        tracing_subscriber::fmt().json().with_env_filter(env_filter).init();
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .init();
     } else {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
@@ -122,7 +125,8 @@ async fn main() {
         tracing::error!("invalid providers registry: {err}");
         std::process::exit(1);
     });
-    let token_cipher = rust_gateway::crypto::TokenCipher::new(&integrations_config.token_encryption_key);
+    let token_cipher =
+        rust_gateway::crypto::TokenCipher::new(&integrations_config.token_encryption_key);
     let openconnector_client = Arc::new(OpenConnectorClient::new(
         integrations_config.openconnector_url,
         integrations_config.openconnector_admin_token,
@@ -228,6 +232,7 @@ async fn main() {
     let app = build_router(
         proxy_state,
         workspaces_state,
+        integrations_state.clone(),
         &config.frontend_origin,
         config.cors_enabled,
     )

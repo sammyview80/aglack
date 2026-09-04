@@ -264,6 +264,67 @@ export async function getSessionStatus(
   return { activeStreamId: data.agent_running ? data.active_stream_id : null }
 }
 
+/** `status` field of `POST /api/session/compress/start` / `GET
+ * /api/session/compress/status` (`backend/upstream/api/routes.py`'s
+ * `_manual_compression_status_payload`) — `'running'` while the async
+ * worker thread is still summarizing, `'done'` once the session's
+ * messages have been rewritten server-side, `'idle'` if polled after the
+ * in-memory job entry already expired (its own TTL, not modeled here —
+ * treated as an error by the caller). `chatFetch` only throws when the
+ * response body has an `error` key, so `running`/`done` (neither has one)
+ * pass through untouched; `error` does have one and throws via the
+ * shared helper, same as every other call in this file. */
+type WireCompressionStatus = { status: 'running' | 'done' | 'error' | 'idle'; error?: string }
+
+/** Starts (or observes an already-running) manual context compression for
+ * `sessionId` — backed by upstream's existing `POST
+ * /api/session/compress/start`, already reachable through the proxied
+ * chat namespace (no new backend/gateway work needed). `focusTopic` mirrors
+ * `/compress <topic>`'s optional argument (`backend/upstream/static/
+ * commands.js`'s `cmdCompress`); omit for a bare `/compress`. The caller
+ * must poll `getCompressionStatus` until `status !== 'running'` — this
+ * call only ADMITS the job (or reports one already in flight), it does
+ * not itself wait for completion (upstream's own `_runManualCompression`
+ * does the same: fire `compress/start`, then poll `compress/status`
+ * separately). */
+export async function startCompression(
+  workspaceId: string,
+  agent: string,
+  sessionId: string,
+  focusTopic?: string,
+): Promise<{ status: 'running' | 'done' | 'error' }> {
+  const data = await chatFetch<WireCompressionStatus>(
+    withAgent(`${chatBase(workspaceId)}/api/session/compress/start`, agent),
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        session_id: sessionId,
+        ...(focusTopic ? { focus_topic: focusTopic } : {}),
+      }),
+    },
+  )
+  return { status: data.status === 'idle' ? 'error' : data.status }
+}
+
+/** Polls one manual-compression job's status — see `startCompression`'s
+ * own doc comment for the full flow. Returns `'error'` for upstream's
+ * own `idle` status too (a polled-after-TTL-expiry job) — the caller has
+ * no useful distinct action for that case beyond reporting failure. */
+export async function getCompressionStatus(
+  workspaceId: string,
+  agent: string,
+  sessionId: string,
+): Promise<{ status: 'running' | 'done' | 'error' }> {
+  const data = await chatFetch<WireCompressionStatus>(
+    withAgent(
+      `${chatBase(workspaceId)}/api/session/compress/status?session_id=${encodeURIComponent(sessionId)}`,
+      agent,
+    ),
+    { method: 'GET' },
+  )
+  return { status: data.status === 'idle' ? 'error' : data.status }
+}
+
 /** Stream URL for `EventSource` — kept here so the SSE hook never builds
  * gateway paths itself. */
 export function chatStreamUrl(workspaceId: string, agent: string, streamId: string): string {

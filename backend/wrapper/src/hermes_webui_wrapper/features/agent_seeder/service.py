@@ -69,7 +69,22 @@ For each agent in a mode's tree:
    via `seeder_kit.discover_tools_in_dirs` — validating the tool tree
    before anything is written, so a broken tool module is caught at seed
    time — then write one `mcp_servers.hermes-seeder` entry via
-   `seeder_kit.build_mcp_server_entry`.
+   `seeder_kit.build_mcp_server_entry(..., agent_id=agent.slug)`. The
+   `--agent-id` this adds is what gives that agent's stdio tool
+   subprocess a real, process-level identity — `seeder_kit.runner`
+   injects it into every tool call as `arguments["_agent_id"]` (after
+   stripping any caller-supplied value), which the global
+   `open_browser`/`close_browser` tool modules in `../../seeder/tools/`
+   rely on to act only on the calling agent's own browser.
+7. If this agent's tree entry requests it (`AgentSpec.wants_browser`, a
+   `browser.enabled` marker file — see `seeder_kit.tree`'s own doc
+   comment), write a SEPARATE top-level `browser:` block into
+   `config.yaml` (`_apply_browser_capability`) — `{"enabled": true,
+   "profile_id": <this agent's own slug>, "persistent": true}`. Never
+   merged into the `mcp_servers` entry above; only IDENTITY is persisted
+   here, never a runtime `cdp_url`/port (those are resolved fresh, per
+   `open_browser` call, through the gateway's browser route — see
+   `features/browser/service.py`).
 
 No upstream symbol is imported at module level — every function below
 imports `api.profiles` lazily, after `bootstrap_upstream()` has already
@@ -493,6 +508,57 @@ def _apply_skills(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> lis
     return sorted(copied)
 
 
+def _apply_browser_capability(agent: AgentSpec, profile_home: Path) -> bool:
+    """Write a `browser:` block into this agent's `config.yaml` if (and
+    only if) its seeder tree entry actually requests it
+    (`AgentSpec.wants_browser`, backed by `<agent_dir>/browser.enabled` —
+    see `seeder_kit.tree`'s own doc comment). A SEPARATE top-level key
+    from `mcp_servers` (never merged into it) — this is not an MCP server
+    entry, just a per-profile capability flag the wrapper's own
+    `features/browser/service.py` and the container's browser-manager
+    daemon read.
+
+    Shape: `{"enabled": true, "profile_id": agent.slug, "persistent": true}`
+    — `profile_id` is this agent's own resolved slug, matching this whole
+    feature's design principle that only IDENTITY is persisted here, never
+    a runtime `cdp_url`/port (those are resolved fresh on every
+    `open_browser` call via the gateway's `/workspaces/:id/browser/...`
+    route, never written to disk — see that module's own docstring).
+
+    Uses the SAME `mutate_profile_config`/`load_profile_config` helpers
+    every other per-agent `config.yaml` write in this module already uses
+    (`_ensure_agent_workspace`, `_apply_mcp_tools`) — no second read/write
+    path. An agent whose tree entry does NOT request this capability is
+    left untouched (no `browser:` key written at all, and an existing one
+    from a previous apply is never removed here — this function only ever
+    adds/refreshes the block for an agent that currently wants it,
+    matching `_apply_mcp_tools`'s own "never silently revoke" style for a
+    capability that isn't present in the CURRENT tree read).
+
+    Returns whether the block was written.
+    """
+    if not agent.wants_browser:
+        return False
+
+    config_path = profile_home / "config.yaml"
+
+    def _set_browser_block(cfg: dict) -> None:
+        cfg["browser"] = {
+            "enabled": True,
+            "profile_id": agent.slug,
+            "persistent": True,
+        }
+
+    try:
+        mutate_profile_config(config_path, _set_browser_block)
+    except ValueError as exc:
+        raise AgentSeederError("agent_seeder_config_unreadable", str(exc), 500) from exc
+    except OSError as exc:
+        raise AgentSeederError("agent_seeder_config_write_failed", str(exc), 500) from exc
+
+    return True
+
+
 def _apply_mcp_tools(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> dict[str, Any]:
     tool_dirs = tree.tool_dirs_for(agent)
     try:
@@ -507,8 +573,18 @@ def _apply_mcp_tools(tree: SeederTree, agent: AgentSpec, profile_home: Path) -> 
 
     def _set_mcp_server(cfg: dict) -> None:
         mcp_servers = cfg.setdefault("mcp_servers", {})
+        # `agent_id=agent.slug` for EVERY agent, unconditionally (not only
+        # `wants_browser` ones): this entry is already built fresh per
+        # agent, so the identity is real and free; `seeder_kit.runner`
+        # injects it as `arguments["_agent_id"]` and a tool module that
+        # doesn't read the key is unaffected (see `seeder_kit/discovery.py`).
+        # Gating it on `wants_browser` would couple this generic MCP entry
+        # to one specific capability for no safety gain — the browser tool
+        # modules themselves and the gateway route are the real gates.
         mcp_servers[_MCP_SERVER_NAME] = build_mcp_server_entry(
-            tool_dirs, server_name=f"{_MCP_SERVER_NAME}-{agent.slug}"
+            tool_dirs,
+            server_name=f"{_MCP_SERVER_NAME}-{agent.slug}",
+            agent_id=agent.slug,
         )
 
     try:
@@ -542,6 +618,7 @@ def _apply_agent(tree: SeederTree, agent: AgentSpec) -> dict[str, Any]:
 
     result["skills_seeded"] = _apply_skills(tree, agent, profile_home)
     result.update(_apply_mcp_tools(tree, agent, profile_home))
+    result["browser_enabled"] = _apply_browser_capability(agent, profile_home)
 
     return result
 

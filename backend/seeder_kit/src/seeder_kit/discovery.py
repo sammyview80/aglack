@@ -18,6 +18,32 @@ define:
 (`{"type": "text", "text": "..."}`) rather than SDK objects, for the same
 reason this module has no `mcp` import — the SDK boundary conversion
 happens once, in `runner.py`.
+
+Runner-injected `arguments` key (OPTIONAL for tool modules) — `"_agent_id"`:
+
+    When `runner.py` was launched with `--agent-id <id>` (see
+    `mcp_config.build_mcp_server_entry(..., agent_id=...)`), it sets
+    `arguments["_agent_id"] = <id>` immediately before every `handle()`
+    call. When the runner was launched WITHOUT `--agent-id`, the key is
+    ABSENT (never `None`/`""`), so `arguments.get("_agent_id")` returns
+    `None` in exactly the same way for both an old runner and a runner
+    that simply has no identity to offer.
+
+    The runner ALWAYS strips any caller-supplied `"_agent_id"` first
+    (`arguments.pop("_agent_id", None)`) and only then sets its own
+    value — an MCP client can never inject a fake identity through the
+    `tools/call` payload; a tool module only ever sees the identity the
+    runner process itself was launched with. This mirrors the gateway's
+    own `connectionName` handling in
+    `rust_gateway/src/integrations/mcp_proxy.rs` (strip every caller
+    alias, then force the server-owned value).
+
+    The leading underscore marks the key as "runner-injected, not
+    client-supplied". It is NOT a new required attribute and is not part
+    of `TOOL_INPUT_SCHEMA` — a tool module that has no interest in agent
+    identity ignores it exactly like any other key it does not read. Only
+    identity-aware tools (e.g. the per-agent browser lifecycle tools in
+    `backend/seeder/tools/open_browser.py`/`close_browser.py`) read it.
 """
 from __future__ import annotations
 

@@ -184,6 +184,9 @@ class TestMcpServer:
                 tools = await session.list_tools()
 
         names = {tool.name for tool in tools.tools}
+        # `open_browser`/`close_browser` are deliberately NOT here — they
+        # live as per-agent stdio tool modules in `backend/seeder/tools/`
+        # (see `mcp_server.py`'s module docstring).
         assert names == {
             "list_connections",
             "execute_action",
@@ -559,6 +562,116 @@ class TestMcpServer:
         assert result.structuredContent == {"ok": True, "data": []}
         assert len(captured_bodies) == 1
         assert captured_bodies[0]["params"]["name"] == "search_actions"
+
+
+class TestBrowserServiceUnit:
+    """Direct unit tests of `features/browser/service.py`'s gateway-calling
+    functions — mirrors `TestRelayMcpCallStatusCodeHandling`'s own pattern
+    (real resolvers wired via env vars, `httpx.post` mocked as the one
+    genuinely external call). This module is the wrapper-side REFERENCE
+    for the call shape `backend/seeder/tools/open_browser.py`/
+    `close_browser.py` re-implement standalone in their own per-agent
+    stdio subprocess (see that service module's docstring for why the
+    agent-facing tools no longer live on the HTTP MCP server at all).
+    """
+
+    @pytest.fixture()
+    def _wired_browser(self, tmp_path, monkeypatch):
+        token_path = tmp_path / "integrations.token"
+        token_path.write_text("test-bearer", encoding="utf-8")
+        monkeypatch.setenv("INTEGRATIONS_TOKEN_PATH", str(token_path))
+        monkeypatch.setenv("GATEWAY_INTERNAL_URL", "http://gateway.internal.test")
+        monkeypatch.setenv("INTEGRATIONS_WORKSPACE_ID", "ws-test")
+
+    def test_call_browser_route_posts_to_the_expected_gateway_url_with_bearer(
+        self, _wired_browser, monkeypatch
+    ) -> None:
+        import httpx
+
+        from hermes_webui_wrapper.features.browser.service import _call_browser_route
+
+        captured = {}
+
+        def fake_post(url, headers, timeout):
+            captured["url"] = url
+            captured["headers"] = headers
+            content = b'{"cdp_port": 9222}'
+            return httpx.Response(200, content=content, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.browser.service.httpx.post", fake_post
+        )
+
+        result = _call_browser_route("agent-42", "start")
+
+        assert (
+            captured["url"]
+            == "http://gateway.internal.test/workspaces/ws-test/browser/agent-42/start"
+        )
+        assert captured["headers"]["Authorization"] == "Bearer test-bearer"
+        assert result == {"cdp_port": 9222}
+
+    def test_cdp_url_from_status_is_a_loopback_address(self) -> None:
+        """`cdp_url` points at `127.0.0.1:<port>` — reachable from the SAME
+        container the calling agent's own tool-execution context runs in
+        (see `_cdp_url_from_status`'s own doc comment) — never any
+        gateway-routed address; absent port -> None."""
+        from hermes_webui_wrapper.features.browser.service import _cdp_url_from_status
+
+        assert _cdp_url_from_status({"cdp_port": 9333, "status": "running"}) == "http://127.0.0.1:9333"
+        assert _cdp_url_from_status({"port": 9222}) == "http://127.0.0.1:9222"
+        assert _cdp_url_from_status({"cdpPort": 9111}) == "http://127.0.0.1:9111"
+        assert _cdp_url_from_status({"status": "stopped"}) is None
+
+    def test_non_2xx_gateway_response_raises_browser_error_with_mapped_code(
+        self, _wired_browser, monkeypatch
+    ) -> None:
+        import httpx
+
+        from hermes_webui_wrapper.features.browser.service import (
+            BrowserError,
+            _call_browser_route,
+        )
+
+        def fake_post(url, headers, timeout):
+            content = b'{"ok": false, "error": {"code": "invalid_bearer", "message": "bad token"}}'
+            return httpx.Response(401, content=content, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.browser.service.httpx.post", fake_post
+        )
+
+        with pytest.raises(BrowserError) as excinfo:
+            _call_browser_route("agent-1", "start")
+
+        assert excinfo.value.code == "invalid_bearer"
+        assert excinfo.value.message == "bad token"
+        assert excinfo.value.status_code == 401
+
+    def test_non_json_gateway_error_body_still_raises_browser_error_with_status(
+        self, _wired_browser, monkeypatch
+    ) -> None:
+        import httpx
+
+        from hermes_webui_wrapper.features.browser.service import (
+            BrowserError,
+            _call_browser_route,
+        )
+
+        def fake_post(url, headers, timeout):
+            return httpx.Response(
+                502, content=b"<html>bad gateway</html>", request=httpx.Request("POST", url)
+            )
+
+        monkeypatch.setattr(
+            "hermes_webui_wrapper.features.browser.service.httpx.post", fake_post
+        )
+
+        with pytest.raises(BrowserError) as excinfo:
+            _call_browser_route("agent-1", "stop")
+
+        assert excinfo.value.status_code == 502
+        assert excinfo.value.code == "browser_gateway_error"
 
 
 class TestRelayMcpCallStatusCodeHandling:

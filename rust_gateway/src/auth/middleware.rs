@@ -5,10 +5,16 @@
 //! output), with a small, explicit path-based exemption list for the
 //! handful of routes that must stay reachable without a session:
 //! `/auth/*` (or nobody could ever log in), `/oauth/callback` (a
-//! provider's redirect, never carries this gateway's own cookie), and
+//! provider's redirect, never carries this gateway's own cookie),
 //! `/workspaces/:id/mcp` (a workspace container's own bearer-protected
 //! tenancy proxy — see `integrations::mcp_proxy` — a container has no
-//! session cookie of its own and must not need one).
+//! session cookie of its own and must not need one), and
+//! `/workspaces/:id/browser/...` (same reasoning as `/mcp`: called FROM
+//! INSIDE the workspace's own container by an MCP tool, gated by the
+//! SAME per-workspace bearer via `integrations::mcp_proxy::require_workspace_bearer`
+//! — see `browser_proxy.rs`). The browser path does NOT end in `/mcp`, so
+//! it needs its own condition, OR'd onto the existing mcp check rather
+//! than folded into (and potentially loosening) it.
 
 use axum::{
     extract::{Request, State},
@@ -25,12 +31,33 @@ use crate::response::error;
 /// Exact-prefix exemptions — checked before any session lookup, so an
 /// unauthenticated caller hitting one of these never even causes a
 /// database read. `/workspaces/` alone is NOT exempt (only the specific
-/// `/mcp` suffix is) — every other `/workspaces/:id/...` route (create,
-/// list, integrations connect/disconnect/agents) requires a session.
+/// `/mcp` suffix and the `/browser/` prefix shape below are) — every
+/// other `/workspaces/:id/...` route (create, list, integrations
+/// connect/disconnect/agents) requires a session.
+///
+/// The browser condition matches `/workspaces/<id>/browser/` as a
+/// PREFIX (not a suffix like `/mcp`, since the real path has more
+/// segments after it: `/agent_id/action`) — deliberately a separate OR'd
+/// condition, not a change to the existing mcp check, so the mcp path
+/// shape's own exact-suffix match stays exactly as strict as it already
+/// was.
 fn is_exempt(path: &str) -> bool {
     path.starts_with("/auth/")
         || path == "/oauth/callback"
         || (path.starts_with("/workspaces/") && path.ends_with("/mcp"))
+        || is_workspace_browser_path(path)
+}
+
+/// True for `/workspaces/<id>/browser/...` — matched as a prefix ending
+/// in a literal `/browser/` segment boundary, not a naive `.contains("browser")`
+/// or a bare `.ends_with("browser")` (which a wrong-but-similar path like
+/// `/workspaces/abc-123/browserish` would also match if the boundary
+/// slash were dropped).
+fn is_workspace_browser_path(path: &str) -> bool {
+    path.starts_with("/workspaces/")
+        && path
+            .strip_prefix("/workspaces/")
+            .is_some_and(|rest| rest.split_once("/browser/").is_some())
 }
 
 pub async fn require_session(
@@ -52,7 +79,11 @@ pub async fn require_session(
 
     match state.sessions.is_valid(&sha256_hex(&raw_token)).await {
         Ok(true) => next.run(request).await,
-        Ok(false) => error(StatusCode::UNAUTHORIZED, "not_authenticated", "Log in first."),
+        Ok(false) => error(
+            StatusCode::UNAUTHORIZED,
+            "not_authenticated",
+            "Log in first.",
+        ),
         Err(err) => error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "session_lookup_failed",
@@ -80,6 +111,25 @@ mod tests {
     #[test]
     fn a_workspace_mcp_route_is_exempt() {
         assert!(is_exempt("/workspaces/abc-123/mcp"));
+    }
+
+    #[test]
+    fn a_workspace_browser_route_is_exempt() {
+        assert!(is_exempt("/workspaces/abc-123/browser/agent-1/start"));
+        assert!(is_exempt("/workspaces/abc-123/browser/agent-1/stop"));
+        assert!(is_exempt("/workspaces/abc-123/browser/agent-1/status"));
+    }
+
+    #[test]
+    fn a_path_that_merely_starts_like_browser_is_not_exempt() {
+        // Guards against a naive `.contains("browser")`/`.ends_with("browser")`
+        // check — must require the exact `/browser/` segment boundary, the
+        // same way `a_path_that_merely_contains_mcp_is_not_exempt` guards
+        // the mcp suffix check below.
+        assert!(!is_exempt("/workspaces/abc-123/browserish"));
+        assert!(!is_exempt("/workspaces/abc-123/browserish/agent-1/start"));
+        assert!(!is_exempt("/workspaces/abc-123/browser"));
+        assert!(!is_exempt("/browser-something-else"));
     }
 
     #[test]

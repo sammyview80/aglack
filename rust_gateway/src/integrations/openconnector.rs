@@ -84,7 +84,10 @@ impl From<reqwest::Error> for OpenConnectorError {
         } else {
             format!("openconnector request failed: {err}")
         };
-        Self { message, status: None }
+        Self {
+            message,
+            status: None,
+        }
     }
 }
 
@@ -256,7 +259,10 @@ impl OpenConnectorClient {
     ) -> Result<(), OpenConnectorError> {
         let body = serde_json::json!({ "clientId": client_id, "clientSecret": client_secret });
         let response = self
-            .admin_request(reqwest::Method::PUT, &format!("/api/oauth/configs/{service}"))
+            .admin_request(
+                reqwest::Method::PUT,
+                &format!("/api/oauth/configs/{service}"),
+            )
             .json(&body)
             .send()
             .await?;
@@ -351,7 +357,10 @@ impl OpenConnectorApi for OpenConnectorClient {
     }
 
     async fn list_connections(&self) -> Result<Vec<ConnectionSummary>, OpenConnectorError> {
-        let response = self.admin_request(reqwest::Method::GET, "/api/connections").send().await?;
+        let response = self
+            .admin_request(reqwest::Method::GET, "/api/connections")
+            .send()
+            .await?;
         parse_or_error(response).await
     }
 
@@ -457,7 +466,10 @@ impl OpenConnectorApi for OpenConnectorClient {
     }
 
     async fn list_providers_catalog(&self) -> Result<Vec<CatalogProvider>, OpenConnectorError> {
-        let response = self.admin_request(reqwest::Method::GET, "/api/providers").send().await?;
+        let response = self
+            .admin_request(reqwest::Method::GET, "/api/providers")
+            .send()
+            .await?;
         parse_or_error(response).await
     }
 }
@@ -484,7 +496,10 @@ impl OpenConnectorApi for OpenConnectorClient {
 fn extract_sse_data(text: &str) -> Option<String> {
     let mut current_event_data: Vec<&str> = Vec::new();
     for line in text.lines() {
-        if let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+        if let Some(data) = line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
             current_event_data.push(data.trim_start_matches(' '));
             continue;
         }
@@ -666,11 +681,19 @@ pub(crate) mod fake {
         }
 
         pub(crate) fn create_runtime_token_calls(&self) -> Vec<(String, Vec<String>)> {
-            self.state.lock().unwrap().create_runtime_token_calls.clone()
+            self.state
+                .lock()
+                .unwrap()
+                .create_runtime_token_calls
+                .clone()
         }
 
         pub(crate) fn revoke_runtime_token_calls(&self) -> Vec<String> {
-            self.state.lock().unwrap().revoke_runtime_token_calls.clone()
+            self.state
+                .lock()
+                .unwrap()
+                .revoke_runtime_token_calls
+                .clone()
         }
 
         pub(crate) fn delete_connection_calls(&self) -> Vec<(String, String)> {
@@ -872,7 +895,10 @@ mod tests {
 
         let client = OpenConnectorClient::new(server.uri(), "admin-token".to_string());
         let result = client
-            .forward_mcp("workspace-bearer", &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}))
+            .forward_mcp(
+                "workspace-bearer",
+                &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+            )
             .await;
 
         assert!(
@@ -886,16 +912,19 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/mcp"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_raw("event: message\ndata: {\"a\":\ndata: 1}\n\n", "text/event-stream"),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "event: message\ndata: {\"a\":\ndata: 1}\n\n",
+                "text/event-stream",
+            ))
             .mount(&server)
             .await;
 
         let client = OpenConnectorClient::new(server.uri(), "admin-token".to_string());
         let result = client
-            .forward_mcp("workspace-bearer", &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}))
+            .forward_mcp(
+                "workspace-bearer",
+                &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+            )
             .await
             .expect("a successful 200 SSE response must parse");
 

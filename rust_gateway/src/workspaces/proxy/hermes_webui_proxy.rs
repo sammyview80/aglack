@@ -21,9 +21,9 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::proxy::forward_to;
 use crate::workspaces::resolve::resolve_ready_workspace;
 use crate::workspaces::route::WorkspacesState;
-use crate::proxy::forward_to;
 
 /// Handles `/workspaces/:id/hermes-webui/*path`.
 pub async fn hermes_webui_proxy_route_with_path(
@@ -72,12 +72,11 @@ async fn hermes_webui_proxy(
 
 #[cfg(test)]
 mod tests {
-    use crate::workspaces::test_support::{
-        assert_not_ready_workspace_returns_409, assert_unknown_workspace_id_returns_404,
-        temp_store,
-    };
     use super::*;
     use crate::workspaces::container::FakeLauncher;
+    use crate::workspaces::test_support::{
+        assert_not_ready_workspace_returns_409, assert_unknown_workspace_id_returns_404, temp_store,
+    };
     use axum::{
         body::{to_bytes, Body},
         http::{Request as HttpRequest, StatusCode},
@@ -124,8 +123,7 @@ mod tests {
 
     #[tokio::test]
     async fn not_ready_workspace_returns_409() {
-        assert_not_ready_workspace_returns_409("hermes-webui", hermes_webui_proxy_route_root)
-            .await;
+        assert_not_ready_workspace_returns_409("hermes-webui", hermes_webui_proxy_route_root).await;
     }
 
     /// Unlike onboarding_proxy.rs, ANY path (not just a fixed namespace)
@@ -141,7 +139,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);
@@ -171,7 +169,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", echo_port, 12345, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);

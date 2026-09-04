@@ -17,7 +17,7 @@
 //! list.
 
 pub mod catalog;
-mod mcp_proxy;
+pub mod mcp_proxy;
 pub mod openconnector;
 mod providers;
 pub mod route;

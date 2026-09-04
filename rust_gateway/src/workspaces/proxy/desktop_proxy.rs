@@ -34,9 +34,9 @@ use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest, http, Message as TungsteniteMessage,
 };
 
+use crate::proxy::forward_to;
 use crate::workspaces::resolve::resolve_ready_workspace;
 use crate::workspaces::route::WorkspacesState;
-use crate::proxy::forward_to;
 
 /// Build the outbound WebSocket handshake request to `target_ws_url` with
 /// the two headers KasmVNC's own websockify implementation REQUIRES —
@@ -243,9 +243,9 @@ async fn relay_websocket(socket: WebSocket, target_ws_url: String) {
 
 #[cfg(test)]
 mod tests {
-    use crate::workspaces::test_support::{body_json, temp_store};
     use super::*;
     use crate::workspaces::container::FakeLauncher;
+    use crate::workspaces::test_support::{body_json, temp_store};
     use axum::{
         body::{to_bytes, Body},
         http::{Request as HttpRequest, StatusCode},
@@ -308,7 +308,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", 12345, desktop_port)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", 12345, desktop_port, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);
@@ -358,7 +358,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", 12345, desktop_port)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", 12345, desktop_port, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);
@@ -437,7 +437,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready("my-workspace", "hermes-ws-ws-1", 12345, desktop_port)
+            .mark_ready("my-workspace", "hermes-ws-ws-1", 12345, desktop_port, 12346)
             .await
             .expect("mark_ready");
         let state = state_with_store(store);

@@ -102,7 +102,10 @@ mod tests {
         let result = client.get(format!("http://{addr}/")).send().await;
         let elapsed = started.elapsed();
 
-        assert!(result.is_err(), "a request to an unresponsive upstream must fail, not hang");
+        assert!(
+            result.is_err(),
+            "a request to an unresponsive upstream must fail, not hang"
+        );
         assert!(
             result.unwrap_err().is_timeout(),
             "the failure must be reported as a timeout, not some other error kind"

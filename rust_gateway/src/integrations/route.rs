@@ -203,8 +203,7 @@ pub async fn list_integrations_route(
     // `Ready`/ports: viewing the integration list is bookkeeping against
     // `integration_connections`, not container access, so a workspace
     // stuck `Creating`/`Failed` must still be viewable.
-    if let Err(response) = resolve_existing_workspace(&state.workspace_store, &workspace_id).await
-    {
+    if let Err(response) = resolve_existing_workspace(&state.workspace_store, &workspace_id).await {
         return response;
     }
 
@@ -249,9 +248,7 @@ pub async fn list_integrations_route(
             continue;
         }
 
-        out.push(
-            reconcile_pending_connection(&state, &workspace_id, connection).await,
-        );
+        out.push(reconcile_pending_connection(&state, &workspace_id, connection).await);
     }
 
     let connection_name = workspace_connection_name(&workspace_id);
@@ -299,8 +296,7 @@ async fn finish_and_summarize(
             status: status_str(&ConnectionStatus::Error).to_string(),
             account_label: None,
             last_error: Some(
-                "Connected on the provider side but finishing setup failed. Try again."
-                    .to_string(),
+                "Connected on the provider side but finishing setup failed. Try again.".to_string(),
             ),
         },
     }
@@ -432,7 +428,10 @@ pub async fn start_oauth_route(
         return error(
             StatusCode::BAD_REQUEST,
             "oauth_not_supported",
-            format!("{} does not support OAuth connect — use api_key instead.", provider.name),
+            format!(
+                "{} does not support OAuth connect — use api_key instead.",
+                provider.name
+            ),
         );
     }
 
@@ -450,8 +449,15 @@ pub async fn start_oauth_route(
         .create_oauth_authorization(&provider.openconnector_service, &connection_name)
         .await;
 
-    audit(&state, Some(&workspace_id), Some(&provider_id), "oauth_start", result.is_ok(), None)
-        .await;
+    audit(
+        &state,
+        Some(&workspace_id),
+        Some(&provider_id),
+        "oauth_start",
+        result.is_ok(),
+        None,
+    )
+    .await;
 
     let authorization_url = match result {
         Ok(authorization_url) => authorization_url,
@@ -463,7 +469,12 @@ pub async fn start_oauth_route(
 
     if let Err(err) = state
         .store
-        .mark_pending(&Uuid::new_v4().to_string(), &workspace_id, &provider_id, &connection_name)
+        .mark_pending(
+            &Uuid::new_v4().to_string(),
+            &workspace_id,
+            &provider_id,
+            &connection_name,
+        )
         .await
     {
         return error(
@@ -473,10 +484,7 @@ pub async fn start_oauth_route(
         );
     }
 
-    success(
-        StatusCode::OK,
-        OAuthStartResponseData { authorization_url },
-    )
+    success(StatusCode::OK, OAuthStartResponseData { authorization_url })
 }
 
 /// `GET /oauth/callback` — MUST be this exact path, not a namespaced one
@@ -661,8 +669,15 @@ pub(super) async fn finish_connection(
             )
             .await;
     }
-    audit(state, Some(workspace_id), Some(provider_id), "connect_finished", result.is_ok(), None)
-        .await;
+    audit(
+        state,
+        Some(workspace_id),
+        Some(provider_id),
+        "connect_finished",
+        result.is_ok(),
+        None,
+    )
+    .await;
     result
 }
 
@@ -715,13 +730,16 @@ async fn rotate_workspace_token(
         })?;
 
     let token_hash = sha256_hex(&runtime_token.bearer);
-    let encrypted_bearer = state.token_cipher.encrypt(&runtime_token.bearer).map_err(|err| {
-        error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "token_encryption_failed",
-            err.to_string(),
-        )
-    })?;
+    let encrypted_bearer = state
+        .token_cipher
+        .encrypt(&runtime_token.bearer)
+        .map_err(|err| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "token_encryption_failed",
+                err.to_string(),
+            )
+        })?;
     state
         .store
         .upsert_runtime_token(
@@ -864,7 +882,13 @@ async fn finish_connection_inner(
     // still applies its `mark_error` compensation on ANY failure here as
     // a safety net — this reorder is what stops the happy path from ever
     // showing that lie in the first place.
-    rotate_workspace_token(state, workspace_id, &container_name, &allowed_connection_ids).await?;
+    rotate_workspace_token(
+        state,
+        workspace_id,
+        &container_name,
+        &allowed_connection_ids,
+    )
+    .await?;
 
     state
         .store
@@ -900,8 +924,7 @@ pub async fn disconnect_integration_route(
     // `integration_connections` (plus a best-effort OpenConnector
     // delete), not container access, so a workspace stuck
     // `Creating`/`Failed` must still be allowed to disconnect.
-    if let Err(response) = resolve_existing_workspace(&state.workspace_store, &workspace_id).await
-    {
+    if let Err(response) = resolve_existing_workspace(&state.workspace_store, &workspace_id).await {
         return response;
     }
 
@@ -919,7 +942,15 @@ pub async fn disconnect_integration_route(
         .delete_connection(&provider.openconnector_service, &connection_name)
         .await
     {
-        audit(&state, Some(&workspace_id), Some(&provider_id), "disconnect", false, None).await;
+        audit(
+            &state,
+            Some(&workspace_id),
+            Some(&provider_id),
+            "disconnect",
+            false,
+            None,
+        )
+        .await;
         // Issue 2: `err` may embed OpenConnector's raw response body —
         // log the real detail server-side, return only the fixed,
         // non-leaking message to the caller (a browser here).
@@ -1013,7 +1044,15 @@ pub async fn disconnect_integration_route(
         }
     }
 
-    audit(&state, Some(&workspace_id), Some(&provider_id), "disconnect", true, None).await;
+    audit(
+        &state,
+        Some(&workspace_id),
+        Some(&provider_id),
+        "disconnect",
+        true,
+        None,
+    )
+    .await;
 
     success(
         StatusCode::OK,
@@ -1166,7 +1205,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("test.db");
         std::mem::forget(dir);
-        crate::db::connect(&db_path).await.expect("connect to fresh sqlite db")
+        crate::db::connect(&db_path)
+            .await
+            .expect("connect to fresh sqlite db")
     }
 
     fn test_token_cipher() -> crate::crypto::TokenCipher {
@@ -1230,7 +1271,7 @@ mod tests {
             .await
             .expect("begin_creation");
         store
-            .mark_ready(&idempotency_key, "not-a-real-container", 1, 2)
+            .mark_ready(&idempotency_key, "not-a-real-container", 1, 2, 3)
             .await
             .expect("mark_ready");
         store
@@ -1411,7 +1452,9 @@ mod tests {
         let response = connect_integration_route(
             State(state),
             Path(("does-not-exist".to_string(), "github".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
@@ -1447,8 +1490,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_compensates_by_deleting_the_openconnector_connection_on_post_connect_failure(
-    ) {
+    async fn connect_compensates_by_deleting_the_openconnector_connection_on_post_connect_failure()
+    {
         // `resolve_ready_workspace` requires `Ready`, so the workspace
         // must be `Ready` to get past `connect_integration_route`'s early
         // check at all. Once past it, `finish_connection_inner` still
@@ -1465,7 +1508,9 @@ mod tests {
         let response = connect_integration_route(
             State(state),
             Path((workspace_id.to_string(), "github".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
@@ -1521,7 +1566,9 @@ mod tests {
         let response = connect_integration_route(
             State(state),
             Path((workspace_id.to_string(), "github".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
@@ -1554,8 +1601,7 @@ mod tests {
             .await
             .expect("begin_creation");
 
-        let response =
-            list_integrations_route(State(state), Path(workspace_id.to_string())).await;
+        let response = list_integrations_route(State(state), Path(workspace_id.to_string())).await;
 
         assert_eq!(
             response.status(),
@@ -1664,7 +1710,10 @@ mod tests {
             configured: true,
         };
         let result = finish_connection(&state, workspace_id, "github", &summary).await;
-        assert!(result.is_err(), "token delivery must fail (no real container in tests)");
+        assert!(
+            result.is_err(),
+            "token delivery must fail (no real container in tests)"
+        );
 
         let connection = state
             .store
@@ -1800,7 +1849,9 @@ mod tests {
     }
 
     async fn body_json(response: Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -1818,7 +1869,10 @@ mod tests {
         }
     }
 
-    fn entry_for<'a>(body: &'a serde_json::Value, provider_id: &str) -> Option<&'a serde_json::Value> {
+    fn entry_for<'a>(
+        body: &'a serde_json::Value,
+        provider_id: &str,
+    ) -> Option<&'a serde_json::Value> {
         body["data"]
             .as_array()
             .expect("data is an array")
@@ -1841,8 +1895,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
 
-        let github = entry_for(&body, "github")
-            .expect("a provider OpenConnector already holds a configured connection for must be reported");
+        let github = entry_for(&body, "github").expect(
+            "a provider OpenConnector already holds a configured connection for must be reported",
+        );
         // Token delivery always fails in this test process (no real
         // container behind `"not-a-real-container"` — see `ready_workspace`'s
         // doc comment), so the SAME `finish_connection` path the OAuth
@@ -1865,7 +1920,10 @@ mod tests {
             .await
             .expect("find_connection succeeds")
             .expect("discovery must persist a real local row, not just report one");
-        assert_eq!(row.openconnector_connection_id.as_deref(), Some("conn-github-oob"));
+        assert_eq!(
+            row.openconnector_connection_id.as_deref(),
+            Some("conn-github-oob")
+        );
         assert!(
             entry_for(&body, "slack").is_none(),
             "a provider OpenConnector has nothing for must stay omitted (= available)"
@@ -1894,8 +1952,18 @@ mod tests {
         assert_eq!(body["data"], serde_json::json!([]));
         assert!(fake.create_runtime_token_calls().is_empty());
         assert!(
-            state.store.find_connection(workspace_id, "github").await.unwrap().is_none()
-                && state.store.find_connection(workspace_id, "slack").await.unwrap().is_none(),
+            state
+                .store
+                .find_connection(workspace_id, "github")
+                .await
+                .unwrap()
+                .is_none()
+                && state
+                    .store
+                    .find_connection(workspace_id, "slack")
+                    .await
+                    .unwrap()
+                    .is_none(),
             "no local row may be created for a provider OpenConnector has no match for"
         );
     }
@@ -1906,7 +1974,11 @@ mod tests {
         let fake = Arc::new(FakeOpenConnector::default());
         let (state, pool) = integrations_state(fake.clone()).await;
         ready_workspace(&pool, workspace_id).await;
-        assert_eq!(state.providers.len(), 2, "two registered providers, no local rows");
+        assert_eq!(
+            state.providers.len(),
+            2,
+            "two registered providers, no local rows"
+        );
 
         let response =
             list_integrations_route(State(state.clone()), Path(workspace_id.to_string())).await;
@@ -1941,8 +2013,7 @@ mod tests {
             .await
             .expect("seed github connected");
 
-        let response =
-            list_integrations_route(State(state), Path(workspace_id.to_string())).await;
+        let response = list_integrations_route(State(state), Path(workspace_id.to_string())).await;
 
         assert_eq!(
             response.status(),
@@ -1950,7 +2021,10 @@ mod tests {
             "discovery is best-effort: an OpenConnector failure must not fail the list"
         );
         let body = body_json(response).await;
-        assert_eq!(entry_for(&body, "github").expect("local row still reported")["status"], "connected");
+        assert_eq!(
+            entry_for(&body, "github").expect("local row still reported")["status"],
+            "connected"
+        );
         assert!(entry_for(&body, "slack").is_none());
         assert_eq!(fake.list_connections_calls(), 1);
         assert!(
@@ -1974,7 +2048,9 @@ mod tests {
         let response = connect_integration_route(
             State(state),
             Path((workspace_id.to_string(), "github".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
@@ -2007,7 +2083,15 @@ mod tests {
             .await
             .expect("drop table");
 
-        audit(&state, Some("ws-audit-fail"), None, "test_event", true, None).await;
+        audit(
+            &state,
+            Some("ws-audit-fail"),
+            None,
+            "test_event",
+            true,
+            None,
+        )
+        .await;
 
         assert!(
             logs_contain("audit write failed"),

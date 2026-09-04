@@ -337,6 +337,12 @@ export function WorkspaceChat({ workspaceId, workspaceName }: WorkspaceChatProps
               // command interception exactly (see `pushLocalCommandResult`'s
               // own doc comment) — not a floating banner.
               onCommandResult={chat.pushLocalCommandResult}
+              // `/compress` rewrites the session's message history
+              // server-side (upstream's own `_applyManualCompressionResult`
+              // re-reads `data.session.messages` directly) — reloadMessages
+              // is this app's equivalent re-fetch, so the compacted
+              // transcript actually shows once the job completes.
+              onCompressionApplied={chat.reloadMessages}
             />
           ) : null}
         </article>

@@ -116,10 +116,7 @@ async fn heal_all_ready_workspaces(
 
         match result {
             Ok(report) => {
-                if !matches!(
-                    report.action,
-                    super::diagnosis::DiagnosisAction::None
-                ) {
+                if !matches!(report.action, super::diagnosis::DiagnosisAction::None) {
                     println!(
                         "rust_gateway: daemon_watch re-checked workspace {:?} after daemon \
                          recovery — action: {:?}",

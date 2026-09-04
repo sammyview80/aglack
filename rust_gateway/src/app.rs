@@ -12,11 +12,13 @@ use axum::{
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use crate::integrations::IntegrationsState;
 use crate::proxy::{forward, ProxyState};
 use crate::workspaces::{
     agent_history_proxy_route_root, agent_history_proxy_route_with_path,
-    agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path, chat_proxy_route_root,
-    chat_proxy_route_with_path, create_workspace_route, delete_workspace_route,
+    agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path, browser_proxy_route,
+    chat_proxy_route_root, chat_proxy_route_with_path, commands_proxy_route_root,
+    commands_proxy_route_with_path, create_workspace_route, delete_workspace_route,
     desktop_proxy_route_root, desktop_proxy_route_with_path, diagnose_workspace_route,
     hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, list_workspaces_route,
     onboarding_proxy_route_root, onboarding_proxy_route_with_path, WorkspacesState,
@@ -124,6 +126,7 @@ pub fn browser_allowed_origins(frontend_origin: &str) -> Vec<HeaderValue> {
 pub fn build_router(
     proxy_state: Arc<ProxyState>,
     workspaces_state: Arc<WorkspacesState>,
+    integrations_state: Arc<IntegrationsState>,
     frontend_origin: &str,
     cors_enabled: bool,
 ) -> Router {
@@ -186,14 +189,60 @@ pub fn build_router(
         chat_proxy_route_root,
         chat_proxy_route_with_path,
     );
+    workspaces_router = register_workspace_proxy_pair(
+        workspaces_router,
+        "/workspaces/:id/commands",
+        commands_proxy_route_root,
+        commands_proxy_route_with_path,
+    );
+    // `register_workspace_proxy_pair` only ever registers `<prefix>/` and
+    // `<prefix>/*path` — axum's `*path` wildcard does not match a
+    // zero-segment tail AND does not match the bare prefix with no
+    // trailing slash at all, so `/workspaces/:id/commands` (no trailing
+    // slash) matched NEITHER route above. Every other existing namespace's
+    // frontend client only ever calls a real sub-path (e.g.
+    // `.../agent-history/agents`) or the exact `<prefix>/`, so this gap
+    // was never hit before commands' `listCommands`/`listBundles`
+    // (`frontend/src/features/commands/api.ts`) became the first caller
+    // to request the bare namespace root with no trailing slash — a real,
+    // confirmed 404 in production, not theoretical. Reuses the same root
+    // handler (`commands_proxy_route_root`, which already forwards
+    // `path=""` correctly to the bare `/api/wrapper/v1/commands`).
+    let workspaces_router =
+        workspaces_router.route("/workspaces/:id/commands", any(commands_proxy_route_root));
     let workspaces_router = workspaces_router.with_state(workspaces_state);
+
+    // Not `register_workspace_proxy_pair`/the `workspaces_router` above:
+    // that helper (and every route on that router) is shaped for
+    // `Arc<WorkspacesState>`, matching every OTHER proxy feature's
+    // "forward everything under this prefix" shape. This route is
+    // different in TWO ways — exactly THREE fixed named segments
+    // (`workspace id`, `agent_id`, `action`), with `action` itself
+    // validated server-side against a strict allowlist (see
+    // `browser_proxy.rs`) rather than forwarded as an open-ended tail
+    // path, AND its state is `Arc<IntegrationsState>`, not
+    // `Arc<WorkspacesState>`: this route is called FROM INSIDE the
+    // workspace's own container (no human browser session) and must pass
+    // the SAME per-workspace integrations bearer check
+    // `/workspaces/:id/mcp` already requires (see
+    // `browser_proxy_route`'s own doc comment for why `IntegrationsState`
+    // — not a second, duplicated lockout/state struct — is the right
+    // home for that shared machinery). A separate small router, merged
+    // in below, is the correct fit for a route with a genuinely different
+    // state type, not a forced reuse of the `WorkspacesState` router.
+    let browser_router = Router::new()
+        .route(
+            "/workspaces/:id/browser/:agent_id/:action",
+            any(browser_proxy_route),
+        )
+        .with_state(integrations_state);
 
     let proxy_router = Router::new()
         .route("/", any(forward))
         .route("/*path", any(forward))
         .with_state(proxy_state);
 
-    let router = workspaces_router.merge(proxy_router);
+    let router = workspaces_router.merge(browser_router).merge(proxy_router);
     if cors_enabled {
         router.layer(cors)
     } else {
@@ -207,7 +256,7 @@ mod tests {
     use crate::workspaces::test_support::{state_with_store, temp_store};
     use crate::workspaces::DockerCliLauncher;
     use axum::{
-        body::Body,
+        body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
@@ -284,6 +333,42 @@ mod tests {
         )
     }
 
+    /// `IntegrationsState` for the browser route now merged into this
+    /// router (see `build_router`'s own doc comment on why it needs a
+    /// second state type) — a fresh, isolated SQLite-backed store, same
+    /// pattern as `temp_workspaces_state`. None of the CORS/routing tests
+    /// below actually authenticate a browser-route request (the one test
+    /// that reaches it, `every_proxy_feature_prefix_is_reachable_through_the_real_router`,
+    /// uses an unknown workspace id and asserts 404 for its OTHER
+    /// prefixes — the browser route on an unknown id 401s on the bearer
+    /// check instead, which that test accounts for separately), so this
+    /// state never needs a seeded runtime token.
+    fn temp_integrations_state() -> Arc<crate::integrations::IntegrationsState> {
+        Arc::new(crate::integrations::IntegrationsState {
+            store: crate::integrations::IntegrationStore::new(unused_sqlite_pool()),
+            openconnector: Arc::new(
+                crate::integrations::openconnector::fake::FakeOpenConnector::default(),
+            ),
+            providers: Vec::new(),
+            workspace_store: crate::workspaces::WorkspaceStore::new(unused_sqlite_pool()),
+            http_client: reqwest::Client::new(),
+            token_cipher: crate::crypto::TokenCipher::new(&[9u8; 32]),
+            mcp_bearer_lockout: Default::default(),
+            catalog_cache: Default::default(),
+        })
+    }
+
+    /// An in-memory SQLite pool good enough for `temp_integrations_state`'s
+    /// two `Store`s, which none of this file's tests actually query (no
+    /// browser-route request in this test module presents a bearer, so
+    /// `find_runtime_token`/`workspace_store` lookups never run against
+    /// it) — `sqlx::SqlitePool` requires a real (if empty/unmigrated)
+    /// connection to construct at all, so this stands in for a full
+    /// `db::connect` temp-file pool without needing a temp dir per call.
+    fn unused_sqlite_pool() -> sqlx::SqlitePool {
+        sqlx::SqlitePool::connect_lazy("sqlite::memory:").expect("open in-memory sqlite pool")
+    }
+
     fn unused_proxy_state() -> Arc<ProxyState> {
         Arc::new(ProxyState {
             http_client: reqwest::Client::new(),
@@ -300,6 +385,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );
@@ -335,6 +421,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );
@@ -379,6 +466,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );
@@ -426,6 +514,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );
@@ -470,12 +559,20 @@ mod tests {
     /// been caught before this test existed. An unknown workspace id is
     /// used so every prefix below reaches its real handler and returns a
     /// real (404) response — proving actual dispatch, not just "some
-    /// route exists that returns 200".
+    /// route exists that returns 200". The one exception is
+    /// `/browser/...`: unlike every other proxy feature here, it is
+    /// bearer-gated (see `browser_proxy.rs`/`require_workspace_bearer`),
+    /// and this request carries no bearer at all — so it correctly 401s
+    /// on the auth check BEFORE ever reaching `resolve_ready_workspace`'s
+    /// own 404, which is still real dispatch (not axum's "no route
+    /// matched", which this test's whole point is to rule out), just a
+    /// different status for a route with an earlier gate.
     #[tokio::test]
     async fn every_proxy_feature_prefix_is_reachable_through_the_real_router() {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );
@@ -493,6 +590,15 @@ mod tests {
             "/workspaces/does-not-exist/agent-history/agents",
             "/workspaces/does-not-exist/chat/",
             "/workspaces/does-not-exist/chat/api/chat/start",
+            "/workspaces/does-not-exist/commands/",
+            "/workspaces/does-not-exist/commands/exec",
+            // No trailing slash, no sub-path at all — the exact shape
+            // `frontend/src/features/commands/api.ts`'s `listCommands`
+            // actually requests. Regression coverage for a REAL confirmed
+            // 404 in production: `register_workspace_proxy_pair` only
+            // ever registers `<prefix>/` and `<prefix>/*path`, neither of
+            // which matches this bare form.
+            "/workspaces/does-not-exist/commands",
         ] {
             let response = app
                 .clone()
@@ -506,7 +612,60 @@ mod tests {
                 "expected {uri} to reach its proxy handler and report the unknown \
                  workspace id (workspace_not_found), not axum's own \"no route matched\""
             );
+            // Status code ALONE does not prove real dispatch — axum's own
+            // "no route matched" fallback is ALSO a bare 404, with no
+            // body at all. Assert on the actual envelope body too: only
+            // `resolve_ready_workspace` (real dispatch) produces this
+            // exact `{"ok":false,"error":{"code":"workspace_not_found",...}}`
+            // shape (see `resolve.rs`). This is not a hypothetical gap —
+            // confirmed live: this test passed at 100% status-only before
+            // a real route-registration bug shipped (the bare
+            // `/workspaces/:id/commands`, no trailing slash, matched
+            // NEITHER of `register_workspace_proxy_pair`'s two registered
+            // routes and fell through to axum's own unmatched-route 404,
+            // which this status-only assertion could not tell apart from
+            // the real handler's own 404).
+            let bytes = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap_or_default();
+            let body = String::from_utf8_lossy(&bytes);
+            assert!(
+                body.contains("workspace_not_found"),
+                "expected {uri} to reach its proxy handler and return a real \
+                 workspace_not_found envelope body, got: {body:?} — an empty/ \
+                 non-JSON body here means axum's router never matched this URI \
+                 at all (a registration bug), even though the status code alone \
+                 was still 404"
+            );
         }
+
+        // `/browser/...` is registered on a genuinely different router
+        // (`Arc<IntegrationsState>`, merged in separately — see
+        // `build_router`'s own doc comment) than every URI in the loop
+        // above, so it is checked on its own here: real dispatch (not
+        // axum's "no route matched", which would be a 404 with no JSON
+        // envelope body at all), but 401 `missing_bearer` rather than
+        // `workspace_not_found`, because the bearer check runs BEFORE
+        // workspace resolution for this route (see
+        // `require_workspace_bearer`'s own doc comment for why).
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/workspaces/does-not-exist/browser/agent-1/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "expected the browser route to reach its real handler and report a missing \
+             bearer, not axum's own \"no route matched\""
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "missing_bearer");
     }
 
     /// `GET /workspaces` must dispatch to `list_workspaces_route`, not
@@ -518,6 +677,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );
@@ -545,6 +705,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );
@@ -571,6 +732,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );
@@ -612,6 +774,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             false,
         );
@@ -650,6 +813,7 @@ mod tests {
         let app = build_router(
             unused_proxy_state(),
             temp_workspaces_state().await,
+            temp_integrations_state(),
             "http://127.0.0.1:5173",
             true,
         );

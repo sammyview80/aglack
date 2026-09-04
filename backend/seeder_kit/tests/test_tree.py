@@ -77,6 +77,43 @@ def test_parse_tree_missing_optional_files_are_none(tmp_path: Path) -> None:
     assert agent.skills_dir is None
     assert agent.read_soul() is None
     assert agent.read_agent_instructions() is None
+    assert agent.wants_browser is False
+
+
+def test_parse_tree_detects_browser_enabled_marker(tmp_path: Path) -> None:
+    agent_dir = _agent_dir(tmp_path, "simple", "PM")
+    _write(agent_dir / "browser.enabled", "")
+
+    tree = parse_tree(tmp_path, mode="simple")
+    agent = tree.agents[0]
+
+    assert agent.wants_browser is True
+
+
+def test_parse_tree_browser_enabled_marker_content_is_ignored(tmp_path: Path) -> None:
+    """Presence-only marker, matching every other per-agent marker in this
+    tree — its content (if any) must never be parsed or required to be
+    anything in particular."""
+    agent_dir = _agent_dir(tmp_path, "simple", "PM")
+    _write(agent_dir / "browser.enabled", "this text is never read")
+
+    tree = parse_tree(tmp_path, mode="simple")
+    agent = tree.agents[0]
+
+    assert agent.wants_browser is True
+
+
+def test_parse_tree_browser_enabled_as_a_directory_does_not_count(tmp_path: Path) -> None:
+    """Must be a FILE, matching `tools_dir`/`skills_dir`'s own
+    file-vs-directory distinction elsewhere in this module — a stray
+    directory of the same name is not the marker."""
+    agent_dir = _agent_dir(tmp_path, "simple", "PM")
+    (agent_dir / "browser.enabled").mkdir(parents=True)
+
+    tree = parse_tree(tmp_path, mode="simple")
+    agent = tree.agents[0]
+
+    assert agent.wants_browser is False
 
 
 def test_parse_tree_multiple_agents_sorted_by_folder_name(tmp_path: Path) -> None:

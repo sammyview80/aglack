@@ -14,11 +14,12 @@ use super::store::{WorkspaceRecord, WorkspaceStatus};
 use super::WorkspaceStore;
 use crate::response::error;
 
-/// A `Ready` workspace's two published host ports — never constructed for
-/// any other status (see `resolve_ready_workspace`).
+/// A `Ready` workspace's three published host ports — never constructed
+/// for any other status (see `resolve_ready_workspace`).
 pub struct ReadyWorkspacePorts {
     pub wrapper_port: u16,
     pub desktop_port: u16,
+    pub browser_port: u16,
 }
 
 /// Look up `workspace_id` and return its ready-to-forward ports, or an
@@ -58,16 +59,18 @@ pub async fn resolve_ready_workspace(
         ));
     }
 
-    // `status == Ready` is only ever set together with BOTH ports (see
-    // store.rs's `mark_ready`, the one place all three are written in the
-    // same UPDATE) — a `Ready` record missing either would mean that
+    // `status == Ready` is only ever set together with ALL THREE ports
+    // (see store.rs's `mark_ready`, the one place all three are written
+    // in the same UPDATE) — a `Ready` record missing any would mean that
     // invariant broke elsewhere, not a normal/expected state for a caller
     // to hit. Fail closed rather than forwarding to a garbage address.
-    let (Some(wrapper_port), Some(desktop_port)) = (record.host_port, record.desktop_port) else {
+    let (Some(wrapper_port), Some(desktop_port), Some(browser_port)) =
+        (record.host_port, record.desktop_port, record.browser_port)
+    else {
         eprintln!(
             "rust_gateway: workspace {workspace_id:?} is Ready but is missing a recorded port \
-             (host_port={:?}, desktop_port={:?})",
-            record.host_port, record.desktop_port
+             (host_port={:?}, desktop_port={:?}, browser_port={:?})",
+            record.host_port, record.desktop_port, record.browser_port
         );
         return Err(error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -83,6 +86,7 @@ pub async fn resolve_ready_workspace(
         // construction, not a truncation risk in practice.
         wrapper_port: wrapper_port as u16,
         desktop_port: desktop_port as u16,
+        browser_port: browser_port as u16,
     })
 }
 

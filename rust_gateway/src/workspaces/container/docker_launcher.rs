@@ -125,8 +125,23 @@ impl ContainerLauncher for DockerCliLauncher {
         let container_name = format!("hermes-ws-{workspace_id}");
         let wrapper_port = pick_free_port().await?;
         let desktop_port = pick_free_port().await?;
+        let browser_port = pick_free_port().await?;
         let wrapper_publish_arg = format!("{wrapper_port}:8787");
         let desktop_publish_arg = format!("{desktop_port}:3000");
+        // `9400` is the browser-manager daemon's OWN container-internal
+        // default port (see `backend/workspace-image/browser_manager.py`'s
+        // `DEFAULT_PORT`/`BROWSER_MANAGER_PORT`) — inline literal here,
+        // matching this file's existing convention for the other two
+        // fixed container-side ports (`:8787`, `:3000` above), neither of
+        // which is a named const either. Not read from `config.rs`: this
+        // is not a network address this gateway process itself connects
+        // to directly by that literal (AGENTS.md rule #2 targets
+        // host/port/URL VALUES a caller could need to change per
+        // deployment); it is the OTHER side of a `docker create -p`
+        // mapping whose host-side port is always the freshly-picked
+        // `browser_port` above — the container-internal port is fixed by
+        // the image itself, exactly like `:8787`/`:3000` already are.
+        let browser_publish_arg = format!("{browser_port}:9400");
         let subfolder_env_arg = desktop_subfolder_env_arg(workspace_id);
 
         run_docker(
@@ -139,6 +154,8 @@ impl ContainerLauncher for DockerCliLauncher {
                 &wrapper_publish_arg,
                 "-p",
                 &desktop_publish_arg,
+                "-p",
+                &browser_publish_arg,
                 "-e",
                 &subfolder_env_arg,
                 &self.image_tag,
@@ -161,10 +178,33 @@ impl ContainerLauncher for DockerCliLauncher {
         wait_for_wrapper_ready(wrapper_port, Duration::from_secs(30)).await?;
         wait_for_desktop_ready(workspace_id, desktop_port, Duration::from_secs(15)).await?;
 
+        // Deliberately NO readiness wait for `browser_port`, unlike the
+        // wrapper/desktop waits directly above — two reasons, together:
+        //   1. Unlike the wrapper/desktop, a slow-to-start browser-manager
+        //      daemon does not need to gate the whole workspace's `Ready`
+        //      status: nothing else inside the container depends on it
+        //      being up (the wrapper and desktop are core to "is this
+        //      workspace usable at all"; the browser-manager daemon is
+        //      only needed by the narrow, separately-opt-in browser
+        //      feature — see `workspaces/proxy/browser_proxy.rs`).
+        //   2. It has no dedicated health endpoint to poll (its own
+        //      `_AGENT_PATH_RE` only ever matches `/agents/<id>/<action>`
+        //      — there is no bare `/health`), so a real check here could
+        //      only be a plain TCP connect, which proves the daemon's
+        //      `ThreadingHTTPServer` has bound the port, not that it can
+        //      actually service a request — a materially weaker guarantee
+        //      than `wait_for_wrapper_ready`'s real HTTP health check.
+        //      Given (1), that weaker guarantee is not worth the extra
+        //      launch latency and complexity; `browser_proxy.rs`'s own
+        //      `forward_to` already surfaces a clear 502 "backend
+        //      unreachable" if a caller reaches it before the daemon has
+        //      bound its port, which is an acceptable, self-explanatory
+        //      failure mode for a feature this narrow.
         Ok(LaunchedContainer {
             container_name,
             wrapper_port,
             desktop_port,
+            browser_port,
         })
     }
 

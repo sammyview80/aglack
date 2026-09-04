@@ -140,7 +140,10 @@ mod tests {
     fn encrypt_then_decrypt_recovers_the_plaintext() {
         let cipher = TokenCipher::new(&test_key());
         let ciphertext = cipher.encrypt("super-secret-bearer").expect("encrypt");
-        assert_ne!(ciphertext, "super-secret-bearer", "must not store plaintext");
+        assert_ne!(
+            ciphertext, "super-secret-bearer",
+            "must not store plaintext"
+        );
         let plaintext = cipher.decrypt(&ciphertext).expect("decrypt");
         assert_eq!(plaintext, "super-secret-bearer");
     }

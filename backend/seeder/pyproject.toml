@@ -1,0 +1,6 @@
+# `backend/seeder/` is a CONTENT tree, not an installable package (see
+# README.md) — this file exists only so `python -m pytest` run from this
+# directory (or pointed at it) discovers `tests/` with this directory as
+# rootdir. Same `[tool.pytest.ini_options]` style as ../seeder_kit/pyproject.toml.
+[tool.pytest.ini_options]
+testpaths = ["tests"]

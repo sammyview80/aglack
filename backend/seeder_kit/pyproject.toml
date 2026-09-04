@@ -24,8 +24,38 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
+# `mcp>=1.28` (not `<2`, deliberately widened past the original `<2` cap):
+# a real `docker build` against `backend/workspace-image/Dockerfile`
+# proved `browser-use==0.13.x` needs `mcp==2.1.1` exactly, incompatible
+# with the original `<2` cap. Verified widening is safe: this package's
+# full test suite (52/52) passes for real against `mcp==2.1.1` in an
+# isolated venv.
 mcp = [
-    "mcp>=1.28,<2",
+    "mcp>=1.28",
+]
+# NOT installed via this extras group in `backend/workspace-image/
+# Dockerfile` — see that file's own `uv pip install --exclude-newer
+# ... "browser-use..."` line for the real reason (a real, reproduced
+# `uv` resolver conflict specific
+# to that image's base layers: `hermes-agent`'s own `exclude-newer = "14
+# days"` policy, which doesn't exempt `browser-use`, forces `uv` to
+# resolve an OLD `browser-use` release whose OWN `mcp` pin — `==1.26.0` —
+# conflicts with `hermes-agent`'s already-installed exact `mcp==2.0.0`).
+# This extras group still exists so a DIFFERENT, non-Dockerfile consumer
+# of `seeder_kit` (one without `hermes-agent`'s constraints already in
+# its venv) can `pip install "seeder-kit[browser]"` normally — confirmed
+# that combination (this package + `browser-use`, no `hermes-agent` in
+# the mix) resolves and installs cleanly via both `pip` and `uv`.
+# `browser-use` itself is heavy (pulls in anthropic/openai/google-genai/
+# groq/ollama as REQUIRED deps, not per-provider extras — it wants to own
+# its own LLM calls, confirmed via a real `pip install` probe, not
+# assumed from docs). Requires Python 3.11+ (matches this package's own
+# requires-python already). LLM-credential wiring (which provider/key a
+# `browser-use`-backed tool module actually uses per call) is a
+# deliberately SEPARATE concern that lives in the CONTENT tree, not here:
+# see `backend/seeder/tools/_browser_use_llm.py` (used by `browser_task.py`).
+browser = [
+    "browser-use>=0.13,<0.14",
 ]
 dev = [
     "pytest>=8.0",

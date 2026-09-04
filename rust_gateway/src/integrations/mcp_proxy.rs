@@ -78,6 +78,31 @@ const ALLOWED_METHODS: &[&str] = &[
 /// substring filter over the SAME `list_connections` result — it forwards
 /// only a `list_connections` call, never a new listing method. Read-only,
 /// no connection-naming fields, same allowlist group as `list_connections`.
+///
+/// `open_browser`/`close_browser` are NOT hosted by `mcp_server.py` (the
+/// shared HTTP `integrations` MCP mount) — that HTTP mount has no way to
+/// know which agent is calling (confirmed live: every agent's `config.yaml`
+/// points at the SAME fixed URL), so these two tools instead live as
+/// stdio tool modules (`backend/seeder/tools/open_browser.py`/
+/// `close_browser.py`, run via `seeder_kit.runner` — a real per-agent
+/// subprocess, given real identity through its own `--agent-id` argv, see
+/// `seeder_kit/runner.py`'s `inject_agent_id`) calling
+/// `features/browser/service.py`'s `_call_browser_route` directly. They
+/// are listed here for the same "every tool this `integrations` MCP
+/// server exposes must appear in this allowlist" bookkeeping this list
+/// already follows for every other tool — but note the ARCHITECTURAL
+/// DIFFERENCE from every other entry above: those two never actually
+/// reach `sanitize_request`'s `tools/call` enforcement below at all, and
+/// never flow through the `integrations` MCP server at all. They are
+/// relayed to a completely different gateway route (`POST
+/// /workspaces/:id/browser/:agent_id/:action`, see
+/// `workspaces/proxy/browser_proxy.rs`), not through `/workspaces/:id/mcp`'s
+/// `tools/call` -> OpenConnector path this allowlist gates. Keeping their
+/// names here is harmless (a `tools/call` naming either of them through
+/// THIS proxy would still hit OpenConnector and 404/fail there, since
+/// OpenConnector has no such tool) and matches the task's own "every
+/// exposed tool name is tracked in one place" intent, but it does not by
+/// itself grant them any capability through this specific proxy path.
 const ALLOWED_TOOLS: &[&str] = &[
     "execute_action",
     "list_connections",
@@ -86,6 +111,8 @@ const ALLOWED_TOOLS: &[&str] = &[
     "list_apps",
     "find_action",
     "search_connection",
+    "open_browser",
+    "close_browser",
 ];
 
 /// Re-exported from `crate::crypto` so every EXISTING call site inside
@@ -167,7 +194,9 @@ impl McpBearerLockout {
             None => true,
             Some(last) => last.elapsed() >= INVALID_BEARER_AUDIT_INTERVAL,
         };
-        LockoutDecision::Allowed { should_audit_on_failure }
+        LockoutDecision::Allowed {
+            should_audit_on_failure,
+        }
     }
 
     /// Record one failed bearer check. Bumps the failure count, and marks
@@ -216,9 +245,10 @@ fn bearer_is_plausibly_shaped(bearer: &str) -> bool {
 /// gateway's own `sha256_hex` output, and `computed_hash` always is too)
 /// fails the check rather than panicking.
 fn hashes_match_constant_time(computed_hash: &str, stored_hash: &str) -> bool {
-    let (Some(computed), Some(stored)) =
-        (decode_sha256_hex(computed_hash), decode_sha256_hex(stored_hash))
-    else {
+    let (Some(computed), Some(stored)) = (
+        decode_sha256_hex(computed_hash),
+        decode_sha256_hex(stored_hash),
+    ) else {
         return false;
     };
     computed.ct_eq(&stored).into()
@@ -242,21 +272,49 @@ fn decode_sha256_hex(hex: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-/// `POST /workspaces/:id/mcp`
-pub async fn integration_mcp_route(
-    State(state): State<Arc<IntegrationsState>>,
-    Path(workspace_id): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let bearer = match extract_bearer(&headers) {
+/// Shared bearer-check-with-lockout logic for every route that
+/// authenticates a workspace container by its own integrations runtime
+/// token — today `/workspaces/:id/mcp` (`integration_mcp_route`) and
+/// `/workspaces/:id/browser/:agent_id/:action` (`browser_proxy::browser_proxy_route`).
+/// Both routes are reached FROM INSIDE the workspace's own container (no
+/// human browser session), so this bearer is their only gate, and both
+/// share the SAME per-workspace `McpBearerLockout` instance on
+/// `IntegrationsState` — a flood of failures against either route counts
+/// toward the one threshold for that workspace (see this module's own
+/// design-decision note in `IntegrationsState::mcp_bearer_lockout`'s doc
+/// comment / the crate's security review for why this is the intended
+/// behavior, not an accidental side effect of sharing the map).
+///
+/// Ordering mirrors `integration_mcp_route`'s original inline check
+/// exactly — cheapest rejection first: missing header, then implausible
+/// shape, then the lockout (a map lookup, no DB/hash), then the DB read +
+/// constant-time hash compare. Returns `Ok(())` on a verified bearer
+/// (after recording success, resetting that workspace's lockout counter)
+/// or `Err(response)` with the exact envelope/status the caller should
+/// return immediately — 401 `missing_bearer`/`invalid_bearer`/
+/// `unknown_workspace_token`, 429 `too_many_attempts`, or 500
+/// `token_lookup_failed`.
+///
+/// `audit_event` names the `integration_audit` row a failed hash compare
+/// writes (see below) — callers pass their OWN route's identity
+/// (`"mcp_proxy_invalid_bearer"` / `"browser_proxy_invalid_bearer"`) so an
+/// operator reading the audit log can tell which route actually saw the
+/// rejected attempt, even though both routes share the SAME lockout
+/// counter/threshold (see this function's own doc comment above).
+pub(crate) async fn require_workspace_bearer(
+    state: &IntegrationsState,
+    workspace_id: &str,
+    headers: &HeaderMap,
+    audit_event: &'static str,
+) -> Result<(), Response> {
+    let bearer = match extract_bearer(headers) {
         Some(bearer) => bearer,
         None => {
-            return error(
+            return Err(error(
                 StatusCode::UNAUTHORIZED,
                 "missing_bearer",
                 "Authorization: Bearer <token> is required.",
-            )
+            ))
         }
     };
 
@@ -264,11 +322,11 @@ pub async fn integration_mcp_route(
     // never even reaches the DB read or a hash — see
     // `bearer_is_plausibly_shaped`'s own doc comment.
     if !bearer_is_plausibly_shaped(&bearer) {
-        return error(
+        return Err(error(
             StatusCode::UNAUTHORIZED,
             "invalid_bearer",
             "Bearer token does not match this workspace's current token.",
-        );
+        ));
     }
 
     // Per-workspace lockout, checked BEFORE the DB read/hash — a
@@ -276,40 +334,40 @@ pub async fn integration_mcp_route(
     // this process nothing beyond a map lookup. See `McpBearerLockout`'s
     // own doc comment for the threshold/window (mirrors `auth::route`'s
     // login lockout).
-    let should_audit_on_failure = match state.mcp_bearer_lockout.check(&workspace_id) {
+    let should_audit_on_failure = match state.mcp_bearer_lockout.check(workspace_id) {
         LockoutDecision::Locked => {
-            return error(
+            return Err(error(
                 StatusCode::TOO_MANY_REQUESTS,
                 "too_many_attempts",
                 "Too many failed bearer attempts for this workspace. Try again later.",
-            )
+            ))
         }
-        LockoutDecision::Allowed { should_audit_on_failure } => should_audit_on_failure,
+        LockoutDecision::Allowed {
+            should_audit_on_failure,
+        } => should_audit_on_failure,
     };
 
-    let token_record = match state.store.find_runtime_token(&workspace_id).await {
+    let token_record = match state.store.find_runtime_token(workspace_id).await {
         Ok(Some(record)) => record,
         Ok(None) => {
-            state
-                .mcp_bearer_lockout
-                .record_failure(&workspace_id, false);
-            return error(
+            state.mcp_bearer_lockout.record_failure(workspace_id, false);
+            return Err(error(
                 StatusCode::UNAUTHORIZED,
                 "unknown_workspace_token",
                 "This workspace has no active integrations token.",
-            )
+            ));
         }
         Err(err) => {
-            return error(
+            return Err(error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "token_lookup_failed",
                 err.to_string(),
-            )
+            ))
         }
     };
 
     if !hashes_match_constant_time(&sha256_hex(&bearer), &token_record.token_hash) {
-        // The security-relevant audit event in this whole route: a bearer
+        // The security-relevant audit event in this whole check: a bearer
         // that doesn't match ITS OWN workspace's stored hash is exactly
         // what a cross-tenant attempt (or a stale bearer post-rotation)
         // looks like. Never logs the bearer itself, only that this
@@ -318,19 +376,33 @@ pub async fn integration_mcp_route(
         // the lockout above) so a flood of guesses cannot also flood
         // `integration_audit` — the exact attack this lockout mitigates.
         if should_audit_on_failure {
-            audit(&state, Some(&workspace_id), None, "mcp_proxy_invalid_bearer", false, None)
-                .await;
+            audit(state, Some(workspace_id), None, audit_event, false, None).await;
         }
         state
             .mcp_bearer_lockout
-            .record_failure(&workspace_id, should_audit_on_failure);
-        return error(
+            .record_failure(workspace_id, should_audit_on_failure);
+        return Err(error(
             StatusCode::UNAUTHORIZED,
             "invalid_bearer",
             "Bearer token does not match this workspace's current token.",
-        );
+        ));
     }
-    state.mcp_bearer_lockout.record_success(&workspace_id);
+    state.mcp_bearer_lockout.record_success(workspace_id);
+    Ok(())
+}
+
+/// `POST /workspaces/:id/mcp`
+pub async fn integration_mcp_route(
+    State(state): State<Arc<IntegrationsState>>,
+    Path(workspace_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(response) =
+        require_workspace_bearer(&state, &workspace_id, &headers, "mcp_proxy_invalid_bearer").await
+    {
+        return response;
+    }
 
     let request: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
@@ -362,9 +434,34 @@ pub async fn integration_mcp_route(
     // stored OpenConnector runtime token (`token_record.openconnector_bearer`,
     // AES-256-GCM-encrypted at rest — see `crypto::TokenCipher`) — never
     // the caller-supplied bearer, which only authenticates the container
-    // to THIS gateway, not to OpenConnector. Looked up fresh (not cached)
-    // so a mid-flight rotation takes effect immediately.
-    let decrypted_bearer = match state.token_cipher.decrypt(&token_record.openconnector_bearer) {
+    // to THIS gateway, not to OpenConnector. Looked up fresh here (not
+    // reused from `require_workspace_bearer`'s own internal lookup, and
+    // not cached) so a mid-flight rotation takes effect immediately, and
+    // so the shared bearer-check function's return type stays a plain
+    // `Result<(), Response>` usable by routes (like the browser proxy)
+    // that have no OpenConnector bearer to forward at all.
+    let token_record = match state.store.find_runtime_token(&workspace_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return error(
+                StatusCode::UNAUTHORIZED,
+                "unknown_workspace_token",
+                "This workspace has no active integrations token.",
+            )
+        }
+        Err(err) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "token_lookup_failed",
+                err.to_string(),
+            )
+        }
+    };
+
+    let decrypted_bearer = match state
+        .token_cipher
+        .decrypt(&token_record.openconnector_bearer)
+    {
         Ok(bearer) => bearer,
         Err(err) => {
             return error(
@@ -375,7 +472,11 @@ pub async fn integration_mcp_route(
         }
     };
 
-    match state.openconnector.forward_mcp(&decrypted_bearer, &sanitized).await {
+    match state
+        .openconnector
+        .forward_mcp(&decrypted_bearer, &sanitized)
+        .await
+    {
         Ok(value) => (StatusCode::OK, axum::Json(value)).into_response(),
         Err(err) => {
             // Issue 2: `err.message` may embed OpenConnector's raw
@@ -491,7 +592,9 @@ fn sanitize_request(
         if tool_name == "execute_action" {
             if let Some(action_id) = arguments.get("actionId").and_then(Value::as_str) {
                 let service = action_id.split('.').next().unwrap_or(action_id);
-                let provider = providers.iter().find(|p| p.openconnector_service == service);
+                let provider = providers
+                    .iter()
+                    .find(|p| p.openconnector_service == service);
                 if let Some(provider) = provider {
                     if !provider.allows_action(action_id) {
                         return Err(error(
@@ -556,20 +659,29 @@ mod tests {
     #[test]
     fn hashes_match_constant_time_accepts_the_correct_hash() {
         let hash = sha256_hex("correct-bearer");
-        assert!(hashes_match_constant_time(&sha256_hex("correct-bearer"), &hash));
+        assert!(hashes_match_constant_time(
+            &sha256_hex("correct-bearer"),
+            &hash
+        ));
     }
 
     #[test]
     fn hashes_match_constant_time_rejects_a_wrong_hash() {
         let stored = sha256_hex("correct-bearer");
-        assert!(!hashes_match_constant_time(&sha256_hex("wrong-bearer"), &stored));
+        assert!(!hashes_match_constant_time(
+            &sha256_hex("wrong-bearer"),
+            &stored
+        ));
     }
 
     #[test]
     fn hashes_match_constant_time_fails_closed_on_a_malformed_stored_hash() {
         // Must not panic on a hex-decode failure — fails the check instead.
         let computed = sha256_hex("anything");
-        assert!(!hashes_match_constant_time(&computed, "not-valid-hex-and-wrong-length"));
+        assert!(!hashes_match_constant_time(
+            &computed,
+            "not-valid-hex-and-wrong-length"
+        ));
     }
 
     #[test]
@@ -585,7 +697,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("test.db");
         std::mem::forget(dir);
-        crate::db::connect(&db_path).await.expect("connect to fresh sqlite db")
+        crate::db::connect(&db_path)
+            .await
+            .expect("connect to fresh sqlite db")
     }
 
     /// `IntegrationsState` wired to a fresh store/`FakeOpenConnector`, with
@@ -606,15 +720,22 @@ mod tests {
             .await
             .expect("begin_creation");
         workspace_store
-            .mark_ready(&idempotency_key, "not-a-real-container", 1, 2)
+            .mark_ready(&idempotency_key, "not-a-real-container", 1, 2, 3)
             .await
             .expect("mark_ready");
 
         let store = IntegrationStore::new(pool.clone());
         let token_cipher = crate::crypto::TokenCipher::new(&[9u8; 32]);
-        let encrypted_bearer = token_cipher.encrypt("openconnector-bearer").expect("encrypt");
+        let encrypted_bearer = token_cipher
+            .encrypt("openconnector-bearer")
+            .expect("encrypt");
         store
-            .upsert_runtime_token(workspace_id, "token-id-1", &sha256_hex(correct_bearer), &encrypted_bearer)
+            .upsert_runtime_token(
+                workspace_id,
+                "token-id-1",
+                &sha256_hex(correct_bearer),
+                &encrypted_bearer,
+            )
             .await
             .expect("seed runtime token");
 
@@ -634,7 +755,9 @@ mod tests {
     fn mcp_request_with_bearer(bearer: &str) -> (HeaderMap, Bytes) {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, format!("Bearer {bearer}").parse().unwrap());
-        let body = Bytes::from(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":"ping"})).unwrap());
+        let body = Bytes::from(
+            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":"ping"})).unwrap(),
+        );
         (headers, body)
     }
 
@@ -801,6 +924,31 @@ mod tests {
     }
 
     #[test]
+    fn allows_open_browser_and_close_browser() {
+        // `open_browser`/`close_browser` (stdio tool modules under
+        // `backend/seeder/tools/`, run per-agent via `seeder_kit.runner`,
+        // NOT hosted by `mcp_server.py` — see `ALLOWED_TOOLS`'s own doc
+        // comment for why) are tracked in this same
+        // allowlist per `ALLOWED_TOOLS`'s own doc comment, even though
+        // neither is actually reached via this proxy's `tools/call` path
+        // in practice (they relay to the separate
+        // `/workspaces/:id/browser/:agent_id/:action` route instead) — a
+        // `tools/call` naming either of them through `/mcp` must still
+        // pass this allowlist check, not be rejected as an unrecognized
+        // tool name.
+        for tool in ["open_browser", "close_browser"] {
+            let request = json!({
+                "jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":tool,"arguments":{}}
+            });
+            assert!(
+                sanitize_request("ws-1", &[], request).is_ok(),
+                "{tool} must be allowed"
+            );
+        }
+    }
+
+    #[test]
     fn allows_execute_action_and_list_connections() {
         for tool in ["execute_action", "list_connections"] {
             let request = json!({
@@ -853,7 +1001,10 @@ mod tests {
         let providers = [test_provider("github", vec!["github.get_current_user"])];
         let request = execute_action_request("github.delete_repo");
         let result = sanitize_request("ws-1", &providers, request);
-        assert!(result.is_err(), "an action outside the allowlist must be rejected");
+        assert!(
+            result.is_err(),
+            "an action outside the allowlist must be rejected"
+        );
     }
 
     #[test]

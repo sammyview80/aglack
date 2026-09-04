@@ -44,17 +44,20 @@ pub(crate) use health::{
 };
 
 /// A launched container's identity: the Docker container name (used for
-/// later `docker start`/`stop`/`exec`/`cp`) and the two HOST ports it
+/// later `docker start`/`stop`/`exec`/`cp`) and the three HOST ports it
 /// publishes — `wrapper_port` (the wrapper's `/api/wrapper/v1`, container
-/// port 8787) and `desktop_port` (the webtop desktop's nginx, container
-/// port 3000). Used by the onboarding/hermes-webui/desktop proxy routes
-/// (see `resolve.rs`) to forward a request to THIS specific workspace
-/// instead of one fixed backend_addr.
+/// port 8787), `desktop_port` (the webtop desktop's nginx, container port
+/// 3000), and `browser_port` (the browser-manager daemon, see
+/// `backend/workspace-image/browser_manager.py`, container port 9400).
+/// Used by the onboarding/hermes-webui/desktop/browser proxy routes (see
+/// `resolve.rs`) to forward a request to THIS specific workspace instead
+/// of one fixed backend_addr.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchedContainer {
     pub container_name: String,
     pub wrapper_port: u16,
     pub desktop_port: u16,
+    pub browser_port: u16,
 }
 
 /// Real, live Docker container state — see `ContainerLauncher::inspect`.

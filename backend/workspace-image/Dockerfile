@@ -186,6 +186,40 @@ COPY backend/wrapper /opt/hermes-webui/wrapper
 # integrations feature (docs/integrations-plan.md); fixed here because
 # it was found while verifying that feature end to end.
 RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e "/opt/hermes-webui/seeder_kit[mcp]"
+
+# `browser-use` (for agent-driven browser automation against the per-agent
+# Chromium `browser_manager.py` daemon manages — see that file +
+# `rust_gateway/src/workspaces/proxy/browser_proxy.rs`) is installed as
+# its OWN `uv pip install` call, with an EXPLICIT `--exclude-newer`
+# override, deliberately NOT folded into the `uv pip install -e
+# seeder_kit[...]` line above.
+# REAL, CONFIRMED reason (`docker build` failure, reproduced and root-
+# caused, not guessed): `hermes-agent`'s OWN `pyproject.toml` (this
+# image's `hermes-source` stage) sets `exclude-newer = "14 days"` — a
+# supply-chain freshness window `uv`'s resolver applies to every package
+# UNLESS explicitly listed in that same file's `exclude-newer-package`
+# exemption map, which does not include `browser-use`. Once
+# `hermes-agent`'s own exact `mcp==2.0.0` pin (its `[mcp]` extra) is
+# already resolved into this venv, `uv` can only see `browser-use`
+# releases published within that same aged window when resolving
+# `seeder_kit[browser]` — which pulls in an OLD `browser-use` release
+# whose OWN `mcp` pin (`==1.26.0`) directly conflicts with the already-
+# installed `mcp==2.0.0`, producing "No solution found... unsatisfiable"
+# — confirmed via a real, isolated Alpine/musl `uv pip install` repro
+# matching this stage exactly. A PLAIN `pip install` (no `exclude-newer`
+# concept at all) was tried first and confirmed to resolve this cleanly
+# — but a bare `uv venv` does NOT bundle a `pip` binary (confirmed live:
+# "/opt/hermes/.venv/bin/pip: not found") and installing `pip` itself
+# just to run it once is an unnecessary extra step when `uv` already has
+# a first-class flag for exactly this: `--exclude-newer` on ONE
+# invocation overrides the pyproject-level setting for that call only,
+# without installing a second package manager or touching
+# `hermes-agent`'s own policy file. Scoped to ONLY this one line — do
+# not add `--exclude-newer` to any other `uv pip install` call here;
+# that freshness policy is a deliberate `hermes-agent` supply-chain
+# control everything else should keep respecting.
+RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python --exclude-newer "$(date -u +%Y-%m-%d)" "browser-use>=0.13,<0.14"
+
 RUN UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/wrapper
 
 # ---- Stage 3: the final image — webtop desktop + built hermes venv + our own WebUI ----

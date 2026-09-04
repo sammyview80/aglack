@@ -143,9 +143,7 @@ async fn run_docker(args: &[&str]) -> Result<(), TokenDeliveryError> {
         }
         Err(_) => {
             return Err(TokenDeliveryError {
-                message: format!(
-                    "docker {args:?} timed out after {DOCKER_COMMAND_TIMEOUT:?}"
-                ),
+                message: format!("docker {args:?} timed out after {DOCKER_COMMAND_TIMEOUT:?}"),
             })
         }
     };

@@ -140,10 +140,14 @@ impl ContainerLauncher for FakeLauncher {
             // needed; never real, reachable ports.
             wrapper_port: 40000 + call_count,
             desktop_port: 50000 + call_count,
+            browser_port: 60000 + call_count,
         })
     }
 
-    async fn remove(&self, _container_name: &str) -> Result<(), super::super::CreateWorkspaceError> {
+    async fn remove(
+        &self,
+        _container_name: &str,
+    ) -> Result<(), super::super::CreateWorkspaceError> {
         self.remove_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }

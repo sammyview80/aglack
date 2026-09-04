@@ -164,15 +164,27 @@ pub async fn catalog_route(
 ) -> Response {
     let offset = query.offset.unwrap_or(0);
     if offset < 0 {
-        return error(StatusCode::BAD_REQUEST, "invalid_pagination", "offset must not be negative");
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_pagination",
+            "offset must not be negative",
+        );
     }
     let requested_limit = query.limit.unwrap_or(DEFAULT_CATALOG_LIMIT);
     if requested_limit < 0 {
-        return error(StatusCode::BAD_REQUEST, "invalid_pagination", "limit must not be negative");
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_pagination",
+            "limit must not be negative",
+        );
     }
     let limit = requested_limit.min(MAX_CATALOG_LIMIT);
 
-    let fetch = match state.catalog_cache.get_or_refresh(state.openconnector.as_ref()).await {
+    let fetch = match state
+        .catalog_cache
+        .get_or_refresh(state.openconnector.as_ref())
+        .await
+    {
         Ok(fetch) => fetch,
         Err(err) => {
             tracing::warn!(error = %err, "openconnector list_providers_catalog failed with no cached value to fall back to");
@@ -316,8 +328,10 @@ pub async fn catalog_connect_route(
             },
         ),
         Err(response) => {
-            let compensation_result =
-                state.openconnector.delete_connection(&service, &connection_name).await;
+            let compensation_result = state
+                .openconnector
+                .delete_connection(&service, &connection_name)
+                .await;
             audit(
                 &state,
                 Some(&workspace_id),
@@ -357,7 +371,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("test.db");
         std::mem::forget(dir);
-        crate::db::connect(&db_path).await.expect("connect to fresh sqlite db")
+        crate::db::connect(&db_path)
+            .await
+            .expect("connect to fresh sqlite db")
     }
 
     fn test_token_cipher() -> crate::crypto::TokenCipher {
@@ -424,16 +440,21 @@ mod tests {
     async fn ready_workspace(pool: &sqlx::SqlitePool, workspace_id: &str) -> WorkspaceStore {
         let store = WorkspaceStore::new(pool.clone());
         let idempotency_key = format!("key-{workspace_id}");
-        store.begin_creation(&idempotency_key, workspace_id).await.expect("begin_creation");
         store
-            .mark_ready(&idempotency_key, "not-a-real-container", 1, 2)
+            .begin_creation(&idempotency_key, workspace_id)
+            .await
+            .expect("begin_creation");
+        store
+            .mark_ready(&idempotency_key, "not-a-real-container", 1, 2, 3)
             .await
             .expect("mark_ready");
         store
     }
 
     async fn body_json(response: Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -451,19 +472,26 @@ mod tests {
 
     #[tokio::test]
     async fn catalog_route_calls_openconnector_once_for_two_requests_within_the_ttl() {
-        let fake = Arc::new(
-            FakeOpenConnector::default().with_catalog(vec![provider("github", "GitHub")]),
-        );
+        let fake =
+            Arc::new(FakeOpenConnector::default().with_catalog(vec![provider("github", "GitHub")]));
         let (state, _pool) = catalog_state(fake.clone()).await;
 
         let _ = catalog_route(
             State(state.clone()),
-            Query(CatalogQuery { search: None, limit: None, offset: None }),
+            Query(CatalogQuery {
+                search: None,
+                limit: None,
+                offset: None,
+            }),
         )
         .await;
         let _ = catalog_route(
             State(state),
-            Query(CatalogQuery { search: None, limit: None, offset: None }),
+            Query(CatalogQuery {
+                search: None,
+                limit: None,
+                offset: None,
+            }),
         )
         .await;
 
@@ -487,7 +515,11 @@ mod tests {
 
         let response = catalog_route(
             State(state),
-            Query(CatalogQuery { search: Some("GIT".to_string()), limit: None, offset: None }),
+            Query(CatalogQuery {
+                search: Some("GIT".to_string()),
+                limit: None,
+                offset: None,
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -507,7 +539,11 @@ mod tests {
 
         let response = catalog_route(
             State(state),
-            Query(CatalogQuery { search: Some("calendar".to_string()), limit: None, offset: None }),
+            Query(CatalogQuery {
+                search: Some("calendar".to_string()),
+                limit: None,
+                offset: None,
+            }),
         )
         .await;
         let body = body_json(response).await;
@@ -521,14 +557,17 @@ mod tests {
     #[tokio::test]
     async fn catalog_route_pagination_offset_past_total_returns_zero_results() {
         let fake = Arc::new(
-            FakeOpenConnector::default()
-                .with_catalog(vec![provider("a", "A"), provider("b", "B")]),
+            FakeOpenConnector::default().with_catalog(vec![provider("a", "A"), provider("b", "B")]),
         );
         let (state, _pool) = catalog_state(fake).await;
 
         let response = catalog_route(
             State(state),
-            Query(CatalogQuery { search: None, limit: None, offset: Some(10) }),
+            Query(CatalogQuery {
+                search: None,
+                limit: None,
+                offset: Some(10),
+            }),
         )
         .await;
         let body = body_json(response).await;
@@ -547,7 +586,11 @@ mod tests {
 
         let response = catalog_route(
             State(state),
-            Query(CatalogQuery { search: None, limit: Some(2), offset: Some(2) }),
+            Query(CatalogQuery {
+                search: None,
+                limit: Some(2),
+                offset: Some(2),
+            }),
         )
         .await;
         let body = body_json(response).await;
@@ -559,14 +602,17 @@ mod tests {
     #[tokio::test]
     async fn catalog_route_pagination_limit_exceeding_total_returns_all() {
         let fake = Arc::new(
-            FakeOpenConnector::default()
-                .with_catalog(vec![provider("a", "A"), provider("b", "B")]),
+            FakeOpenConnector::default().with_catalog(vec![provider("a", "A"), provider("b", "B")]),
         );
         let (state, _pool) = catalog_state(fake).await;
 
         let response = catalog_route(
             State(state),
-            Query(CatalogQuery { search: None, limit: Some(1000), offset: None }),
+            Query(CatalogQuery {
+                search: None,
+                limit: Some(1000),
+                offset: None,
+            }),
         )
         .await;
         let body = body_json(response).await;
@@ -580,14 +626,22 @@ mod tests {
 
         let response = catalog_route(
             State(state.clone()),
-            Query(CatalogQuery { search: None, limit: Some(-1), offset: None }),
+            Query(CatalogQuery {
+                search: None,
+                limit: Some(-1),
+                offset: None,
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let response = catalog_route(
             State(state),
-            Query(CatalogQuery { search: None, limit: None, offset: Some(-1) }),
+            Query(CatalogQuery {
+                search: None,
+                limit: None,
+                offset: Some(-1),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -602,7 +656,11 @@ mod tests {
 
         let response = catalog_route(
             State(state),
-            Query(CatalogQuery { search: None, limit: None, offset: None }),
+            Query(CatalogQuery {
+                search: None,
+                limit: None,
+                offset: None,
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
@@ -640,7 +698,10 @@ mod tests {
         }
         let fake = FakeOpenConnector::that_fails_list_providers_catalog();
 
-        let fetch = cache.get_or_refresh(&fake).await.expect("stale value is served, not an error");
+        let fetch = cache
+            .get_or_refresh(&fake)
+            .await
+            .expect("stale value is served, not an error");
         match fetch {
             CatalogFetch::Stale(providers) => {
                 assert_eq!(providers.len(), 1);
@@ -661,8 +722,13 @@ mod tests {
 
         let response = catalog_connect_route(
             State(state.clone()),
-            Path((workspace_id.to_string(), "some-unlisted-service".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Path((
+                workspace_id.to_string(),
+                "some-unlisted-service".to_string(),
+            )),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
@@ -690,7 +756,9 @@ mod tests {
         let response = catalog_connect_route(
             State(state),
             Path(("does-not-exist".to_string(), "some-service".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
@@ -709,12 +777,17 @@ mod tests {
         let (state, pool) = catalog_state(fake.clone()).await;
         let workspace_id = "ws-catalog-creating";
         let store = WorkspaceStore::new(pool.clone());
-        store.begin_creation("key-creating", workspace_id).await.expect("begin_creation");
+        store
+            .begin_creation("key-creating", workspace_id)
+            .await
+            .expect("begin_creation");
 
         let response = catalog_connect_route(
             State(state),
             Path((workspace_id.to_string(), "some-service".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
@@ -754,19 +827,19 @@ mod tests {
             .await
             .expect("seed catalog-connected row");
 
-        let response =
-            crate::integrations::route::list_integrations_route(
-                State(state),
-                Path(workspace_id.to_string()),
-            )
-            .await;
+        let response = crate::integrations::route::list_integrations_route(
+            State(state),
+            Path(workspace_id.to_string()),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         let connections = body["data"].as_array().unwrap();
         assert!(
-            connections.iter().any(|c| c["provider_id"] == "some-unlisted-service"
-                && c["status"] == "connected"),
+            connections
+                .iter()
+                .any(|c| c["provider_id"] == "some-unlisted-service" && c["status"] == "connected"),
             "the catalog-connected service must appear in the unified list: {connections:?}"
         );
     }
@@ -786,22 +859,29 @@ mod tests {
     async fn catalog_connect_rejects_a_service_id_that_collides_with_a_curated_provider() {
         let fake = Arc::new(FakeOpenConnector::default());
         let (state, pool) =
-            catalog_state_with_providers(fake.clone(), vec![test_curated_provider("github")])
-                .await;
+            catalog_state_with_providers(fake.clone(), vec![test_curated_provider("github")]).await;
         let workspace_id = "ws-catalog-collision";
         ready_workspace(&pool, workspace_id).await;
 
         let response = catalog_connect_route(
             State(state.clone()),
             Path((workspace_id.to_string(), "github".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = body_json(response).await;
-        assert_eq!(body["ok"], false, "a collision must never look like success: {body:?}");
-        assert_eq!(body["error"]["code"], "provider_id_conflicts_with_curated_entry");
+        assert_eq!(
+            body["ok"], false,
+            "a collision must never look like success: {body:?}"
+        );
+        assert_eq!(
+            body["error"]["code"],
+            "provider_id_conflicts_with_curated_entry"
+        );
 
         assert!(
             fake.create_runtime_token_calls().is_empty(),
@@ -833,8 +913,13 @@ mod tests {
 
         let response = catalog_connect_route(
             State(state.clone()),
-            Path((workspace_id.to_string(), "some-unlisted-service".to_string())),
-            Json(ConnectRequest { api_key: "irrelevant".to_string() }),
+            Path((
+                workspace_id.to_string(),
+                "some-unlisted-service".to_string(),
+            )),
+            Json(ConnectRequest {
+                api_key: "irrelevant".to_string(),
+            }),
         )
         .await;
 
@@ -881,7 +966,10 @@ mod tests {
             .collect();
 
         for handle in calls {
-            let fetch = handle.await.expect("task did not panic").expect("fetch succeeds");
+            let fetch = handle
+                .await
+                .expect("task did not panic")
+                .expect("fetch succeeds");
             let providers = match fetch {
                 CatalogFetch::Fresh(providers) | CatalogFetch::Stale(providers) => providers,
             };

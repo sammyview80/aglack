@@ -14,6 +14,11 @@ knows how to read one given its name):
         agent.md                       -> that agent's instructions file content
         tools/*.py                     per-agent MCP tools, additive to <root>/tools/
         skills/<name>/SKILL.md         per-agent skills, additive to <root>/skills/
+        browser.enabled                -> presence-only marker (content ignored,
+                                        matching every other per-agent marker in
+                                        this tree): this agent opts into a
+                                        per-profile browser-automation capability.
+                                        See `AgentSpec.wants_browser`.
 
 Global `tools/`/`skills/` live at the tree root, OUTSIDE any mode — a tool
 or skill every agent should get regardless of mode belongs there once, not
@@ -75,6 +80,19 @@ class AgentSpec:
     skills_dir: Path | None
     """`<agent_dir>/skills/`, or None if it doesn't exist as a directory."""
 
+    wants_browser: bool = False
+    """True if `<agent_dir>/browser.enabled` exists — a presence-only
+    marker (its content, if any, is never read), matching every other
+    per-agent marker in this tree (`soul.md`/`agent.md`/`tools/`/`skills/`
+    are likewise detected by existence, not parsed content). Declares
+    that this agent opts into a per-profile browser-automation capability
+    — see the host application's own translation of this into whatever
+    "enable a browser for this agent" means for it (e.g. Hermes WebUI's
+    `features/agent_seeder/service.py` writing a `browser:` block into
+    that profile's `config.yaml`). Defaults to `False` (a field with a
+    default so this dataclass stays backward compatible for any existing
+    caller constructing an `AgentSpec` positionally without this field)."""
+
     def read_soul(self) -> str | None:
         return self.soul_path.read_text(encoding="utf-8") if self.soul_path else None
 
@@ -132,6 +150,7 @@ def _parse_agent_dir(agent_dir: Path) -> AgentSpec:
         agent_instructions_path=_existing_file_or_none(agent_dir / "agent.md"),
         tools_dir=_existing_dir_or_none(agent_dir / "tools"),
         skills_dir=_existing_dir_or_none(agent_dir / "skills"),
+        wants_browser=(agent_dir / "browser.enabled").is_file(),
     )
 
 

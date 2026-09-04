@@ -1,6 +1,9 @@
+mod agent_cookie;
 mod agent_history_proxy;
 mod agent_seeder_proxy;
+mod browser_proxy;
 mod chat_proxy;
+mod commands_proxy;
 mod desktop_proxy;
 mod hermes_webui_proxy;
 mod onboarding_proxy;
@@ -14,12 +17,10 @@ mod wrapper_prefix_proxy;
 pub use agent_history_proxy::{
     agent_history_proxy_route_root, agent_history_proxy_route_with_path,
 };
-pub use agent_seeder_proxy::{
-    agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path,
-};
+pub use agent_seeder_proxy::{agent_seeder_proxy_route_root, agent_seeder_proxy_route_with_path};
+pub use browser_proxy::browser_proxy_route;
 pub use chat_proxy::{chat_proxy_route_root, chat_proxy_route_with_path};
+pub use commands_proxy::{commands_proxy_route_root, commands_proxy_route_with_path};
 pub use desktop_proxy::{desktop_proxy_route_root, desktop_proxy_route_with_path};
-pub use hermes_webui_proxy::{
-    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path,
-};
+pub use hermes_webui_proxy::{hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path};
 pub use onboarding_proxy::{onboarding_proxy_route_root, onboarding_proxy_route_with_path};

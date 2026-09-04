@@ -275,8 +275,8 @@ providers:
     /// entry there fails gateway startup, so catch it here first.
     #[test]
     fn real_providers_yaml_on_disk_loads_with_every_catalog_entry() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../backend/integrations/providers.yaml");
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend/integrations/providers.yaml");
         let providers = load_providers(&path).expect("real providers.yaml loads");
         assert_eq!(providers.len(), 104);
         let unique: std::collections::HashSet<&str> =

@@ -52,7 +52,16 @@ def test_installs_seeder_kit_as_its_own_step_before_wrapper() -> None:
     wrapper's own install resolves its plain-name (no `file://` URL)
     dependency on it."""
     text = _dockerfile_text()
-    seeder_kit_install = "uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/seeder_kit"
+    # Installed with ONLY its `[mcp]` extra here — `browser-use` is
+    # deliberately installed as a SEPARATE, later step (see
+    # `test_installs_browser_use_with_exclude_newer_override` for why:
+    # a real, confirmed `uv` resolver conflict between `hermes-agent`'s
+    # own exact `mcp==2.0.0` pin + its `exclude-newer` supply-chain
+    # policy, and `browser-use`'s own `mcp` pin, makes combining them
+    # into one `[mcp,browser]` install fail — see
+    # `backend/seeder_kit/pyproject.toml`'s own comment on the `browser`
+    # extras group for the full story).
+    seeder_kit_install = 'uv pip install --python /opt/hermes/.venv/bin/python -e "/opt/hermes-webui/seeder_kit[mcp]"'
     wrapper_install = "uv pip install --python /opt/hermes/.venv/bin/python -e /opt/hermes-webui/wrapper"
     assert seeder_kit_install in text, (
         "Dockerfile must install seeder_kit as its own explicit step — "
@@ -64,6 +73,45 @@ def test_installs_seeder_kit_as_its_own_step_before_wrapper() -> None:
         "seeder_kit must be installed BEFORE the wrapper, or the wrapper's "
         "dependency resolution fails needing a 'seeder-kit' package that "
         "doesn't exist in the venv yet."
+    )
+
+
+def test_installs_browser_use_with_exclude_newer_override() -> None:
+    """`browser-use` (agent-driven browser automation against the
+    per-agent Chromium `browser_manager.py` daemon manages) is installed
+    as its OWN `uv pip install` call, AFTER the `seeder_kit[mcp]` step,
+    with an explicit `--exclude-newer` override.
+
+    REAL, CONFIRMED reason (a real `docker build` failed, was root-
+    caused, not guessed): `hermes-agent`'s own `pyproject.toml` sets
+    `exclude-newer = "14 days"` and does not exempt `browser-use` from
+    it; once `hermes-agent`'s own exact `mcp==2.0.0` pin is already in
+    this venv, `uv`'s resolver can only see `browser-use` releases from
+    within that aged window, which pull an OLD `browser-use` whose own
+    `mcp` pin (`==1.26.0`) conflicts with the already-installed
+    `mcp==2.0.0` — "No solution found... unsatisfiable". A bare `uv
+    venv` has no `pip` binary at all (confirmed live), so the fix is
+    `uv`'s own `--exclude-newer` flag on this ONE call, not a second
+    package manager."""
+    text = _dockerfile_text()
+    assert '"browser-use>=0.13,<0.14"' in text, (
+        "Dockerfile must install browser-use — a build missing it would "
+        "leave browser-use unavailable to any tool module that imports "
+        "it, failing at IMPORT time inside a running container rather "
+        "than at build time where it's easy to catch."
+    )
+    assert "--exclude-newer" in text, (
+        "the browser-use install must override hermes-agent's inherited "
+        "exclude-newer window (see this test's own docstring) or it "
+        "resolves an old, incompatible browser-use release again."
+    )
+    seeder_kit_mcp_install = 'uv pip install --python /opt/hermes/.venv/bin/python -e "/opt/hermes-webui/seeder_kit[mcp]"'
+    browser_use_install_idx = text.index('"browser-use>=0.13,<0.14"')
+    assert text.index(seeder_kit_mcp_install) < browser_use_install_idx, (
+        "seeder_kit[mcp] must install BEFORE browser-use — browser-use's "
+        "own tool modules (backend/seeder/tools/*.py) run under "
+        "seeder_kit's runner.py, which needs the mcp package seeder_kit "
+        "itself pulls in."
     )
 
 

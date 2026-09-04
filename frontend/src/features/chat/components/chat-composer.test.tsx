@@ -6,11 +6,21 @@ import { afterEach } from 'vitest'
 import { ChatComposer } from '@/features/chat/components/chat-composer'
 import { renderWithClient } from '@/test/utils'
 import * as commandsApi from '@/features/commands/api'
+import * as chatApi from '@/features/chat/api'
 import type { CommandBundle, CommandInfo } from '@/features/commands/types'
 
 vi.mock('@/features/commands/api')
+vi.mock('@/features/chat/api', async () => {
+  const actual = await vi.importActual<typeof chatApi>('@/features/chat/api')
+  return {
+    ...actual,
+    startCompression: vi.fn(),
+    getCompressionStatus: vi.fn(),
+  }
+})
 
 const mockedCommandsApi = vi.mocked(commandsApi)
+const mockedChatApi = vi.mocked(chatApi)
 
 const COMMANDS: CommandInfo[] = [
   {
@@ -60,6 +70,21 @@ const COMMANDS: CommandInfo[] = [
     category: 'Session',
     aliases: ['reset'],
     argsHint: '[name]',
+    subcommands: [],
+    cliOnly: false,
+    gatewayOnly: false,
+  },
+  {
+    // Real fixture shape for the /compress bug report: matches upstream's
+    // own COMMANDS table entry (`{name:'compress',...,fn:cmdCompress,
+    // arg:'[focus topic]',noEcho:true}`, backend/upstream/static/
+    // commands.js) — a real client-side action backed by
+    // POST /api/session/compress/start + polling, not /api/commands/exec.
+    name: 'compress',
+    description: 'Compress conversation context',
+    category: 'Session',
+    aliases: ['compact'],
+    argsHint: '[focus topic]',
     subcommands: [],
     cliOnly: false,
     gatewayOnly: false,
@@ -369,6 +394,86 @@ describe('ChatComposer slash commands', () => {
 
     await screen.findByText(/can't start a new chat while a message is still streaming/i)
     expect(onNewChat).not.toHaveBeenCalled()
+  })
+
+  it('runs /compress: starts the job, polls until done, then calls onCompressionApplied (not onSend)', async () => {
+    // Real, reported bug: `/compress` was refused as `unsupported` even
+    // though upstream Hermes WebUI treats it as a real local action
+    // (cmdCompress -> _runManualCompression -> POST .../compress/start +
+    // poll .../compress/status), already reachable through this app's
+    // existing chat proxy.
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    const onCompressionApplied = vi.fn()
+    mockedChatApi.startCompression.mockResolvedValue({ status: 'running' })
+    mockedChatApi.getCompressionStatus.mockResolvedValue({ status: 'done' })
+    renderComposer({ onSend, onCompressionApplied })
+
+    await user.type(input(), '/compress')
+    await screen.findByRole('listbox')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(onCompressionApplied).toHaveBeenCalledTimes(1))
+    expect(mockedChatApi.startCompression).toHaveBeenCalledWith('ws-1', 'agent-a', 'sess-1', undefined)
+    expect(mockedChatApi.getCompressionStatus).toHaveBeenCalledWith('ws-1', 'agent-a', 'sess-1')
+    expect(onSend).not.toHaveBeenCalled()
+    expect(mockedCommandsApi.execCommand).not.toHaveBeenCalled()
+    expect(input()).toHaveValue('')
+  })
+
+  it('passes a focus topic argument through to startCompression', async () => {
+    const user = userEvent.setup()
+    mockedChatApi.startCompression.mockResolvedValue({ status: 'done' })
+    renderComposer()
+
+    await user.type(input(), '/compress pricing discussion')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(mockedChatApi.startCompression).toHaveBeenCalledWith(
+        'ws-1',
+        'agent-a',
+        'sess-1',
+        'pricing discussion',
+      ),
+    )
+  })
+
+  it('shows a compression failure as a real message, never a silent drop', async () => {
+    const user = userEvent.setup()
+    mockedChatApi.startCompression.mockResolvedValue({ status: 'running' })
+    mockedChatApi.getCompressionStatus.mockResolvedValue({ status: 'error' })
+    renderComposer()
+
+    await user.type(input(), '/compress')
+    await screen.findByRole('listbox')
+    await user.keyboard('{Enter}')
+
+    await screen.findByText(/compression failed/i)
+  })
+
+  it('refuses /compress with a clear message while streaming, without starting the job', async () => {
+    const user = userEvent.setup()
+    renderComposer({ isStreaming: true })
+
+    await user.type(input(), '/compress')
+    await screen.findByRole('listbox')
+    await user.keyboard('{Enter}')
+
+    await screen.findByText(/can't compress while a message is still streaming/i)
+    expect(mockedChatApi.startCompression).not.toHaveBeenCalled()
+  })
+
+  it('refuses /compress with no active session yet, without starting the job', async () => {
+    const user = userEvent.setup()
+    renderComposer({ sessionId: null })
+
+    await user.type(input(), '/compress')
+    await screen.findByRole('listbox')
+    await user.keyboard('{Enter}')
+
+    await screen.findByText(/no active session to compress/i)
+    expect(mockedChatApi.startCompression).not.toHaveBeenCalled()
   })
 
   it('still requires picking (not a direct submit) for a genuinely ambiguous prefix', async () => {
