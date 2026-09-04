@@ -146,6 +146,15 @@ impl ContainerLauncher for DockerCliLauncher {
         workspace_id: &str,
     ) -> Result<LaunchedContainer, super::super::CreateWorkspaceError> {
         let container_name = format!("hermes-ws-{workspace_id}");
+        // A previous failed launch can leave the named container behind
+        // (for example after the gateway died between `docker create` and
+        // cleanup). This launcher is only called for a non-ready workspace,
+        // so the name is stale by definition: remove it before retrying.
+        // Ignore "No such container"; that is the normal fresh-launch case.
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &container_name])
+            .output()
+            .await;
         let wrapper_port = pick_free_port().await?;
         let desktop_port = pick_free_port().await?;
         let browser_port = pick_free_port().await?;

@@ -133,13 +133,27 @@ export async function listAgentMessages(
   sessionId: string,
   query?: PageQuery,
 ): Promise<ListAgentMessagesResult> {
-  const data = await apiFetch<WireListAgentMessagesResult>(
+  const fetchPage = (pageQuery?: PageQuery) => apiFetch<WireListAgentMessagesResult>(
     gatewayUrl(),
     agentHistoryPath(
       workspaceId,
-      `agents/${encodeURIComponent(agentName)}/sessions/${encodeURIComponent(sessionId)}/messages${queryString(query)}`,
+      `agents/${encodeURIComponent(agentName)}/sessions/${encodeURIComponent(sessionId)}/messages${queryString(pageQuery)}`,
     ),
   )
+  // The UI needs a complete transcript when reattaching after an agent-tab
+  // switch. The wrapper caps one page at 200, so walk pages from the start;
+  // explicit pagination remains unchanged for the "load older" control.
+  if (!query) {
+    const limit = 200
+    const first = await fetchPage({ limit, offset: 0 })
+    const pages = [first]
+    for (let offset = limit; offset < first.total; offset += limit) {
+      pages.push(await fetchPage({ limit, offset }))
+    }
+    const messages = pages.flatMap((page) => page.messages)
+    return { messages, limit, offset: 0, total: first.total }
+  }
+  const data = await fetchPage(query)
   return {
     messages: data.messages.map(mapMessage),
     limit: data.limit,

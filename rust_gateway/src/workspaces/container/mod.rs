@@ -40,7 +40,8 @@ pub use docker_launcher::DockerCliLauncher;
 #[cfg(test)]
 pub(crate) use fake_launcher::FakeLauncher;
 pub(crate) use health::{
-    check_desktop_health, check_wrapper_health, wait_for_desktop_ready, wait_for_wrapper_ready,
+    check_desktop_health_at, check_wrapper_health_at,
+    wait_for_desktop_ready, wait_for_wrapper_ready,
 };
 
 /// A launched container's identity: the Docker container name (used for

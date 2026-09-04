@@ -15,6 +15,17 @@ use std::sync::Arc;
 use super::{ContainerLauncher, WorkspaceStore};
 use crate::integrations::IntegrationsState;
 
+pub fn workspace_target_host() -> String {
+    std::env::var("WORKSPACE_GATEWAY_URL").ok()
+        .and_then(|raw| reqwest::Url::parse(&raw).ok())
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+pub fn workspace_target_addr(port: u16) -> String {
+    format!("{}:{port}", workspace_target_host())
+}
+
 mod create;
 mod delete;
 mod diagnose;

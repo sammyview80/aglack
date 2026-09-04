@@ -329,7 +329,7 @@ export async function getCompressionStatus(
  * gateway paths itself. */
 export function chatStreamUrl(workspaceId: string, agent: string, streamId: string): string {
   return withAgent(
-    `${chatBase(workspaceId)}/api/chat/stream?stream_id=${encodeURIComponent(streamId)}`,
+    `${chatBase(workspaceId)}/api/chat/stream?stream_id=${encodeURIComponent(streamId)}&replay=1`,
     agent,
   )
 }

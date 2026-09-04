@@ -79,6 +79,8 @@ Docker / real workspace containers
   image build           Build the workspace-image Docker image
                          (hermes-workspace:dev)
   workspace create [name]   POST /workspaces — create a real container
+  workspace retry <name>    Retry a failed launch; stale container names are
+                            removed automatically by the gateway
   workspace list            GET  /workspaces  — list all workspaces
   workspace rm <id>          DELETE /workspaces/:id
   workspace diagnose <id>    POST /workspaces/:id/diagnose
@@ -207,6 +209,12 @@ cmd_workspace() {
       fi
       echo
       ;;
+    retry)
+      local name="${1:-}"
+      [ -z "$name" ] && { echo "aglack: workspace retry needs <name>" >&2; exit 1; }
+      gw POST /workspaces "{\"name\":\"$name\"}"
+      echo
+      ;;
     list)
       gw GET /workspaces
       echo
@@ -224,7 +232,7 @@ cmd_workspace() {
       echo
       ;;
     *)
-      echo "aglack: unknown workspace subcommand '$sub' (want: create|list|rm|diagnose)" >&2
+      echo "aglack: unknown workspace subcommand '$sub' (want: create|retry|list|rm|diagnose)" >&2
       exit 1
       ;;
   esac

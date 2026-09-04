@@ -12,10 +12,11 @@
 use std::time::Duration;
 
 use super::container::{
-    check_desktop_health, check_wrapper_health, wait_for_desktop_ready, wait_for_wrapper_ready,
+    check_desktop_health_at, check_wrapper_health_at, wait_for_desktop_ready, wait_for_wrapper_ready,
     ContainerState,
 };
 use super::store::WorkspaceRecord;
+use super::route::workspace_target_host;
 use super::{ContainerLauncher, CreateWorkspaceError, WorkspaceStore};
 
 /// Every timeout `diagnose_workspace` needs, gathered into one struct and
@@ -309,9 +310,10 @@ async fn check_both_services(
     let (Some(wrapper_port), Some(desktop_port)) = (record.host_port, record.desktop_port) else {
         return (false, false);
     };
+    let host = workspace_target_host();
     tokio::join!(
-        check_wrapper_health(http_client, wrapper_port as u16, timeout),
-        check_desktop_health(http_client, workspace_id, desktop_port as u16, timeout),
+        check_wrapper_health_at(http_client, &host, wrapper_port as u16, timeout),
+        check_desktop_health_at(http_client, &host, workspace_id, desktop_port as u16, timeout),
     )
 }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   cancelTurn,
   createSession,
@@ -99,17 +99,6 @@ function historyToTurns(sessionKey: string, messages: AgentMessage[], baseOffset
       // needed here beyond the field being optional either way.
       attachments: message.attachments,
     }))
-}
-
-function abandonLiveStream(
-  workspaceId: string | undefined,
-  agentName: string | null | undefined,
-  streamId: string | null,
-  queryClient: QueryClient,
-) {
-  if (!streamId || !agentName || !workspaceId) return
-  void cancelTurn(workspaceId, agentName, streamId).catch(() => {})
-  setAgentWorking(queryClient, workspaceId, agentName, false)
 }
 
 /**
@@ -237,6 +226,7 @@ export function useChat(
     staleTime: 30_000,
   })
   const seededRef = useRef<string | null>(null)
+  const seededHistoryRef = useRef<unknown>(null)
 
   // Backs the reconnect effect further below — see its own comment for why
   // this exists. One-shot (no polling), fired once `sessionId` resolves.
@@ -299,12 +289,9 @@ export function useChat(
     const shouldReset = agentOrWsChanged || sessionSwitch || sessionCleared
 
     if (shouldReset) {
-      abandonLiveStream(
-        workspaceId,
-        agentOrWsChanged ? prev!.agent : agent,
-        streamIdRef.current,
-        queryClient,
-      )
+      // Switching chat tabs only detaches this pane. Do not cancel the
+      // server turn: its session remains the owner and the status check
+      // below reattaches the stream when the tab is selected again.
       setTurns([])
       claimStream(null)
       setIsSending(false)
@@ -322,8 +309,9 @@ export function useChat(
   // before any new turn is sent on top of it.
   useEffect(() => {
     if (!boundSessionId || !historyQuery.data) return
-    if (seededRef.current === boundSessionId) return
+    if (seededRef.current === boundSessionId && seededHistoryRef.current === historyQuery.data) return
     seededRef.current = boundSessionId
+    seededHistoryRef.current = historyQuery.data
     setSeededSessionId(boundSessionId)
     setTurns(historyToTurns(boundSessionId, historyQuery.data.messages, historyQuery.data.offset))
     setOldestLoadedOffset(historyQuery.data.offset)
@@ -658,11 +646,17 @@ export function useChat(
       claimStream(result.streamId)
       setIsSending(false)
       setAgentWorking(queryClient, sentForWorkspaceId, sentForAgent, true)
-      touchCachedSession(queryClient, sentForWorkspaceId, sentForAgent, activeSessionId as string, {
-        title: result.title,
-        messageCountDelta: 1,
-        at: Date.now(),
-      })
+        touchCachedSession(queryClient, sentForWorkspaceId, sentForAgent, activeSessionId as string, {
+          title: result.title,
+          messageCountDelta: 1,
+          at: Date.now(),
+        })
+        // The user message is persisted by startTurn asynchronously. Force
+        // the session transcript cache to refresh before a tab switch can
+        // seed from the stale pre-send page.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.agentHistory.messages(sentForWorkspaceId, sentForAgent, activeSessionId as string),
+        })
     } catch {
       /* onError already toasted */
       if (sendSeqRef.current === seq) setIsSending(false)
