@@ -8,6 +8,7 @@ use super::docker_cli::{docker_daemon_reachable, pick_free_port, run_docker};
 use super::health::{wait_for_desktop_ready_at, wait_for_wrapper_ready_at};
 use super::inspect::inspect_container_state;
 use super::{ContainerLauncher, ContainerState, LaunchedContainer};
+use crate::workspaces::route::workspace_target_host;
 
 /// Real Docker launcher: shells out to the `docker` CLI (matching the
 /// pattern the original reference project uses — see
@@ -284,10 +285,7 @@ impl ContainerLauncher for DockerCliLauncher {
 
             run_docker(&container_name, &["start", &container_name]).await?;
 
-            let health_host = reqwest::Url::parse(&self.gateway_internal_url)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .unwrap_or_else(|| "127.0.0.1".to_string());
+            let health_host = workspace_target_host();
             wait_for_wrapper_ready_at(&health_host, wrapper_port, Duration::from_secs(30)).await?;
             wait_for_desktop_ready_at(
                 &health_host,

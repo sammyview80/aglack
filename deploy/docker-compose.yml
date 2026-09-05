@@ -63,6 +63,7 @@ services:
       WORKSPACE_DOCKER_NETWORK: ${WORKSPACE_DOCKER_NETWORK:-}
       WORKSPACE_DEFAULT_PATH: ${WORKSPACE_DEFAULT_PATH}
       WORKSPACE_GATEWAY_URL: ${WORKSPACE_GATEWAY_URL}
+      WORKSPACE_TARGET_HOST: ${WORKSPACE_TARGET_HOST:-}
       DATABASE_URL: ${DATABASE_URL}
     ports:
       # Gateway's own port stays published to the host, unchanged from

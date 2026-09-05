@@ -16,9 +16,24 @@ use super::{ContainerLauncher, WorkspaceStore};
 use crate::integrations::IntegrationsState;
 
 pub fn workspace_target_host() -> String {
-    std::env::var("WORKSPACE_GATEWAY_URL").ok()
-        .and_then(|raw| reqwest::Url::parse(&raw).ok())
-        .and_then(|url| url.host_str().map(str::to_owned))
+    configured_workspace_target_host(
+        std::env::var("WORKSPACE_TARGET_HOST").ok(),
+        std::env::var("WORKSPACE_GATEWAY_URL").ok(),
+    )
+}
+
+fn configured_workspace_target_host(
+    target_host: Option<String>,
+    gateway_url: Option<String>,
+) -> String {
+    target_host
+        .filter(|host| !host.trim().is_empty())
+        .map(|host| host.trim().to_string())
+        .or_else(|| {
+            gateway_url
+                .and_then(|raw| reqwest::Url::parse(&raw).ok())
+                .and_then(|url| url.host_str().map(str::to_owned))
+        })
         .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
@@ -32,10 +47,10 @@ mod diagnose;
 mod list;
 
 pub use create::{create_workspace_route, create_workspace_route_authenticated};
-pub use list::list_workspaces_route_authenticated;
 pub use delete::delete_workspace_route;
 pub use diagnose::diagnose_workspace_route;
 pub use list::list_workspaces_route;
+pub use list::list_workspaces_route_authenticated;
 
 pub struct WorkspacesState {
     pub store: WorkspaceStore,
@@ -68,4 +83,31 @@ pub struct WorkspacesState {
     /// legitimately `WorkspacesState`-scoped and must not move to a
     /// second router).
     pub integrations: Arc<IntegrationsState>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::configured_workspace_target_host;
+
+    #[test]
+    fn explicit_target_host_is_independent_from_container_gateway_url() {
+        assert_eq!(
+            configured_workspace_target_host(
+                Some("host.docker.internal".to_string()),
+                Some("http://gateway:8080".to_string()),
+            ),
+            "host.docker.internal"
+        );
+    }
+
+    #[test]
+    fn legacy_config_falls_back_to_gateway_url_host() {
+        assert_eq!(
+            configured_workspace_target_host(
+                None,
+                Some("http://host.docker.internal:8080".to_string()),
+            ),
+            "host.docker.internal"
+        );
+    }
 }
