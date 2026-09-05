@@ -100,11 +100,17 @@ type IntegrationConnectionApiData = {
   last_error: string | null
 }
 
-/** `GET /workspaces/:id/integrations` */
+/** `GET /api/workspaces/:id/integrations`.
+ *
+ * The `/workspaces/:id/integrations` URL is the React page itself and
+ * frontend nginx deliberately serves `index.html` there. Keeping this read
+ * under `/api` prevents the OAuth poll from receiving the SPA shell as an
+ * HTTP 200 response instead of the gateway JSON envelope.
+ */
 export async function fetchIntegrations(workspaceId: string): Promise<IntegrationConnection[]> {
   const data = await apiFetch<IntegrationConnectionApiData[]>(
     gatewayUrl(),
-    `/workspaces/${workspaceId}/integrations`,
+    `/api/workspaces/${workspaceId}/integrations`,
   )
   return data.map((connection) => ({
     providerId: connection.provider_id,
