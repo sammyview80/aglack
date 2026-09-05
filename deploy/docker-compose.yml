@@ -17,7 +17,7 @@ services:
       args:
         VITE_GATEWAY_URL: ${VITE_GATEWAY_URL}
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      - "127.0.0.1:${FRONTEND_PORT:-80}:80"
     depends_on:
       - gateway
     restart: unless-stopped
@@ -33,6 +33,14 @@ services:
       # narrower context.
       context: ..
       dockerfile: rust_gateway/Dockerfile
+    env_file:
+      # Loads every optional per-provider OAuth var (GITHUB_OAUTH_*,
+      # GOOGLE_OAUTH_*, SLACK_OAUTH_*, etc. — see rust_gateway/.env.example)
+      # automatically, without needing a compose edit per provider added.
+      # The explicit `environment:` block below still wins for the vars it
+      # names (compose environment: overrides env_file: for the same key),
+      # so this is additive, not a behavior change for anything already listed.
+      - .env
     environment:
       OPENCONNECTOR_URL: ${OPENCONNECTOR_URL}
       OPENCONNECTOR_ADMIN_TOKEN: ${OPENCONNECTOR_ADMIN_TOKEN}
@@ -57,8 +65,9 @@ services:
       DATABASE_URL: ${DATABASE_URL}
     ports:
       # Gateway's own port stays published to the host, unchanged from
-      # today's dev workflow.
-      - "${GATEWAY_PORT}:${GATEWAY_PORT}"
+      # today's dev workflow. Loopback-only: nginx/the frontend container
+      # is the only intended public entry point.
+      - "127.0.0.1:${GATEWAY_PORT}:${GATEWAY_PORT}"
     volumes:
       # rust_gateway's workspaces feature shells out to the `docker` CLI to
       # create/start/inspect workspace containers (see

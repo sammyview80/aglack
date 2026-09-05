@@ -7,7 +7,7 @@
 use axum::{
     extract::{Path, Request, State},
     http::StatusCode,
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -22,6 +22,7 @@ use super::token_delivery;
 use super::{IntegrationStore, OpenConnectorApi, Provider};
 use crate::response::{error, success};
 use crate::workspaces::resolve::{resolve_existing_workspace, resolve_ready_workspace};
+use crate::workspaces::route::workspace_target_addr;
 use crate::workspaces::WorkspaceStore;
 
 pub use super::mcp_proxy::integration_mcp_route;
@@ -508,13 +509,31 @@ pub async fn start_oauth_route(
 /// gateway's own address, NOT OpenConnector's) is what actually gets
 /// registered as the OAuth app's redirect URI.
 ///
-/// Deliberately relays OpenConnector's response BODY AND STATUS verbatim
-/// (via `crate::proxy::forward_to`, the same "relay upstream verbatim"
-/// primitive `proxy::forward` itself uses) rather than trying to
-/// reinterpret it — `docs/integrations-poc-findings.md` flagged
-/// OpenConnector's exact post-callback response shape as unverified; this
-/// route does not need to understand it, only pass it through so
-/// OpenConnector's own real work (the token exchange) actually happens.
+/// Real bug hit live (confirmed against a real GitHub OAuth app, not a
+/// synthetic test): this route used to relay OpenConnector's callback
+/// response BODY AND STATUS verbatim back to the browser. That response
+/// is a plain, unwrapped body (HTML or a bare JSON shape, depending on
+/// success/failure) that this app's frontend was never built to parse —
+/// `apiFetch` on every OTHER route expects this crate's own
+/// `{ok, data}`/`{ok, error}` envelope (see `crate::response`), so a raw
+/// OpenConnector body landing in the popup surfaced as a generic
+/// "Couldn't read the server response" toast even on a real, successful
+/// connect. `docs/integrations-poc-findings.md` had already flagged this
+/// exact response shape as "unverified against a real provider" — this is
+/// that verification, and the fix it called for.
+///
+/// The real completion signal was ALREADY separate and correct:
+/// `use-oauth-connect.ts`'s popup-closed poll hits
+/// `GET /workspaces/:id/integrations` (`list_integrations_route`, which
+/// reconciles a `pending` row against OpenConnector's live connection
+/// list) — this route's own response body was never actually consumed by
+/// anything. So OpenConnector's real call still happens exactly as
+/// before (needed so the token exchange completes), but the browser is
+/// now handed a small, self-contained HTML page that just closes the
+/// popup instead of whatever OpenConnector itself returned — decoupling
+/// what the user's browser sees from OpenConnector's internal response
+/// shape entirely, which is the actual fix rather than a guess at what
+/// shape to expect.
 pub async fn oauth_callback_route(
     State(state): State<Arc<IntegrationsState>>,
     req: Request,
@@ -541,7 +560,39 @@ pub async fn oauth_callback_route(
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
     let rewritten_path = format!("/oauth/callback{query}");
-    crate::proxy::forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await
+    // Still actually calls OpenConnector — this is what completes the
+    // real token exchange server-side. Only the RESPONSE the browser sees
+    // is replaced below; OpenConnector's own work here is unaffected.
+    let upstream_response =
+        crate::proxy::forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path))
+            .await;
+    let upstream_status = upstream_response.status();
+
+    // OpenConnector's own real error (state expired/reused, provider
+    // denied access, etc.) still surfaces as a real HTTP error status —
+    // only a genuinely successful exchange (2xx) gets the "just close"
+    // treatment. A non-2xx keeps its real status and OpenConnector's
+    // error body, so a failed connect is still debuggable from the
+    // Network tab rather than silently reported as success.
+    if !upstream_status.is_success() {
+        return upstream_response;
+    }
+
+    const CLOSE_POPUP_HTML: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>Connected</title></head>
+<body>
+<script>
+  try { window.close(); } catch (e) {}
+</script>
+<p>Connected. You can close this window.</p>
+</body></html>"#;
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        CLOSE_POPUP_HTML,
+    )
+        .into_response()
 }
 
 /// `POST /workspaces/:id/integrations/:provider/connect`
@@ -1167,7 +1218,7 @@ pub async fn put_integration_agent_route(
         Err(response) => return response,
     };
 
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
+    let target_addr = workspace_target_addr(ports.wrapper_port);
     let rewritten_path = format!("/api/wrapper/v1/integrations/agents/{agent_slug}");
     crate::proxy::forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await
 }
@@ -1188,7 +1239,7 @@ pub async fn list_integration_agents_route(
         Err(response) => return response,
     };
 
-    let target_addr = format!("127.0.0.1:{}", ports.wrapper_port);
+    let target_addr = workspace_target_addr(ports.wrapper_port);
     let rewritten_path = "/api/wrapper/v1/integrations/agents".to_string();
     crate::proxy::forward_to(&state.http_client, &target_addr, req, Some(&rewritten_path)).await
 }
