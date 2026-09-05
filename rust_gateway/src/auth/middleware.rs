@@ -61,6 +61,18 @@ fn is_workspace_browser_path(path: &str) -> bool {
             .is_some_and(|rest| rest.split_once("/browser/").is_some())
 }
 
+/// Workspace routes exist in both the historical `/workspaces/...` namespace
+/// and the JSON-only `/api/workspaces/...` namespace. Both must pass through
+/// the same ownership check; otherwise an `/api` alias could expose another
+/// user's workspace when its UUID is known.
+fn workspace_id_from_path(path: &str) -> Option<&str> {
+    ["/workspaces/", "/api/workspaces/"]
+        .into_iter()
+        .find_map(|prefix| path.strip_prefix(prefix))
+        .and_then(|rest| rest.split('/').next())
+        .filter(|id| !id.is_empty())
+}
+
 pub async fn require_session(
     State(state): State<Arc<AuthState>>,
     mut request: Request,
@@ -91,7 +103,7 @@ pub async fn require_session(
             err.to_string(),
         ),
     };
-    if let Some(workspace_id) = request.uri().path().strip_prefix("/workspaces/").and_then(|p| p.split('/').next()).filter(|id| !id.is_empty()) {
+    if let Some(workspace_id) = workspace_id_from_path(request.uri().path()) {
         let owned = sqlx::query_scalar::<_, i64>("SELECT 1 FROM workspace_creations WHERE workspace_id = ? AND owner_google_sub = ?")
             .bind(workspace_id).bind(&user.google_sub).fetch_optional(&state.workspace_pool).await;
         match owned {
@@ -154,6 +166,20 @@ mod tests {
             "/workspaces/abc-123/integrations/github/connect"
         ));
         assert!(!is_exempt("/workspaces/abc-123/integrations/agents/writer"));
+        assert!(!is_exempt("/api/workspaces/abc-123/integrations"));
+    }
+
+    #[test]
+    fn ownership_scope_extracts_workspace_id_from_both_route_namespaces() {
+        assert_eq!(
+            workspace_id_from_path("/workspaces/abc-123/integrations"),
+            Some("abc-123")
+        );
+        assert_eq!(
+            workspace_id_from_path("/api/workspaces/abc-123/integrations"),
+            Some("abc-123")
+        );
+        assert_eq!(workspace_id_from_path("/integrations/providers"), None);
     }
 
     #[test]
