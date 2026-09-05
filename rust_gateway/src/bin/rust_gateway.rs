@@ -160,16 +160,19 @@ async fn main() {
 
     let workspaces_state = Arc::new(WorkspacesState {
         store: WorkspaceStore::new(db_pool),
-        launcher: Arc::new(DockerCliLauncher::new(
-            workspaces_config.workspace_image_tag,
-            config.wrapper_allowed_origins(),
-            config.workspace_default_path.clone(),
-            config.frontend_origin.clone(),
-            config.workspace_gateway_url.clone(),
-            workspaces_config.workspace_memory_limit,
-            workspaces_config.workspace_shm_size,
-            workspaces_config.workspace_browser_idle_timeout_minutes,
-        )),
+        launcher: Arc::new(
+            DockerCliLauncher::new(
+                workspaces_config.workspace_image_tag,
+                config.wrapper_allowed_origins(),
+                config.workspace_default_path.clone(),
+                config.frontend_origin.clone(),
+                config.workspace_gateway_url.clone(),
+                workspaces_config.workspace_memory_limit,
+                workspaces_config.workspace_shm_size,
+                workspaces_config.workspace_browser_idle_timeout_minutes,
+            )
+            .with_docker_network(workspaces_config.workspace_docker_network),
+        ),
         // `stream_client()`: this client also backs the chat/desktop/
         // hermes-webui/onboarding proxies' `forward_to` calls, which
         // relay a workspace's real, potentially long-lived (SSE) response
