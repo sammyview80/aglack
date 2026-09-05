@@ -1259,6 +1259,13 @@ pub fn router(state: Arc<IntegrationsState>) -> Router {
     Router::new()
         .route("/integrations/providers", get(list_providers_route))
         .route("/workspaces/:id/integrations", get(list_integrations_route))
+        // Browser navigation owns `/workspaces/:id/integrations`: frontend
+        // nginx serves the SPA there. The `/api` alias gives browser fetches
+        // an unambiguous JSON route instead of the SPA's HTTP-200 index.html.
+        .route(
+            "/api/workspaces/:id/integrations",
+            get(list_integrations_route),
+        )
         .route(
             "/workspaces/:id/integrations/:provider/connect",
             post(connect_integration_route),
@@ -1290,6 +1297,7 @@ mod tests {
     use crate::integrations::openconnector::fake::FakeOpenConnector;
     use crate::integrations::store::IntegrationStore;
     use crate::workspaces::WorkspaceStore;
+    use tower::ServiceExt;
     use tracing_test::traced_test;
 
     fn seconds_ago(seconds: u64) -> String {
@@ -1777,6 +1785,26 @@ mod tests {
 
         let response =
             list_integrations_route(State(state), Path("does-not-exist".to_string())).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "workspace_not_found");
+    }
+
+    #[tokio::test]
+    async fn api_namespaced_integration_list_route_reaches_the_json_handler() {
+        let fake = Arc::new(FakeOpenConnector::default());
+        let (state, _pool) = integrations_state(fake).await;
+
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workspaces/does-not-exist/integrations")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = body_json(response).await;
