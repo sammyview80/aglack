@@ -20,8 +20,9 @@ use crate::workspaces::{
     chat_proxy_route_root, chat_proxy_route_with_path, commands_proxy_route_root,
     commands_proxy_route_with_path, create_workspace_route_authenticated, delete_workspace_route,
     desktop_proxy_route_root, desktop_proxy_route_with_path, diagnose_workspace_route,
-    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path, list_workspaces_route_authenticated,
-    onboarding_proxy_route_root, onboarding_proxy_route_with_path, WorkspacesState,
+    hermes_webui_proxy_route_root, hermes_webui_proxy_route_with_path,
+    list_workspaces_route_authenticated, onboarding_proxy_route_root,
+    onboarding_proxy_route_with_path, WorkspacesState,
 };
 
 /// Register one per-workspace proxy feature's pair of routes: the exact

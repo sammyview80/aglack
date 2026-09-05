@@ -53,6 +53,7 @@ use super::{ContainerLauncher, ContainerState, LaunchedContainer};
 /// since both only depend on the `ContainerLauncher` trait.
 pub struct DockerCliLauncher {
     image_tag: String,
+    docker_network: Option<String>,
     /// Comma-separated origins a browser may legitimately present when
     /// talking to a workspace's wrapper THROUGH this gateway — passed
     /// straight into the container's `HERMES_WEBUI_ALLOWED_ORIGINS` (see
@@ -115,6 +116,12 @@ pub struct DockerCliLauncher {
     browser_idle_timeout_minutes: String,
 }
 
+fn append_docker_network_args<'a>(args: &mut Vec<&'a str>, network: Option<&'a str>) {
+    if let Some(network) = network {
+        args.extend(["--network", network]);
+    }
+}
+
 impl DockerCliLauncher {
     pub fn new(
         image_tag: String,
@@ -128,6 +135,7 @@ impl DockerCliLauncher {
     ) -> Self {
         Self {
             image_tag,
+            docker_network: None,
             allowed_origins,
             workspace_default_path,
             frontend_origin,
@@ -136,6 +144,11 @@ impl DockerCliLauncher {
             shm_size,
             browser_idle_timeout_minutes,
         }
+    }
+
+    pub fn with_docker_network(mut self, docker_network: Option<String>) -> Self {
+        self.docker_network = docker_network;
+        self
     }
 }
 
@@ -234,28 +247,28 @@ impl ContainerLauncher for DockerCliLauncher {
         // real operational risk once several workspaces run browsers at
         // once (one runaway container could starve every other
         // workspace on the same host).
-        run_docker(
+        let mut create_args = vec![
+            "create",
+            "--name",
             &container_name,
-            &[
-                "create",
-                "--name",
-                &container_name,
-                "--memory",
-                &self.memory_limit,
-                "--shm-size",
-                &self.shm_size,
-                "-p",
-                &wrapper_publish_arg,
-                "-p",
-                &desktop_publish_arg,
-                "-p",
-                &browser_publish_arg,
-                "-e",
-                &subfolder_env_arg,
-                &self.image_tag,
-            ],
-        )
-        .await?;
+            "--memory",
+            &self.memory_limit,
+            "--shm-size",
+            &self.shm_size,
+        ];
+        append_docker_network_args(&mut create_args, self.docker_network.as_deref());
+        create_args.extend([
+            "-p",
+            &wrapper_publish_arg,
+            "-p",
+            &desktop_publish_arg,
+            "-p",
+            &browser_publish_arg,
+            "-e",
+            &subfolder_env_arg,
+            &self.image_tag,
+        ]);
+        run_docker(&container_name, &create_args).await?;
 
         let launch_result = async {
             deliver_boot_script(
@@ -276,7 +289,13 @@ impl ContainerLauncher for DockerCliLauncher {
                 .and_then(|url| url.host_str().map(str::to_owned))
                 .unwrap_or_else(|| "127.0.0.1".to_string());
             wait_for_wrapper_ready_at(&health_host, wrapper_port, Duration::from_secs(30)).await?;
-            wait_for_desktop_ready_at(&health_host, workspace_id, desktop_port, Duration::from_secs(15)).await?;
+            wait_for_desktop_ready_at(
+                &health_host,
+                workspace_id,
+                desktop_port,
+                Duration::from_secs(15),
+            )
+            .await?;
             Ok::<_, super::super::CreateWorkspaceError>(())
         }
         .await;
@@ -384,5 +403,24 @@ impl ContainerLauncher for DockerCliLauncher {
 
     async fn daemon_reachable(&self) -> bool {
         docker_daemon_reachable().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_docker_network_args;
+
+    #[test]
+    fn configured_workspace_network_is_added_to_docker_create() {
+        let mut args = vec!["create"];
+        append_docker_network_args(&mut args, Some("deploy_default"));
+        assert_eq!(args, ["create", "--network", "deploy_default"]);
+    }
+
+    #[test]
+    fn missing_workspace_network_preserves_standalone_launches() {
+        let mut args = vec!["create"];
+        append_docker_network_args(&mut args, None);
+        assert_eq!(args, ["create"]);
     }
 }

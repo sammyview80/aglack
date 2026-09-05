@@ -295,6 +295,11 @@ pub struct WorkspacesConfig {
     /// image name/tag is a deployment decision, not something safe to
     /// guess.
     pub workspace_image_tag: String,
+    /// Optional Docker network attached to every workspace container.
+    /// Production uses the gateway's Compose network so workspaces can
+    /// reach `http://gateway:<port>` directly instead of relying on the
+    /// platform-specific `host.docker.internal` alias.
+    pub workspace_docker_network: Option<String>,
     /// `docker create --memory <value>` for every new workspace
     /// container. Docker's own size-suffix syntax (e.g. `4g`, `512m`),
     /// passed through VERBATIM to the `docker` CLI, never parsed or
@@ -342,8 +347,13 @@ impl WorkspacesConfig {
             })?
             .into();
         let workspace_image_tag = required_env("WORKSPACE_IMAGE_TAG")?;
-        let workspace_memory_limit =
-            optional_env_or("WORKSPACE_MEMORY_LIMIT", "4g")?;
+        let workspace_docker_network = optional_env_value(
+            "WORKSPACE_DOCKER_NETWORK",
+            env::var("WORKSPACE_DOCKER_NETWORK"),
+        )?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+        let workspace_memory_limit = optional_env_or("WORKSPACE_MEMORY_LIMIT", "4g")?;
         let workspace_shm_size = optional_env_or("WORKSPACE_SHM_SIZE", "1g")?;
         let workspace_browser_idle_timeout_minutes =
             optional_env_or("WORKSPACE_BROWSER_IDLE_TIMEOUT_MINUTES", "4")?;
@@ -351,6 +361,7 @@ impl WorkspacesConfig {
         Ok(Self {
             database_path,
             workspace_image_tag,
+            workspace_docker_network,
             workspace_memory_limit,
             workspace_shm_size,
             workspace_browser_idle_timeout_minutes,
@@ -446,7 +457,10 @@ impl GatewayAuthConfig {
 /// separate from the actual default-applying logic) so the default-
 /// applying half is testable with a plain `Option<String>` value, never
 /// real process-global `env::set_var` in a test.
-fn optional_env_value(key: &str, raw: Result<String, env::VarError>) -> Result<Option<String>, ConfigError> {
+fn optional_env_value(
+    key: &str,
+    raw: Result<String, env::VarError>,
+) -> Result<Option<String>, ConfigError> {
     match raw {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
@@ -466,7 +480,11 @@ fn optional_env_value(key: &str, raw: Result<String, env::VarError>) -> Result<O
 /// unset it, not to pass an empty string to `docker create --memory`,
 /// which would itself fail confusingly at container-launch time instead
 /// of at startup where the real mistake is easy to see and fix.
-fn apply_optional_default(key: &str, raw: Option<String>, default: &str) -> Result<String, ConfigError> {
+fn apply_optional_default(
+    key: &str,
+    raw: Option<String>,
+    default: &str,
+) -> Result<String, ConfigError> {
     match raw {
         None => Ok(default.to_string()),
         Some(value) if value.trim().is_empty() => Err(ConfigError {
@@ -715,12 +733,8 @@ mod tests {
 
     #[test]
     fn apply_optional_default_uses_the_real_value_when_present() {
-        let value = apply_optional_default(
-            "WORKSPACE_MEMORY_LIMIT",
-            Some("8g".to_string()),
-            "4g",
-        )
-        .unwrap();
+        let value =
+            apply_optional_default("WORKSPACE_MEMORY_LIMIT", Some("8g".to_string()), "4g").unwrap();
         assert_eq!(value, "8g");
     }
 
@@ -730,12 +744,8 @@ mod tests {
         // meant to unset it, not to pass an empty string straight through
         // to `docker create --memory` (which would fail confusingly at
         // container-launch time instead of at startup).
-        let err = apply_optional_default(
-            "WORKSPACE_MEMORY_LIMIT",
-            Some("   ".to_string()),
-            "4g",
-        )
-        .unwrap_err();
+        let err = apply_optional_default("WORKSPACE_MEMORY_LIMIT", Some("   ".to_string()), "4g")
+            .unwrap_err();
         assert!(err.to_string().contains("WORKSPACE_MEMORY_LIMIT"));
         assert!(err.to_string().contains("4g"));
     }
@@ -756,9 +766,11 @@ mod tests {
     #[test]
     fn optional_env_value_fails_closed_on_non_unicode() {
         let bad = std::ffi::OsString::from_vec(vec![0x66, 0xff, 0x6f]);
-        let err =
-            optional_env_value("WORKSPACE_MEMORY_LIMIT", Err(env::VarError::NotUnicode(bad)))
-                .unwrap_err();
+        let err = optional_env_value(
+            "WORKSPACE_MEMORY_LIMIT",
+            Err(env::VarError::NotUnicode(bad)),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("WORKSPACE_MEMORY_LIMIT"));
     }
 }
